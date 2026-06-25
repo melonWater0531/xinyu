@@ -530,7 +530,7 @@ class FaceTrackerV2:
             embedding: ndarray   — ArcFace 512-d embedding
             landmarks_106: ndarray — 106 facial landmarks
             face_center: (cx,cy) — center of face
-            is_primary: bool     — is this the gimbal target?
+            is_primary: bool     display metadata only
             lost_frames: int      — consecutive frames lost
             head_yaw/pitch/roll  — head pose
         """
@@ -719,8 +719,8 @@ class FaceTrackerV2:
 
     # ── Public helpers ────────────────────────────────────────
 
-    def set_primary(self, track_id: int) -> None:
-        """No-op: vision does not select control targets."""
+    def set_display_selection(self, track_id: int) -> None:
+        """No-op: vision does not select display identities."""
         return None
 
     def reset(self) -> None:
