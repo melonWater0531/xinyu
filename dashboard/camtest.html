@@ -1,9 +1,0 @@
-<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
-<body style="margin:0;background:#000">
-<img id="cam" style="width:100vw;height:100vh;object-fit:contain" onerror="retry()">
-<script>
-let fails=0;
-function retry(){fails++;if(fails<10) setTimeout(()=>{document.getElementById('cam').src='/video_feed?'+Date.now()},500)}
-retry();
-</script>
-</body></html>

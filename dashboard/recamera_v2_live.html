@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>reCamera Live Alignment Console</title>
+<title>reCamera Control Dashboard — 实时控制与可观测性</title>
 <style>
 :root{--bg:#f6f1e8;--panel:#fffaf2;--ink:#2d2a26;--muted:#796f63;--line:#dfd2c2;--accent:#b8752e;--good:#247c55;--warn:#b36b12;--bad:#a33a32;--blue:#2d5f8f}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,"Noto Sans SC",system-ui,sans-serif}
-.app{min-height:100vh;display:grid;grid-template-columns:minmax(520px,1fr) 390px;gap:14px;padding:14px}
+.app{min-height:100vh;display:grid;grid-template-columns:minmax(520px,1fr) 420px;gap:14px;padding:14px}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 28px rgba(60,42,20,.07)}
 .video-panel{position:relative;min-height:420px;overflow:hidden;display:flex;flex-direction:column}
 .topbar{min-height:46px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 14px;border-bottom:1px solid var(--line)}
@@ -16,26 +16,35 @@
 #videoStream{width:100%;height:100%;object-fit:contain;display:block}
 #overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .side{display:flex;flex-direction:column;gap:12px;min-width:0}
-.card{padding:14px}.card h2{margin:0 0 10px;font-size:13px;letter-spacing:.6px;text-transform:uppercase;color:var(--accent)}
-.mode-row,.actions,.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-button{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;padding:10px 12px;font:inherit;font-size:13px;cursor:pointer;transition:.16s ease}
-button:hover{border-color:var(--accent)}button.active{background:rgba(184,117,46,.13);border-color:var(--accent);color:#5d3514;font-weight:700}
-.primary{background:var(--accent);color:white;border-color:var(--accent)}.secondary{background:#f8efe3}
-.metric{border:1px solid var(--line);border-radius:8px;padding:10px;background:#fffdf8;min-height:68px}
+.card{padding:14px}.card h2{margin:0 0 10px;font-size:13px;letter-spacing:.6px;text-transform:uppercase;color:var(--accent);display:flex;align-items:center;justify-content:space-between}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.metric{border:1px solid var(--line);border-radius:8px;padding:10px;background:#fffdf8;min-height:64px}
 .label{font-size:11px;color:var(--muted);margin-bottom:6px}.value{font-size:22px;font-weight:750}.small{font-size:12px;color:var(--muted);line-height:1.5}
 .status{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid rgba(223,210,194,.7);padding:7px 0;font-size:13px}.status:last-child{border-bottom:none}
 .pill{display:inline-flex;align-items:center;gap:5px;border-radius:999px;border:1px solid var(--line);padding:4px 8px;font-size:11px;background:#fff;white-space:nowrap}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--bad)}.dot.on{background:var(--good)}.dot.warn{background:var(--warn)}
-.hidden{display:none!important}.log{height:132px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fffdf8;padding:8px;font-size:12px;color:var(--muted);line-height:1.55}
-.mono{font-family:"SFMono-Regular",Consolas,monospace}.notice{border-left:3px solid var(--accent);padding:8px 10px;background:#fff5e7;border-radius:6px;font-size:12px;color:var(--muted);line-height:1.55}
-@media(max-width:980px){.app{grid-template-columns:1fr}.video-wrap{min-height:320px}.side{order:2}}
+.log{height:150px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fffdf8;padding:8px;font-size:12px;color:var(--muted);line-height:1.55}
+.mono{font-family:"SFMono-Regular",Consolas,monospace}
+.notice{border-left:3px solid var(--accent);padding:8px 10px;background:#fff5e7;border-radius:6px;font-size:12px;color:var(--muted);line-height:1.55}
+.ro{font-size:10px;font-weight:700;letter-spacing:.4px;color:#5d3514;background:rgba(184,117,46,.15);border:1px solid var(--accent);border-radius:999px;padding:2px 8px}
+/* FSM diagram */
+.fsm{display:flex;flex-wrap:wrap;gap:6px}
+.fsm .node{flex:1 1 30%;text-align:center;border:1px solid var(--line);border-radius:8px;padding:8px 4px;font-size:12px;background:#fffdf8;color:var(--muted);transition:.18s ease}
+.fsm .node.active{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:700;box-shadow:0 3px 10px rgba(184,117,46,.3)}
+.auth{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px}
+.auth .a{text-align:center;border:1px solid var(--line);border-radius:8px;padding:6px 2px;font-size:11px;background:#fffdf8;color:var(--muted)}
+.auth .a.on{background:rgba(36,124,85,.14);border-color:var(--good);color:#185c3e;font-weight:700}
+.trace-row{padding:6px 0;border-bottom:1px solid rgba(223,210,194,.6)}
+.trace-row:last-child{border-bottom:none}
+.tg{color:var(--blue);font-weight:700}.tc{color:var(--accent)}
+@media(max-width:1040px){.app{grid-template-columns:1fr}.video-wrap{min-height:320px}.side{order:2}}
 </style>
 </head>
 <body>
 <main class="app">
   <section class="panel video-panel">
     <div class="topbar">
-      <div><div class="title">reCamera 实时视频与分析</div><div class="sub">MJPEG /video_feed + WebSocket /ws</div></div>
+      <div><div class="title">reCamera 控制台 · 实时视频 + 决策可观测</div><div class="sub">MJPEG /video_feed · WebSocket /ws · 观测来自 core.orchestrator 镜像</div></div>
       <span class="pill"><span class="dot" id="wsDot"></span><span id="wsText">连接中</span></span>
     </div>
     <div class="video-wrap" id="videoWrap">
@@ -46,63 +55,74 @@ button:hover{border-color:var(--accent)}button.active{background:rgba(184,117,46
 
   <aside class="side">
     <section class="panel card">
-      <h2>对准通路</h2>
-      <div class="mode-row">
-        <button id="singleBtn" onclick="startSingleTrack()">单人追踪<br><span class="small">人脸锁定 + 情绪/专注</span></button>
-        <button id="multiBtn" onclick="setMode('multi')">多人 DOA 跟随<br><span class="small">ReSpeaker yaw-only</span></button>
+      <h2>FSM 状态机 <span class="ro" id="observeBadge">OBSERVE</span></h2>
+      <div class="fsm" id="fsm">
+        <div class="node" data-s="IDLE">IDLE</div>
+        <div class="node" data-s="AUDIO_SEARCH">AUDIO_SEARCH</div>
+        <div class="node" data-s="VISION_TRACK">VISION_TRACK</div>
+        <div class="node" data-s="FUSED_TRACK">FUSED_TRACK</div>
+        <div class="node" data-s="LOST">LOST</div>
       </div>
-      <div class="actions">
-        <button class="primary" onclick="startSingleTrack()">启动单人追踪</button>
-        <button class="secondary" onclick="startMultiAlign()">启动声源对准</button>
-        <button onclick="stopSingleTrack()">停止单人追踪</button>
-        <button onclick="post('/api/gimbal/standby')">回待机位</button>
+      <div class="label" style="margin-top:10px">控制权 (Control authority)</div>
+      <div class="auth" id="auth">
+        <div class="a" data-a="audio">AUDIO</div>
+        <div class="a" data-a="vision">VISION</div>
+        <div class="a" data-a="fusion">FUSION</div>
+        <div class="a" data-a="idle">IDLE</div>
       </div>
+      <div class="notice" style="margin-top:10px">本页只读：实际云台控制由 <span class="mono">core.orchestrator → RecameraClient</span> 在控制进程执行。此处 FSM/命令为观测镜像，不下发任何指令。</div>
     </section>
 
     <section class="panel card">
-      <h2>云台状态</h2>
-      <div class="grid">
-        <div class="metric"><div class="label">Yaw 目标</div><div class="value" id="yawVal">--</div></div>
-        <div class="metric"><div class="label">Pitch 目标</div><div class="value" id="pitchVal">--</div></div>
-      </div>
-      <div class="status"><span>云台连接</span><span id="gimbalConn">--</span></div>
-      <div class="status"><span>人脸锁定</span><span id="faceLock">--</span></div>
-      <div class="status"><span>人体/人脸数量</span><span id="poseCount">--</span></div>
+      <h2>决策链 · event → FSM → command</h2>
+      <div class="status"><span>最近事件</span><span id="lastEvent" class="mono">--</span></div>
+      <div class="status"><span>当前命令</span><span id="lastCmd" class="mono">--</span></div>
+      <div class="status"><span>安全门</span><span id="safety">--</span></div>
+      <div class="log mono" id="trace"></div>
     </section>
 
-    <section class="panel card" id="singleDataCard">
-      <h2>单人分析数据</h2>
+    <section class="panel card">
+      <h2>云台遥测 <span class="small" style="text-transform:none">hardware readback</span></h2>
+      <div class="grid3">
+        <div class="metric"><div class="label">Yaw</div><div class="value" id="yawVal">--</div></div>
+        <div class="metric"><div class="label">Pitch</div><div class="value" id="pitchVal">--</div></div>
+        <div class="metric"><div class="label">Speed</div><div class="value" id="speedVal">--</div></div>
+      </div>
+      <div class="status"><span>云台连接</span><span id="gimbalConn">--</span></div>
+      <div class="status"><span>硬件模式</span><span id="gimbalMode">--</span></div>
+    </section>
+
+    <section class="panel card">
+      <h2>感知通道 · audio / vision / fusion</h2>
+      <div class="grid">
+        <div class="metric"><div class="label">DOA 方向</div><div class="value" id="doaVal">--</div></div>
+        <div class="metric"><div class="label">人体/人脸</div><div class="value" id="poseCount">--</div></div>
+      </div>
+      <div class="status"><span>ReSpeaker DOA</span><span id="doaReady">--</span></div>
+      <div class="status"><span>检测人声</span><span id="speechVal">--</span></div>
+      <div class="status"><span>视觉丢帧</span><span id="lostFrames">--</span></div>
+    </section>
+
+    <section class="panel card">
+      <h2>单人分析 · 专注 / 情绪</h2>
       <div class="grid">
         <div class="metric"><div class="label">专注度</div><div class="value" id="attnVal">--</div></div>
         <div class="metric"><div class="label">情绪</div><div class="value" id="emoVal">--</div></div>
       </div>
       <div class="status"><span>面部有效</span><span id="faceValid">--</span></div>
-      <div class="status"><span>专注状态</span><span id="attnState">--</span></div>
       <div class="status"><span>情绪置信度</span><span id="emoConf">--</span></div>
-      <div class="status"><span>追踪来源</span><span id="trackSrc">--</span></div>
+      <div class="status"><span>眨眼率 / PERCLOS</span><span id="eyeVal">--</span></div>
     </section>
 
-    <section class="panel card hidden" id="multiDataCard">
-      <h2>多人 DOA 数据</h2>
-      <div class="grid">
-        <div class="metric"><div class="label">DOA</div><div class="value" id="doaVal">--</div></div>
-        <div class="metric"><div class="label">声源 Yaw</div><div class="value" id="soundYawVal">--</div></div>
+    <section class="panel card">
+      <h2>系统健康</h2>
+      <div class="grid3">
+        <div class="metric"><div class="label">视频 FPS</div><div class="value" id="fpsVal">--</div></div>
+        <div class="metric"><div class="label">DOA 延迟</div><div class="value" id="doaAge">--</div></div>
+        <div class="metric"><div class="label">云台 RTT</div><div class="value" id="rttVal">--</div></div>
       </div>
-      <div class="status"><span>ReSpeaker</span><span id="doaReady">--</span></div>
-      <div class="status"><span>检测人声</span><span id="speechVal">--</span></div>
-      <div class="status"><span>当前语音段</span><span id="segmentVal">--</span></div>
-      <div class="actions">
-        <button class="primary" onclick="startConversation()">开始 DOA 跟随</button>
-        <button onclick="stopConversation()">停止 DOA 跟随</button>
-        <button class="secondary" onclick="saveConversation()">保存状态快照</button>
-      </div>
-      <div class="notice">多人 DOA 跟随会放弃人脸追踪，只根据 ReSpeaker 声源方向转动 yaw，pitch 保持不动；默认不保存音频。</div>
-    </section>
-
-    <section class="panel card hidden" id="conversationCard">
-      <h2>多人对话时间线</h2>
-      <div class="status"><span>Session</span><span id="sessionVal" class="mono">--</span></div>
-      <div class="log" id="conversationTimeline"></div>
+      <div class="status"><span>WebSocket 客户端</span><span id="wsClients">--</span></div>
+      <div class="status"><span>对话录音</span><span id="convState">--</span></div>
     </section>
 
     <section class="panel card">
@@ -113,83 +133,89 @@ button:hover{border-color:var(--accent)}button.active{background:rgba(184,117,46
 </main>
 
 <script>
-let state=null,mode='single',smoothAttn=0,smoothConf=0,lastLog='',ws=null,wsRetry=null,lastWsAt=0;
+let state=null,smoothAttn=0,smoothConf=0,lastLog='',ws=null,wsRetry=null,lastWsAt=0;
 const $=id=>document.getElementById(id);
 function log(msg){const line=`${new Date().toLocaleTimeString()} ${msg}`;if(line===lastLog)return;lastLog=line;const el=$('log');el.innerHTML=line+'<br>'+el.innerHTML.slice(0,3500)}
 function ema(cur,target,a){if(!Number.isFinite(cur)||cur===0)return target;return cur+(target-cur)*a}
-function normalizeState(payload){if(!payload)return null;if(payload.type==='state_snapshot'&&payload.data)return payload.data;if(payload.data&&payload.data.gimbal)return payload.data;if(payload.gimbal||payload.video||payload.pose)return payload;return null}
+function normalizeState(p){if(!p)return null;if(p.type==='state_snapshot'&&p.data)return p.data;if(p.data&&p.data.gimbal)return p.data;if(p.gimbal||p.video||p.control)return p;return null}
 function setConn(kind,text){$('wsDot').className='dot '+(kind==='on'?'on':kind==='warn'?'warn':'');$('wsText').textContent=text}
-async function post(url,payload){
-  try{
-    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:payload?JSON.stringify(payload):undefined});
-    const d=await r.json().catch(()=>({}));
-    log(`${url} ${r.ok?'OK':'ERR'} ${JSON.stringify(d).slice(0,140)}`);
-    return d;
-  }catch(e){log(`${url} ERR ${e.message}`);return null}
-}
-async function setMode(next){mode=next==='multi'?'multi':'single';renderMode();await post('/api/tracking_mode',{mode})}
-async function startSingleTrack(){mode='single';renderMode();await post('/api/single_track/start',{speed:360})}
-async function stopSingleTrack(){await post('/api/single_track/stop')}
-async function startMultiAlign(){await setMode('multi');await post('/api/sound_track/start')}
-async function startConversation(){mode='multi';renderMode();await post('/api/multi_track/start',{save_audio:false})}
-async function stopConversation(){await post('/api/multi_track/stop',{finalize:true})}
-async function saveConversation(){await post('/api/conversation/save',{})}
-function renderMode(){
-  $('singleBtn').classList.toggle('active',mode==='single');
-  $('multiBtn').classList.toggle('active',mode==='multi');
-  $('singleDataCard').classList.toggle('hidden',mode==='multi');
-  $('multiDataCard').classList.toggle('hidden',mode!=='multi');
-  $('conversationCard').classList.toggle('hidden',mode!=='multi');
-}
+function fmtTime(sec){sec=Math.max(0,Number(sec)||0);const m=Math.floor(sec/60),s=Math.floor(sec%60);return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`}
+function num(v,suffix='',d=0){return v==null||!Number.isFinite(Number(v))?'--':(d?Number(v).toFixed(d):Math.round(Number(v)))+suffix}
+
 function renderState(s){
   if(!s)return;
-  if(s.tracking_mode){mode=s.tracking_mode;renderMode()}
-  const g=s.gimbal||{},pose=s.pose||{},att=s.attention||{},emo=s.emotieff||s.emotion||{},doa=s.doa||{},follow=s.sound_follow||{},td=s.tracking_debug||{},conv=s.conversation||{};
+  const g=s.gimbal||{},pose=s.pose||{},att=s.attention||{},emo=s.emotieff||s.emotion||{},doa=s.doa||{},
+        ctrl=s.control||{},health=s.health||{},conv=s.conversation||{},eye=s.eye_metrics||{};
   setConn(ws&&ws.readyState===WebSocket.OPEN?'on':'warn',ws&&ws.readyState===WebSocket.OPEN?'WebSocket: Connected':'HTTP polling');
-  $('yawVal').textContent=g.yaw_target!=null?Math.round(g.yaw_target)+'°':'--';
-  $('pitchVal').textContent=g.pitch_target!=null?Math.round(g.pitch_target)+'°':'--';
-  $('gimbalConn').textContent=g.connected?'已连接':(g.dry_run?'DRY-RUN':'未连接')+' / sio='+(g.sio_connected?'true':'false');
-  $('faceLock').textContent=s.face_lock&&s.face_lock.locked?'LOCKED':'--';
+
+  // FSM + authority
+  const st=ctrl.fsm_state||'IDLE';
+  document.querySelectorAll('#fsm .node').forEach(n=>n.classList.toggle('active',n.dataset.s===st));
+  const auth=ctrl.authority||'idle';
+  document.querySelectorAll('#auth .a').forEach(a=>a.classList.toggle('on',a.dataset.a===auth));
+  $('observeBadge').textContent=ctrl.observe_only?'OBSERVE · READ-ONLY':'LIVE';
+
+  // decision chain
+  const ev=ctrl.last_event,cmd=ctrl.command,saf=ctrl.safety||{};
+  $('lastEvent').textContent=ev?`${ev.type}/${ev.name} ←${ev.source}`:'--';
+  $('lastCmd').textContent=cmd?`${cmd.reason||'?'}${cmd.yaw!=null?' yaw='+Math.round(cmd.yaw):''}${cmd.pitch!=null?' pitch='+Math.round(cmd.pitch):''}${cmd.stop?' STOP':''}`:'hold';
+  $('safety').textContent=(saf.ok?'PASS':'BLOCK')+(saf.reason?' · '+saf.reason:'');
+  renderTrace(s.trace||[]);
+
+  // gimbal telemetry
+  $('yawVal').textContent=num(g.yaw,'°');
+  $('pitchVal').textContent=num(g.pitch,'°');
+  $('speedVal').textContent=g.speed!=null?Math.round(g.speed):'--';
+  $('gimbalConn').textContent=g.connected?'已连接':'未连接 / DRY-RUN';
+  $('gimbalMode').textContent=g.mode||'--';
+
+  // channels
+  $('doaVal').textContent=doa.doa_deg!=null?Math.round(doa.doa_deg)+'°':'--';
   $('poseCount').textContent=(pose.count||0)+' / '+((s.video&&s.video.detections)||[]).length;
+  $('doaReady').textContent=doa.available?'已连接 ('+(doa.source||'?')+')':'未连接';
+  $('speechVal').textContent=doa.has_speech?'有':'无';
+  $('lostFrames').textContent=ctrl.vision_lost_frames!=null?ctrl.vision_lost_frames:'--';
+
+  // single-person analysis
   const targetAttn=att.has_face&&att.score!=null?Number(att.score):0;
   smoothAttn=ema(smoothAttn,targetAttn,att.has_face?0.35:0.18);
   $('attnVal').textContent=att.has_face?Math.round(smoothAttn):'--';
-  $('faceValid').textContent=att.has_face?'是':'否';
-  $('attnState').textContent=att.state||'--';
   const emoName=emo.emotion||'--',conf=Number(emo.confidence||0);
   smoothConf=ema(smoothConf,conf,.28);
   $('emoVal').textContent=emoName;
+  $('faceValid').textContent=att.has_face?'是':'否';
   $('emoConf').textContent=conf?Math.round(smoothConf*100)+'%':'--';
-  $('trackSrc').textContent=td.track_source||td.face_capture?.state||'--';
-  const doaDeg=follow.doa_deg!=null?follow.doa_deg:doa.doa_deg;
-  $('doaVal').textContent=doaDeg!=null?Math.round(doaDeg)+'°':'--';
-  $('soundYawVal').textContent=follow.target_yaw!=null?Math.round(follow.target_yaw)+'°':(g.yaw_target!=null?Math.round(g.yaw_target)+'°':'--');
-  $('doaReady').textContent=(doa.available||follow.active)?'已连接':'未连接';
-  $('speechVal').textContent=(follow.has_speech||doa.has_speech)?'有':'无';
-  renderConversation(conv);
+  $('eyeVal').textContent=eye.blink_rate!=null?`${num(eye.blink_rate,'',0)} / ${num(eye.perclos,'',2)}`:'--';
+
+  // health
+  $('fpsVal').textContent=num(health.video_fps,'',1);
+  $('doaAge').textContent=health.doa_age!=null?num(health.doa_age,'s',2):'--';
+  $('rttVal').textContent=health.gimbal_latency_ms!=null?num(health.gimbal_latency_ms,'ms',0):'--';
+  $('wsClients').textContent=health.ws_clients!=null?health.ws_clients:'--';
+  $('convState').textContent=conv.recording?('录音中 '+(conv.current?.elapsed||0)+'s'):(conv.active_state||'未记录');
+
   drawOverlay(s);
 }
-function renderConversation(conv){
-  const cur=conv.current||{},items=conv.timeline||[];
-  $('segmentVal').textContent=cur.has_speech?`录音中 ${cur.elapsed||0}s`:(conv.recording?'监听中':'未记录');
-  $('sessionVal').textContent=conv.session_id||'--';
+function renderTrace(items){
   const html=items.slice().reverse().map(t=>{
-    const text=t.text&&t.text.trim()?t.text:'（音频片段已保存，等待转写）';
-    return `<div style="padding:7px 0;border-bottom:1px solid #dfd2c2"><div class="mono" style="font-size:11px;color:#796f63">${fmtTime(t.start)}-${fmtTime(t.end)} · ${t.speaker||'SPEAKER'} · ${t.speaker_hint||''} · ${t.status||''}</div><div style="font-size:13px;color:#2d2a26;margin-top:3px">${escapeHtml(text)}</div></div>`;
+    const ev=t.event?`${t.event.type}/${t.event.name}`:'·';
+    const cmd=t.command?(t.command.reason||'cmd'):'hold';
+    const arrow=t.transition?`<span class="tg">${t.from}→${t.state}</span>`:t.state;
+    return `<div class="trace-row">${fmtClock(t.t)} ${ev} → ${arrow} → <span class="tc">${cmd}</span></div>`;
   }).join('');
-  $('conversationTimeline').innerHTML=html||'<span class="small">还没有语音片段。开始说话后会自动生成时间线。</span>';
+  $('trace').innerHTML=html||'<span class="small">暂无决策记录</span>';
 }
-function fmtTime(sec){sec=Math.max(0,Number(sec)||0);const m=Math.floor(sec/60),s=Math.floor(sec%60);return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`}
-function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function fmtClock(t){const d=new Date((t||0)*1000);return d.toLocaleTimeString();}
+
 function drawOverlay(s){
   const img=$('videoStream'),canvas=$('overlay'),wrap=$('videoWrap'),ctx=canvas.getContext('2d');
   const w=wrap.clientWidth,h=wrap.clientHeight;
   if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}
   ctx.clearRect(0,0,w,h);
-  const video=s.video||{},pose=s.pose||{},resScale=getImageDrawRect(img,w,h);
+  const video=s.video||{},pose=s.pose||{},rs=getImageDrawRect(img,w,h);
   ctx.lineWidth=2;ctx.font='12px sans-serif';
-  (video.detections||[]).forEach(d=>{const x=resScale.x+d.x*resScale.sx,y=resScale.y+d.y*resScale.sy,bw=d.w*resScale.sx,bh=d.h*resScale.sy;ctx.strokeStyle='#2d5f8f';ctx.strokeRect(x,y,bw,bh);ctx.fillStyle='#2d5f8f';ctx.fillText(`${d.class_name||'obj'} ${Math.round((d.confidence||0)*100)}%`,x+4,Math.max(14,y-4))});
-  (pose.persons||[]).forEach(p=>{if(p.face_center){ctx.fillStyle='#b8752e';ctx.beginPath();ctx.arc(resScale.x+p.face_center[0]*resScale.sx,resScale.y+p.face_center[1]*resScale.sy,5,0,Math.PI*2);ctx.fill()}(p.keypoints||[]).forEach(k=>{if(k.conf<.45)return;ctx.fillStyle='#247c55';ctx.beginPath();ctx.arc(resScale.x+k.x*resScale.sx,resScale.y+k.y*resScale.sy,3,0,Math.PI*2);ctx.fill()})});
+  (video.detections||[]).forEach(d=>{const x=rs.x+d.x*rs.sx,y=rs.y+d.y*rs.sy,bw=d.w*rs.sx,bh=d.h*rs.sy;ctx.strokeStyle='#2d5f8f';ctx.strokeRect(x,y,bw,bh);ctx.fillStyle='#2d5f8f';ctx.fillText(`${d.class_name||'obj'} ${Math.round((d.confidence||0)*100)}%`,x+4,Math.max(14,y-4))});
+  (pose.persons||[]).forEach(p=>{if(p.face_center){ctx.fillStyle='#b8752e';ctx.beginPath();ctx.arc(rs.x+p.face_center[0]*rs.sx,rs.y+p.face_center[1]*rs.sy,5,0,Math.PI*2);ctx.fill()}(p.keypoints||[]).forEach(k=>{if(k.conf<.45)return;ctx.fillStyle='#247c55';ctx.beginPath();ctx.arc(rs.x+k.x*rs.sx,rs.y+k.y*rs.sy,3,0,Math.PI*2);ctx.fill()})});
 }
 function getImageDrawRect(img,w,h){
   const video=(state&&state.video)||{};
@@ -208,7 +234,7 @@ function connectWS(){
     ws.onopen=()=>{lastWsAt=Date.now();setConn('on','WebSocket: Connected');log(`WS connected ${url}`);try{ws.send('request_state')}catch(e){}};
     ws.onmessage=ev=>{lastWsAt=Date.now();try{const s=normalizeState(JSON.parse(ev.data));if(s){state=s;renderState(state)}}catch(e){log(`WS parse ERR ${e.message}`)}};
     ws.onerror=()=>setConn('warn','WebSocket: Error');
-    ws.onclose=()=>{setConn('warn','WebSocket: Disconnected');log('WS disconnected, fallback to /api/state polling');wsRetry=setTimeout(connectWS,1500)};
+    ws.onclose=()=>{setConn('warn','WebSocket: Disconnected');log('WS disconnected → /api/state polling');wsRetry=setTimeout(connectWS,1500)};
   }catch(e){setConn('warn','WebSocket: Failed');wsRetry=setTimeout(connectWS,1500)}
 }
 async function poll(){
@@ -218,7 +244,7 @@ async function poll(){
 const videoEl=$('videoStream');
 videoEl.src=`${location.origin}/video_feed?t=${Date.now()}`;
 videoEl.onerror=()=>{log('video_feed failed; retrying');setTimeout(()=>{videoEl.src=`${location.origin}/video_feed?t=${Date.now()}`},1200)};
-renderMode();connectWS();poll();setInterval(poll,350);addEventListener('resize',()=>state&&drawOverlay(state));
+connectWS();poll();setInterval(poll,350);addEventListener('resize',()=>state&&drawOverlay(state));
 </script>
 </body>
 </html>

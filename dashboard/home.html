@@ -410,7 +410,9 @@
     let stepsNow = Number(localStorage.getItem("xinyu_steps_now") || 4260);
     let calDate = new Date();
     let selectedDayKey = "";
-    const isFilePreview = location.protocol === "file:";
+    // DEMO / APP PAGE — mock data only. No real camera, no control path, no hardware.
+    // All POST/fetch calls are short-circuited via isFilePreview below.
+    const isFilePreview = true;
     const defaultState = {
       video:{connected:true},
       gimbal:{connected:true,dry_run:true},
@@ -420,6 +422,23 @@
       pose:{count:1},
       tracking_mode:"single"
     };
+    // Animated mock state so the demo showcases features without any backend.
+    const MOCK_EMOTIONS = ["Neutral","Happiness","Surprise","Sadness","Calm"];
+    function mockState(){
+      const t = Date.now()/1000;
+      const emo = MOCK_EMOTIONS[Math.floor(t/6) % MOCK_EMOTIONS.length];
+      const score = Math.round(70 + 20*Math.sin(t/5));
+      return {
+        video:{connected:true},
+        gimbal:{connected:true,dry_run:true,yaw:Math.round(180+30*Math.sin(t/7)),pitch:90,mode:"demo"},
+        emotion:{emotion:emo, confidence:0.7 + 0.2*Math.abs(Math.sin(t/3))},
+        attention:{has_face:true, score},
+        face_lock:{locked:true},
+        pose:{count:1},
+        doa:{available:true, doa_deg:Math.round(180+60*Math.sin(t/9)), has_speech:(Math.floor(t/4)%2===0)},
+        tracking_mode:trackingMode
+      };
+    }
     const emotionMap = {
       Anger:["愤怒","先别急着压住它，慢慢看清楚。"],
       Contempt:["轻蔑","保持距离，有时候也是边界。"],
@@ -696,7 +715,7 @@
     }
     async function refreshState(){
       if(isFilePreview){
-        renderState(defaultState, true);
+        renderState(mockState(), true);
         return;
       }
       try{
