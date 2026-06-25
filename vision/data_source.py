@@ -15,7 +15,7 @@ Supports:
     - Real mode:   uses vision.Detector (SSCMA YOLO on reCamera)
 """
 
-from typing import List, Optional
+from typing import List, Optional  # noqa: F401
 
 from core.event import BBox
 from utils.logger import get_logger
@@ -86,26 +86,49 @@ class MockVisionSource(VisionDataSource):
 
 class RealVisionSource(VisionDataSource):
     """
-    Real data source wrapping vision.Detector.
+    Real data source backed by SSCMA WebSocket (VideoStream).
 
-    Requires reCamera hardware with SSCMA YOLO model loaded.
-    Currently STUB — will be filled in when hardware is available.
+    Connects to reCamera ws://<ip>:8090/ and parses detection boxes.
+    Also exposes get_jpeg_bytes() for face detection downstream.
     """
 
-    def __init__(self, detector=None) -> None:
-        self._detector = detector
+    def __init__(self, sscma_url: str = "ws://192.168.106.85:8090/",
+                 conf_thresh: float = 0.10) -> None:
+        from vision.video_stream import VideoStream
+        self._stream = VideoStream(url=sscma_url)
+        self._stream.start()
+        self._conf_thresh = conf_thresh
         self._frame_count: int = 0
-        logger.info("Vision source: REAL (detector mode) — STUB")
+        logger.info("Vision source: REAL (SSCMA @ %s)", sscma_url)
 
     def get_bboxes(self) -> List[BBox]:
         self._frame_count += 1
-        if self._detector is None:
-            return []
+        bboxes: List[BBox] = []
+        for box in self._stream.boxes:
+            if len(box) < 5:
+                continue
+            conf = float(box[4])
+            conf = conf / 100.0 if conf > 1.0 else conf
+            if conf < self._conf_thresh:
+                continue
+            bboxes.append(BBox(
+                x1=int(box[0]), y1=int(box[1]),
+                x2=int(box[2]), y2=int(box[3]),
+                class_name="person",
+                confidence=conf,
+            ))
+        return bboxes
 
-        # TODO: capture frame from camera, then:
-        # frame = camera.read()
-        # return self._detector.detect(frame)
-        return []
+    def get_jpeg_bytes(self) -> Optional[bytes]:
+        """Latest JPEG frame as raw bytes (for FaceTrackerV2)."""
+        import base64
+        b64 = self._stream.frame_b64
+        if not b64:
+            return None
+        try:
+            return base64.b64decode(b64)
+        except Exception:
+            return None
 
     @property
     def is_mock(self) -> bool:
@@ -125,21 +148,18 @@ class RealVisionSource(VisionDataSource):
 
 def create_vision_source(
     use_mock: bool = True,
-    detector=None,
+    sscma_url: str = "ws://192.168.106.85:8090/",
     **mock_kwargs,
 ) -> VisionDataSource:
     """
     Create the appropriate vision data source.
 
     Args:
-        use_mock:    If True, use MockVisionSource. If False, use RealVisionSource.
-        detector:    Detector instance (required if use_mock=False).
-        mock_kwargs: Passed to MockDataGenerator (e.g., frames_enter, jitter_range).
-
-    Returns:
-        VisionDataSource instance.
+        use_mock:   If True, use MockVisionSource (no hardware needed).
+                    If False, connect to SSCMA WebSocket for real detections.
+        sscma_url:  SSCMA WebSocket URL (only used when use_mock=False).
+        mock_kwargs: Passed to MockDataGenerator.
     """
     if use_mock:
         return MockVisionSource(**mock_kwargs)
-    else:
-        return RealVisionSource(detector=detector)
+    return RealVisionSource(sscma_url=sscma_url)

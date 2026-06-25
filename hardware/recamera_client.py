@@ -12,7 +12,7 @@ Key design:
   - Simulates responses when API not available (for testing)
 
 Usage:
-    client = RecameraClient(base_url="http://192.168.201.84")
+    client = RecameraClient(base_url="http://192.168.106.85")
     if client.connect():
         client.send_delta(pan=1.5, tilt=-0.8)  # relative movement
         client.send_absolute(pan=90, tilt=45)   # absolute position
@@ -31,7 +31,7 @@ logger = get_logger(__name__)
 
 # ══════════════════════════════════════════════════════════════->#  Constants
 # ══════════════════════════════════════════════════════════════->
-DEFAULT_BASE_URL = "http://192.168.201.84"
+DEFAULT_BASE_URL = "http://192.168.106.85"
 DEFAULT_TIMEOUT_MS = 200
 DEFAULT_RETRY = 3
 

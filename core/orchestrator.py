@@ -53,6 +53,21 @@ class Orchestrator:
         self._vision_lost_frames = 0
         self._frame_count = 0
 
+        # Tilt search (Stage 2): pitch up/down to find face when person visible
+        self._tilt_dir: int = -1                  # -1=tilt up (decrease pitch), +1=tilt down
+        self._tilt_step: float = 1.0              # °/frame = 5°/s @ 5Hz
+        self._tilt_conf_history: list = []        # last 5 frames confidence
+        self._tilt_reverse_count: int = 0         # consecutive "confidence dropping" frames
+
+        # Sweep scan (Stage 3): pan when no target is visible
+        self._sweep_idle_frames: int = 0          # consecutive frames with no target
+        self._sweep_start_delay: int = 30         # frames before sweep begins (~3s @ 10fps)
+        self._sweep_yaw: float = float(center_yaw)
+        self._sweep_step: float = 1.5             # °/frame = 7.5°/s @ 5Hz command rate
+        self._sweep_dir: int = 1                  # +1 = right, -1 = left
+        self._sweep_min: float = float(center_yaw) - 50.0
+        self._sweep_max: float = float(center_yaw) + 50.0
+
     @property
     def state(self) -> SystemState:
         return self.fsm.state
@@ -78,20 +93,36 @@ class Orchestrator:
         if bboxes:
             primary = bboxes[0]
             self._vision_lost_frames = 0
+            self._sweep_idle_frames = 0
+            self._sweep_yaw = self.target.yaw_target  # anchor sweep to current position
             event = Event.make(
-                "vision",
-                "target_detected",
-                source,
+                "vision", "target_detected", source,
                 {
                     "cx": primary.center_x / self.frame_width,
                     "cy": primary.center_y / self.frame_height,
                     "conf": primary.confidence,
                 },
             )
+            has_face = primary.class_name == "face"
+            if has_face:
+                # Stage 1: face visible — normal proportional tracking
+                self._reset_tilt_search()
+                return self.handle(event)
+            else:
+                # Stage 2: person visible but no face — tilt to search
+                # Still update FSM (stays VISION_TRACK) but override motion command
+                base_cmd = self.handle(event)
+                if self.fsm.state in (SystemState.AUDIO_SEARCH, SystemState.FUSED_TRACK):
+                    return base_cmd  # audio is driving, let fusion handle
+                return self._tilt_search(primary.confidence)
         else:
             self._vision_lost_frames += 1
             event = Event.make("vision", "target_lost", source, {"conf": 0.0})
-        return self.handle(event)
+            base_cmd = self.handle(event)
+            # Stage 3: no person — pan sweep (unless audio is driving)
+            if self.fsm.state in (SystemState.AUDIO_SEARCH, SystemState.FUSED_TRACK):
+                return base_cmd
+            return self._sweep_scan() or base_cmd
 
     @property
     def vision_lost_frames(self) -> int:
@@ -177,6 +208,69 @@ class Orchestrator:
         if abs(delta) > self.audio_max_step:
             target = self.target.yaw_target + (self.audio_max_step if delta > 0 else -self.audio_max_step)
         return self._clamp(target, 1.0, 345.0)
+
+    def _tilt_search(self, current_conf: float) -> Optional[ControlCommand]:
+        """Stage 2: person visible, tilt up/down to find face."""
+        self._tilt_conf_history.append(current_conf)
+        if len(self._tilt_conf_history) > 5:
+            self._tilt_conf_history.pop(0)
+
+        # Reverse direction if confidence has been dropping for 3 consecutive frames
+        if len(self._tilt_conf_history) >= 5:
+            recent_avg = sum(self._tilt_conf_history[-3:]) / 3
+            baseline_avg = sum(self._tilt_conf_history[:2]) / 2
+            if recent_avg < baseline_avg - 0.02:
+                self._tilt_reverse_count += 1
+            else:
+                self._tilt_reverse_count = 0
+            if self._tilt_reverse_count >= 3:
+                self._tilt_dir *= -1
+                self._tilt_reverse_count = 0
+                self._tilt_conf_history.clear()
+
+        new_pitch = self._clamp(
+            self.target.pitch_target + self._tilt_step * self._tilt_dir,
+            30.0, 150.0,
+        )
+        self.target.pitch_target = new_pitch
+        return ControlCommand.make(
+            "orchestrator",
+            yaw=self.target.yaw_target,
+            pitch=new_pitch,
+            reason="tilt_search",
+        )
+
+    def _reset_tilt_search(self) -> None:
+        """Reset Stage 2 state when face is found."""
+        self._tilt_dir = -1  # default: tilt up next time
+        self._tilt_conf_history = []
+        self._tilt_reverse_count = 0
+
+    def _sweep_scan(self) -> Optional[ControlCommand]:
+        """Stage 3: pan left-right when no target is visible."""
+        self._sweep_idle_frames += 1
+        if self._sweep_idle_frames < self._sweep_start_delay:
+            # Still in grace period — hold center before starting
+            return ControlCommand.make(
+                "orchestrator",
+                yaw=self.center_yaw,
+                pitch=self.center_pitch,
+                reason="return_center",
+            )
+        # Advance sweep position
+        self._sweep_yaw += self._sweep_step * self._sweep_dir
+        if self._sweep_yaw >= self._sweep_max:
+            self._sweep_yaw = self._sweep_max
+            self._sweep_dir = -1
+        elif self._sweep_yaw <= self._sweep_min:
+            self._sweep_yaw = self._sweep_min
+            self._sweep_dir = 1
+        return ControlCommand.make(
+            "orchestrator",
+            yaw=self._clamp(self._sweep_yaw, 1.0, 345.0),
+            pitch=self.center_pitch,
+            reason="idle_scan",
+        )
 
     @staticmethod
     def _clamp(value: float, low: float, high: float) -> float:

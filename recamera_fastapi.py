@@ -1,15 +1,15 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 reCamera Multimodal ->Main Dashboard (FastAPI)
 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
 Architecture:
-  Device (192.168.201.84)                This Server (0.0.0.0:8001)
+  Device (192.168.106.85)                This Server (0.0.0.0:8001)
   鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->             鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->  ->SSCMA Node :8090    鈹傗攢鈹€WebSocket鈹€鈹€鈫掆攤 /video_feed  (MJPEG)     ->  ->Node-RED  :1880     鈹傗啇鈹€Socket.IO鈹€鈹€鈹€->/api/gimbal/* (control)  ->  ->                    ->             ->/ws          (state push) ->  ->                    ->             ->/home        (蹇冨笨)       ->  ->                    ->             ->/v2          (鎺у埗->     ->  鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->             鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->
 Usage:
     python recamera_fastapi.py                                      # safe dry-run
-    python recamera_fastapi.py --device-ip 192.168.201.84           # real device
-    python recamera_fastapi.py --device-ip 192.168.201.84 --no-dry-run  # real control
+    python recamera_fastapi.py --device-ip 192.168.106.85           # real device
+    python recamera_fastapi.py --device-ip 192.168.106.85 --no-dry-run  # real control
 
 Other entry points (secondary):
     main_phase3.py       ->Phase 3 control pipeline (AI tracking + gimbal)
@@ -30,7 +30,6 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -42,54 +41,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from core.event import ControlCommand
+from core.event import BBox, Event
+from core.fsm import SystemState
+from core.orchestrator import Orchestrator
+from core.safety_layer import SafetyLayer
+from hardware.recamera_client import RecameraClient
 from utils.logger import get_logger, setup_root_logger
 
 logger = get_logger(__name__)
 
 
-class GimbalMode(str, Enum):
-    AI_TRACK = "ai_track"
-    MANUAL = "manual"
-    SLEEP = "sleep"
-    STANDBY = "standby"
-    EMERGENCY_STOP = "ui_emergency_disabled"
-
-
-class ControlModeState:
-    """UI mode holder only."""
-
-    def __init__(self) -> None:
-        self._mode = GimbalMode.AI_TRACK
-        self._manual_control = (0.0, 0.0)
-
-    @property
-    def mode(self) -> GimbalMode:
-        return self._mode
-
-    @property
-    def mode_name(self) -> str:
-        return self._mode.value
-
-    @property
-    def is_emergency(self) -> bool:
-        return self._mode == GimbalMode.EMERGENCY_STOP
-
-    def set_mode(self, mode) -> bool:
-        self._mode = mode if isinstance(mode, GimbalMode) else GimbalMode(str(mode))
-        return True
-
-    def trigger_ui_emergency_disabled(self) -> bool:
-        return self.set_mode(GimbalMode.EMERGENCY_STOP)
-
-    def set_manual_control(self, yaw_delta: float, pitch_delta: float) -> None:
-        self._manual_control = (float(yaw_delta), float(pitch_delta))
-
-    def get_manual_control(self) -> tuple[float, float]:
-        return self._manual_control
-
-
-gimbal_state = ControlModeState()
+# NOTE: All gimbal control (GimbalMode / ControlModeState FSM, manual-control
+# state mirror) has been removed. FastAPI is display-only; the single control
+# plane lives in core/orchestrator.py -> hardware/recamera_client.py.
 
 
 def _bypass_proxy_for_device(device_ip: str) -> None:
@@ -113,7 +77,7 @@ HTML_FILE = DASHBOARD_DIR / "recamera_v2_live.html"
 
 @dataclass
 class Config:
-    device_ip: str = "192.168.201.84"
+    device_ip: str = "192.168.106.85"
     host: str = "0.0.0.0"
     port: int = 8001
     dry_run: bool = True
@@ -129,7 +93,7 @@ class SSCMAVideoClient:
     Runs in a background thread.
     """
 
-    def __init__(self, device_ip: str = "192.168.201.84"):
+    def __init__(self, device_ip: str = "192.168.106.85"):
         self._device_ip = device_ip
         self.url = f"ws://{device_ip}:8090/"
         self._running = False
@@ -263,321 +227,10 @@ class SSCMAVideoClient:
             pass
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  Gimbal Controller (Socket.IO to Node-RED Dashboard)
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
-@dataclass
-class GimbalStateData:
-    connected: bool = False
-    yaw_angle: float = 180.0
-    yaw_target: float = 180.0
-    pitch_angle: float = 90.0
-    pitch_target: float = 90.0
-    speed: int = 360
-    tracking: bool = False
-    sound_tracking: bool = False
+# NOTE: GimbalController (Socket.IO/_emit control path, _pd_step PD controller,
+# update_face_tracking, GimbalStateData mirror) removed. FastAPI no longer
+# commands the gimbal. Read-only telemetry is sourced from RecameraClient.get_status().
 
-
-class GimbalController:
-    """
-    Controls reCamera gimbal via Socket.IO ->Node-RED Dashboard (port 1880).
-
-    """
-
-    # Node-RED Dashboard 2.0 widget IDs (from official Gimbal flow)
-    WIDGET_YAW   = "1528e53340ceac14"
-    WIDGET_PITCH = "45dd35115125460f"
-    WIDGET_SPEED = "141a718c4aca75ea"
-
-    def __init__(self, device_ip: str = "192.168.201.84", dry_run: bool = True):
-        self._device_ip = device_ip
-        self._dry_run = dry_run
-        self._state = GimbalStateData()
-        self._lock = threading.Lock()
-        self._sio = None
-        self._sio_connected = False
-        self._sio_url = f"http://{device_ip}:1880"
-        self._sio_path = "/dashboard/socket.io"
-
-        # Face tracking
-        self._face_tracking: bool = False
-
-    @property
-    def connected(self) -> bool:
-        return self._sio_connected and not self._dry_run
-
-    @property
-    def face_tracking(self) -> bool:
-        return self._face_tracking
-
-    def get_state(self) -> GimbalStateData:
-        with self._lock:
-            return GimbalStateData(
-                connected=self.connected,
-                yaw_angle=self._state.yaw_angle,
-                yaw_target=self._state.yaw_target,
-                pitch_angle=self._state.pitch_angle,
-                pitch_target=self._state.pitch_target,
-                speed=self._state.speed,
-                tracking=self._face_tracking,
-                sound_tracking=self._state.sound_tracking,
-            )
-
-    def start(self):
-        if self._dry_run:
-            logger.warning("=" * 55)
-            logger.warning("馃敀 GIMBAL DRY-RUN ->浜戝彴鎸囦护涓嶄細鍙戝嚭")
-            logger.warning("   鍚姩鏃跺姞 --no-dry-run 鎵嶄細鐪熸鎺у埗浜戝彴")
-            logger.warning("=" * 55)
-            return
-
-        _bypass_proxy_for_device(self._device_ip)
-
-        try:
-            import socketio
-            import requests
-
-            session = requests.Session()
-            session.trust_env = False
-            sio = socketio.Client(http_session=session)
-            ev = threading.Event()
-
-            @sio.on("connect")
-            def _ok():
-                self._sio_connected = True
-                ev.set()
-                logger.info("馃煝 Gimbal connected via Socket.IO ->%s", self._sio_url)
-
-            @sio.on("disconnect")
-            def _dc():
-                self._sio_connected = False
-                logger.warning("Gimbal Socket.IO disconnected")
-
-            sio.connect(
-                self._sio_url,
-                socketio_path=self._sio_path,
-                wait_timeout=5.0,
-                transports=["polling"],
-            )
-            if ev.wait(timeout=5.0):
-                self._sio = sio
-                logger.info("   Widgets: yaw=%s pitch=%s speed=%s",
-                            self.WIDGET_YAW[-8:], self.WIDGET_PITCH[-8:], self.WIDGET_SPEED[-8:])
-            else:
-                logger.warning("Socket.IO timeout ->fallback to DRY-RUN")
-                self._dry_run = True
-        except ImportError:
-            logger.warning("python-socketio not installed ->DRY-RUN only")
-            self._dry_run = True
-        except Exception as e:
-            logger.warning("Socket.IO failed (%s) ->DRY-RUN", str(e)[:60])
-            self._dry_run = True
-
-    def stop(self):
-        if self._sio:
-            try: self._sio.disconnect()
-            except: pass
-        self._sio = None
-        self._sio_connected = False
-
-    # 鈹€鈹€ Emit slider value to Node-RED 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    # Tries Socket.IO first, falls back to HTTP POST
-
-    def _emit(self, widget_id: str, value: int):
-        sent = False
-        # Try Socket.IO
-        if not self._dry_run and self._sio_connected and self._sio:
-            try:
-                self._sio.emit("widget-change", (widget_id, value))
-                sent = True
-            except Exception:
-                pass
-        # Fallback: direct HTTP POST to Node-RED
-        if not sent and not self._dry_run:
-            try:
-                import requests
-                url = self._sio_url + "/widget-change"
-                requests.post(url, json={"widget": widget_id, "value": value}, timeout=1.0)
-                sent = True
-            except Exception:
-                pass
-        # Log what happened
-        status = "鈿ENT" if sent else ("馃敀DRY-RUN" if self._dry_run else "鉂孨O-CONN")
-        return sent
-
-    # 鈹€鈹€ Commands 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
-    def ui_apply_disabled(self, command: ControlCommand):
-        """Only hardware exit: apply a normalized ControlCommand."""
-        return False
-
-    def _ui_yaw_disabled_raw(self, angle: float):
-        angle = max(0.0, min(360.0, float(angle)))
-        with self._lock:
-            self._state.yaw_target = angle
-        sent = self._emit(self.WIDGET_YAW, int(angle))
-        status = "sent" if sent else ("dry" if self._dry_run else "disc")
-        logger.info("馃幆 Yaw ->%.0f掳 %s (sio=%s)", angle, status, self._sio_connected)
-
-    def _ui_pitch_disabled_raw(self, angle: float):
-        angle = max(0.0, min(180.0, float(angle)))
-        with self._lock:
-            self._state.pitch_target = angle
-        sent = self._emit(self.WIDGET_PITCH, int(angle))
-        status = "sent" if sent else ("dry" if self._dry_run else "disc")
-        logger.info("馃幆 Pitch ->%.0f掳 %s (sio=%s)", angle, status, self._sio_connected)
-
-    def _ui_speed_disabled_raw(self, speed: int):
-        speed = max(0, min(720, int(speed)))
-        with self._lock:
-            self._state.speed = speed
-        self._emit(self.WIDGET_SPEED, speed)
-
-    def ui_yaw_disabled(self, angle: float):
-        return False
-
-    def ui_pitch_disabled(self, angle: float):
-        return False
-
-    def ui_speed_disabled(self, speed: int):
-        return False
-
-    def sleep(self):
-        logger.info("馃挙 SLEEP (yaw=180, pitch=180)")
-        return False
-
-    def standby(self):
-        logger.info("-> STANDBY (yaw=180, pitch=90)")
-        return False
-
-    def ui_emergency_disabled(self):
-        logger.warning("馃洃 EMERGENCY STOP")
-        return False
-
-    def start_face_tracking(self):
-        if self._face_tracking: return
-        self._face_tracking = True
-
-    def stop_face_tracking(self):
-        self._face_tracking = False
-        self._ft_locked = False
-        self._ft_lock_cnt = 0
-        self._ft_last_center = None
-        try:
-            _face_capture_reset("face_tracking_stopped")
-        except NameError:
-            pass
-
-    def update_face_tracking(self, face_center, fw, fh):
-        if not self._face_tracking:
-            return {"active": False, "reason": "face_tracking_off"}
-        import time as _time
-        now = _time.monotonic()
-        if not hasattr(self, '_last_ft_cmd'):
-            self._last_ft_cmd = 0.0
-            self._ft_ema_yaw = None
-            self._ft_ema_pitch = None
-            self._ft_prev_err_yaw = None
-            self._ft_prev_err_pitch = None
-            self._ft_prev_err_ts = None
-            self._ft_log_count = 0
-        rapid = getattr(self, '_rapid_align', False)
-
-        fx, fy = face_center
-        ex = (fx - fw/2) / fw  # normalized error [-0.5, 0.5]
-        ey = (fy - fh/2) / fh
-
-        alpha = 0.62 if rapid else 0.38
-        if self._ft_ema_yaw is None:
-            self._ft_ema_yaw = ex
-            self._ft_ema_pitch = ey
-        else:
-            self._ft_ema_yaw = alpha * ex + (1 - alpha) * self._ft_ema_yaw
-            self._ft_ema_pitch = alpha * ey + (1 - alpha) * self._ft_ema_pitch
-
-        ex_smooth = self._ft_ema_yaw
-        ey_smooth = self._ft_ema_pitch
-
-        dt = 0.12
-        if self._ft_prev_err_ts is not None:
-            dt = max(0.04, min(0.30, now - self._ft_prev_err_ts))
-        vx = 0.0 if self._ft_prev_err_yaw is None else (ex_smooth - self._ft_prev_err_yaw) / dt
-        vy = 0.0 if self._ft_prev_err_pitch is None else (ey_smooth - self._ft_prev_err_pitch) / dt
-        self._ft_prev_err_yaw = ex_smooth
-        self._ft_prev_err_pitch = ey_smooth
-        self._ft_prev_err_ts = now
-
-        cooldown = 0.07 if rapid else 0.16
-        if now - self._last_ft_cmd < cooldown:
-            return {
-                "active": True,
-                "reason": "cooldown",
-                "cooldown": cooldown,
-            }
-
-        def _pd_step(err, vel):
-            lead = 0.10 if rapid else 0.045
-            pred = err + vel * lead
-            a = abs(pred)
-            dead = 0.014 if rapid else 0.028
-            if a < dead:
-                return 0.0, pred, "deadzone"
-            kp = 22.0 if rapid else 8.5
-            kd = 1.2 if rapid else 0.35
-            max_step = 7.0 if rapid else 2.2
-            step = kp * pred + kd * vel
-            if rapid and 0.06 <= a < 0.20:
-                step *= 1.18
-            return max(-max_step, min(max_step, step)), pred, "pd"
-
-        moved = False
-        # On the current gimbal, yaw must move opposite to image-x error:
-        # target right of center -> ex > 0 -> decrease yaw.
-        dy, pred_x, mode_x = _pd_step(-ex_smooth, -vx)
-        yaw_cmd = None
-        if abs(dy) > (0.30 if rapid else 0.38):
-            tgt_yaw = max(0, min(360, self._state.yaw_target + dy))
-            self._state.yaw_target = tgt_yaw
-            return {"active": False, "reason": "fastapi_control_disabled"}
-            self._last_ft_cmd = now
-            yaw_cmd = tgt_yaw
-            moved = True
-
-        # Image-y grows downward.  On this gimbal, moving the camera upward
-        # means decreasing pitch, so the image-y error can be applied directly:
-        # face above center -> ey < 0 -> pitch decreases.
-        dp, pred_y, mode_y = _pd_step(ey_smooth, vy)
-        pitch_cmd = None
-        if abs(dp) > (0.30 if rapid else 0.38):
-            tgt_pitch = max(30, min(150, self._state.pitch_target + dp))
-            self._state.pitch_target = tgt_pitch
-            return {"active": False, "reason": "fastapi_control_disabled"}
-            self._last_ft_cmd = now
-            pitch_cmd = tgt_pitch
-            moved = True
-
-        if moved:
-            self._ft_log_count += 1
-            if self._ft_log_count % 10 == 1:  # log every 10th move
-                logger.info("馃幆 FT: fx=%.0f,fy=%.0f fw=%d,fh=%d ->ex=%.3f,ey=%.3f ->yaw=%d掳,pitch=%d掳 %s",
-                    fx, fy, fw, fh, ex_smooth, ey_smooth,
-                    int(self._state.yaw_target), int(self._state.pitch_target),
-                    "(DRY-RUN)" if self._dry_run else "(LIVE)")
-        return {
-            "active": True,
-            "reason": "moved" if moved else "no_step",
-            "target": [round(float(fx), 1), round(float(fy), 1)],
-            "error": [round(float(ex_smooth), 4), round(float(ey_smooth), 4)],
-            "velocity": [round(float(vx), 4), round(float(vy), 4)],
-            "predicted_error": [round(float(pred_x), 4), round(float(pred_y), 4)],
-            "delta": [round(float(dy), 3), round(float(dp), 3)],
-            "cmd": {
-                "yaw": round(float(yaw_cmd), 2) if yaw_cmd is not None else None,
-                "pitch": round(float(pitch_cmd), 2) if pitch_cmd is not None else None,
-            },
-            "mode": {"yaw": mode_x, "pitch": mode_y},
-            "cooldown": cooldown,
-            "rapid": bool(rapid),
-        }
 
 
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  WebSocket Connection Manager
@@ -617,7 +270,28 @@ class ConnectionManager:
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  Global instances (set during lifespan)
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
 video_client: Optional[SSCMAVideoClient] = None
-gimbal_ctrl: Optional[GimbalController] = None
+# Read-only telemetry client. FastAPI NEVER calls apply_command on this; it only
+# reads hardware truth via get_status(). Control lives solely in core/orchestrator.
+recamera: Optional[RecameraClient] = None
+_gimbal_tlm = {"connected": False, "yaw": None, "pitch": None, "speed": None, "mode": None}
+
+# OBSERVE-ONLY control-plane mirror. This Orchestrator/SafetyLayer consume the same
+# perception events as the real control plane and compute FSM state + decision trace
+# for the dashboard. They NEVER call recamera.apply_command -> not a control plane,
+# pure observability. The real control plane is main_phase3.py -> RecameraClient.
+_observer: Optional[Orchestrator] = None
+_safety: Optional[SafetyLayer] = None
+_control_obs = {
+    "observe_only": True,
+    "fsm_state": "IDLE",
+    "authority": "idle",
+    "last_event": None,
+    "command": None,
+    "safety": {"ok": False, "reason": "init"},
+}
+from collections import deque as _deque
+_decision_trace = _deque(maxlen=40)
+
 ws_mgr = ConnectionManager()
 app_config: Optional[Config] = None
 _latest_pose_persons: list = []  # Latest PersonPose results from pose estimator
@@ -635,40 +309,11 @@ _mp_face_result = {"success": False, "ear_avg": 0.3, "eye_open": True, "head_yaw
 _mp_landmarks5 = None
 _eye_metrics = {"ear_avg": 0.3, "blink_rate": 0, "perclos": 0, "focus_score": 100}
 _emotieff_result = None  # EmotiEffLib parallel inference result
-_sound_tracking = False
-_tracking_mode = "single"
-_last_sound_yaw_cmd = 0.0
-_tracking_debug = {}
-_face_capture_state = {
-    "state": "IO_IDLE",
-    "target_id": None,
-    "candidate_id": None,
-    "candidate_count": 0,
-    "last_center": None,
-    "last_seen": 0.0,
-    "lost_since": None,
-    "velocity": [0.0, 0.0],
-    "search_center_yaw": None,
-    "search_center_pitch": None,
-    "search_yaw": None,
-    "search_dir": 1,
-    "last_search_cmd": 0.0,
-    "reason": "init",
-}
-SWEEP_CENTER_YAW = 180.0
-SWEEP_AMPLITUDE_DEG = 40.0
-SWEEP_STEP_DEG = 2.0
+# Audio conversation recording (perception/recording only — does NOT move the gimbal).
+_doa_reader = None
 _conversation_recorder = None
 _conversation_recording_requested = False
 _last_conversation_start_attempt = 0.0
-_sound_follow_state = {
-    "active": False,
-    "doa_deg": None,
-    "has_speech": False,
-    "target_yaw": None,
-    "age": 999.0,
-    "reason": "idle",
-}
 
 
 def _audio_event(doa_deg: float, speech: bool, source: str = "doa") -> dict:
@@ -745,330 +390,13 @@ def detect_target(frame_jpeg: bytes, want_face: bool = False) -> dict:
     return {"found": False, "type": "none", "detail": "no target"}
 
 
-def _has_complete_face(person) -> bool:
-    required = {"left_eye", "right_eye", "nose", "left_mouth", "right_mouth"}
-    names = {kp.name for kp in person.keypoints if kp.conf >= 0.45}
-    return bool(person.face_center) and required.issubset(names)
+# NOTE: removed orphaned face-selection helpers (_has_complete_face,
+# _face_track_id, _face_is_primary, _same_face_candidate, _best_complete_face,
+# _best_person_*, _person_debug_target, _face_debug_target) used only by the
+# deleted gimbal tracking loop.
 
-
-def _face_track_id(person):
-    return getattr(person, "_track_id", None)
-
-
-def _face_is_primary(person) -> bool:
-    return bool(getattr(person, "_is_primary", False))
-
-
-def _same_face_candidate(track_id, center, prev_id, prev_center, fw: int, fh: int) -> bool:
-    if track_id is not None and prev_id is not None:
-        return track_id == prev_id
-    if center is None or prev_center is None:
-        return False
-    dx = (float(center[0]) - float(prev_center[0])) / max(1.0, float(fw))
-    dy = (float(center[1]) - float(prev_center[1])) / max(1.0, float(fh))
-    return (dx * dx + dy * dy) ** 0.5 < 0.10
-
-
-def _best_complete_face(min_conf: float = 0.45, fw: int = 1920, fh: int = 1080):
-    candidates = [
-        p for p in _latest_pose_persons
-        if p.face_center and p.face_conf and p.face_conf >= min_conf and _has_complete_face(p)
-    ]
-    if not candidates:
-        return None
-
-    target_id = _face_capture_state.get("target_id")
-    candidate_id = _face_capture_state.get("candidate_id")
-    last_center = _face_capture_state.get("last_center")
-
-    def score(p):
-        tid = _face_track_id(p)
-        cx, cy = p.face_center
-        center_dx = (float(cx) / max(1, fw)) - 0.5
-        center_dy = (float(cy) / max(1, fh)) - 0.45
-        center_penalty = (center_dx * center_dx + center_dy * center_dy) ** 0.5
-        continuity = 0.0
-        if tid is not None and tid == target_id:
-            continuity += 0.35
-        elif tid is not None and tid == candidate_id:
-            continuity += 0.16
-        elif _same_face_candidate(tid, p.face_center, target_id, last_center, fw, fh):
-            continuity += 0.20
-        primary_bonus = 0.18 if _face_is_primary(p) else 0.0
-        source_bonus = 0.06 if getattr(p, "_source", "") == "face_tracker_v2" else 0.0
-        return float(p.face_conf or 0.0) + continuity + primary_bonus + source_bonus - center_penalty
-
-    return max(candidates, key=score, default=None)
-
-
-def _best_person_from_boxes(fw: int, fh: int, min_conf: float = 0.42) -> Optional[dict]:
-    boxes = video_client.boxes if video_client else []
-    best = None
-    for b in boxes:
-        if len(b) < 6:
-            continue
-        if int(b[5]) != 0:
-            continue
-        conf = b[4] / 100.0 if b[4] > 1 else float(b[4])
-        if conf < min_conf:
-            continue
-        cx_b, cy_b, bw, bh = float(b[0]), float(b[1]), float(b[2]), float(b[3])
-        area_ratio = (bw * bh) / max(1.0, float(fw * fh))
-        if area_ratio < 0.01:
-            continue
-        x1 = cx_b - bw / 2
-        y1 = cy_b - bh / 2
-        face_est_y = y1 + bh * 0.18
-        item = {
-            "cx": cx_b / fw,
-            "cy": cy_b / fh,
-            "face_y": face_est_y / fh,
-            "conf": conf,
-            "area": area_ratio,
-        }
-        if best is None or item["conf"] > best["conf"]:
-            best = item
-    return best
-
-
-def _best_person_from_pose(fw: int, fh: int, min_conf: float = 0.42) -> Optional[dict]:
-    best = None
-    for p in _latest_pose_persons:
-        conf = float(getattr(p, "conf", 0.0) or 0.0)
-        if conf < min_conf:
-            continue
-        x1, y1, x2, y2 = p.bbox
-        bw, bh = x2 - x1, y2 - y1
-        if bw <= 0 or bh <= 0:
-            continue
-        if p.face_center:
-            face_y = float(p.face_center[1]) / fh
-        else:
-            face_y = (float(y1) + float(bh) * 0.18) / fh
-        item = {
-            "cx": (float(x1) + float(bw) / 2) / fw,
-            "cy": (float(y1) + float(bh) / 2) / fh,
-            "face_y": face_y,
-            "conf": conf,
-            "area": (float(bw) * float(bh)) / max(1.0, float(fw * fh)),
-        }
-        if best is None or item["conf"] > best["conf"]:
-            best = item
-    return best
-
-
-def _best_person_target(fw: int, fh: int, min_conf: float = 0.42) -> Optional[dict]:
-    return _best_person_from_boxes(fw, fh, min_conf) or _best_person_from_pose(fw, fh, min_conf)
-
-
-def _person_debug_target(t: Optional[dict]) -> Optional[dict]:
-    if not t:
-        return None
-    return {
-        "cx": round(float(t.get("cx", 0.0)), 4),
-        "cy": round(float(t.get("cy", 0.0)), 4),
-        "face_y": round(float(t.get("face_y", 0.0)), 4),
-        "conf": round(float(t.get("conf", 0.0)), 3),
-        "area": round(float(t.get("area", 0.0)), 4),
-    }
-
-
-def _face_debug_target(p) -> Optional[dict]:
-    if not p:
-        return None
-    return {
-        "track_id": _face_track_id(p),
-        "source": getattr(p, "_source", "unknown"),
-        "primary": _face_is_primary(p),
-        "lost_frames": int(getattr(p, "_lost_frames", 0) or 0),
-        "bbox": [round(float(v), 1) for v in p.bbox],
-        "face_center": [round(float(p.face_center[0]), 1), round(float(p.face_center[1]), 1)]
-                       if p.face_center else None,
-        "face_conf": round(float(p.face_conf or 0.0), 3),
-        "keypoints": [kp.name for kp in p.keypoints if kp.conf >= 0.45],
-    }
-
-
-def _set_tracking_debug(**kwargs) -> None:
-    global _tracking_debug
-    data = dict(_tracking_debug)
-    data.update(kwargs)
-    data["updated_at"] = round(time.time(), 3)
-    _tracking_debug = _json_clean(data)
-
-
-def _face_capture_reset(reason: str = "reset") -> None:
-    _face_capture_state.update({
-        "state": "IO_IDLE",
-        "target_id": None,
-        "candidate_id": None,
-        "candidate_count": 0,
-        "last_center": None,
-        "last_seen": 0.0,
-        "lost_since": None,
-        "velocity": [0.0, 0.0],
-        "search_center_yaw": None,
-        "search_center_pitch": None,
-        "search_yaw": None,
-        "search_dir": 1,
-        "last_search_cmd": 0.0,
-        "reason": reason,
-    })
-
-
-def _update_face_capture_state(face, fw: int, fh: int) -> dict:
-    """Display-only face capture state."""
-    now = time.monotonic()
-    state = _face_capture_state.get("state", "IO_IDLE")
-    prev_center = _face_capture_state.get("last_center")
-    prev_seen = float(_face_capture_state.get("last_seen") or 0.0)
-
-    if face is not None and face.face_center:
-        tid = _face_track_id(face)
-        center = [float(face.face_center[0]), float(face.face_center[1])]
-        same_locked = _same_face_candidate(
-            tid, center,
-            _face_capture_state.get("target_id"), prev_center,
-            fw, fh,
-        )
-        same_candidate = _same_face_candidate(
-            tid, center,
-            _face_capture_state.get("candidate_id"), prev_center,
-            fw, fh,
-        )
-
-        dt = max(0.04, min(0.50, now - prev_seen)) if prev_seen else 0.2
-        if prev_center is not None:
-            vx = (center[0] - float(prev_center[0])) / dt
-            vy = (center[1] - float(prev_center[1])) / dt
-            old_vx, old_vy = _face_capture_state.get("velocity", [0.0, 0.0])
-            velocity = [0.45 * vx + 0.55 * float(old_vx), 0.45 * vy + 0.55 * float(old_vy)]
-        else:
-            velocity = [0.0, 0.0]
-
-        if state in ("IO_PRESENT", "IO_MISSING") and same_locked:
-            new_state = "IO_PRESENT"
-            count = max(2, int(_face_capture_state.get("candidate_count", 0)))
-            reason = "same_target_reacquired" if state == "IO_MISSING" else "same_target"
-        else:
-            count = int(_face_capture_state.get("candidate_count", 0)) + 1 if same_candidate else 1
-            new_state = "IO_PRESENT"
-            reason = "face_present"
-
-        _face_capture_state.update({
-            "state": new_state,
-            "target_id": tid,
-            "candidate_id": tid,
-            "candidate_count": count,
-            "last_center": center,
-            "last_seen": now,
-            "lost_since": None,
-            "velocity": velocity,
-            "search_center_yaw": None,
-            "search_center_pitch": None,
-            "search_yaw": None,
-            "reason": reason,
-            "face_conf": round(float(face.face_conf or 0.0), 3),
-            "source": getattr(face, "_source", "unknown"),
-            "primary": _face_is_primary(face),
-        })
-        if new_state == "IO_PRESENT" and _face_capture_state.get("target_id") is None:
-            _face_capture_state["target_id"] = tid
-        return dict(_face_capture_state)
-
-    # No valid face this frame.
-    if state == "IO_PRESENT":
-        _face_capture_state.update({
-            "state": "IO_MISSING",
-            "lost_since": now,
-            "candidate_count": 0,
-            "reason": "face_missing_grace",
-        })
-    elif state == "IO_MISSING":
-        lost_for = now - float(_face_capture_state.get("lost_since") or now)
-        if lost_for > 2.8:
-            _face_capture_state.update({
-                "state": "IO_IDLE",
-                "target_id": None,
-                "candidate_id": None,
-                "candidate_count": 0,
-                "reason": "lost_timeout_search",
-            })
-        else:
-            _face_capture_state["reason"] = "predictive_reacquire"
-    elif state == "IO_CANDIDATE":
-        if now - prev_seen > 0.8:
-            _face_capture_state.update({
-                "state": "IO_IDLE",
-                "candidate_id": None,
-                "candidate_count": 0,
-                "reason": "candidate_timeout",
-            })
-    else:
-        _face_capture_state["state"] = "IO_IDLE"
-        _face_capture_state["reason"] = "no_face"
-    return dict(_face_capture_state)
-
-
-def _predictive_reacquire_step(gc: GimbalController, fw: int, fh: int) -> Optional[dict]:
-    """Local search around the last known yaw/pitch, biased by last image velocity."""
-    return {"active": False, "reason": "reacquire_control_removed"}
-    if not gc or _face_capture_state.get("state") != "IO_MISSING":
-        return None
-    now = time.monotonic()
-    if now - float(_face_capture_state.get("last_search_cmd") or 0.0) < 0.22:
-        return {"active": True, "reason": "search_cooldown"}
-
-    lost_since = float(_face_capture_state.get("lost_since") or now)
-    lost_for = max(0.0, now - lost_since)
-    gs = gc._state
-    if _face_capture_state.get("search_center_yaw") is None:
-        vx, vy = _face_capture_state.get("velocity", [0.0, 0.0])
-        # Positive image-x velocity means target moved right in the image; yaw
-        # should decrease first to follow that motion on this gimbal.
-        search_dir = -1 if float(vx) > 8 else 1
-        _face_capture_state.update({
-            "search_center_yaw": float(gs.yaw_target),
-            "search_center_pitch": float(gs.pitch_target),
-            "search_yaw": float(gs.yaw_target),
-            "search_dir": search_dir,
-        })
-
-    center_yaw = float(_face_capture_state.get("search_center_yaw") or gs.yaw_target)
-    center_pitch = float(_face_capture_state.get("search_center_pitch") or gs.pitch_target)
-    search_yaw = float(_face_capture_state.get("search_yaw") or center_yaw)
-    search_dir = int(_face_capture_state.get("search_dir") or 1)
-    amp = min(28.0, 6.0 + lost_for * 9.0)
-    step = 2.0 + min(3.0, lost_for * 1.6)
-    search_yaw += search_dir * step
-    if search_yaw > center_yaw + amp:
-        search_yaw = center_yaw + amp
-        search_dir = -1
-    elif search_yaw < center_yaw - amp:
-        search_yaw = center_yaw - amp
-        search_dir = 1
-
-    _, vy = _face_capture_state.get("velocity", [0.0, 0.0])
-    pitch_bias = max(-8.0, min(8.0, float(vy) / max(1.0, float(fh)) * 55.0))
-    search_pitch = max(30, min(150, center_pitch + pitch_bias))
-    gc.ui_yaw_disabled(int(max(0, min(360, search_yaw))))
-    if abs(search_pitch - gs.pitch_target) > 1.0:
-        gc.ui_pitch_disabled(int(search_pitch))
-    _face_capture_state.update({
-        "search_yaw": search_yaw,
-        "search_dir": search_dir,
-        "last_search_cmd": now,
-    })
-    return {
-        "active": True,
-        "reason": "predictive_local_sweep",
-        "lost_for": round(float(lost_for), 2),
-        "yaw": round(float(search_yaw), 2),
-        "pitch": round(float(search_pitch), 2),
-        "amp": round(float(amp), 2),
-        "dir": search_dir,
-    }
-
+# NOTE: removed control helpers _set_tracking_debug, _face_capture_reset,
+# _update_face_capture_state, _predictive_reacquire_step (gimbal search/tracking).
 
 def _ensure_doa_reader() -> bool:
     """Start the configured DOA source without requiring ReSpeaker USB in WSL."""
@@ -1116,59 +444,8 @@ def _doa_status() -> dict:
     }
 
 
-def _resume_ai_gimbal_mode(reason: str = "") -> bool:
-    """Ensure automatic control is allowed unless emergency-stop is active."""
-    if gimbal_state.mode == GimbalMode.AI_TRACK:
-        return True
-    if gimbal_state.mode == GimbalMode.EMERGENCY_STOP:
-        logger.warning("Cannot resume AI gimbal mode during emergency stop (%s)", reason)
-        return False
-    return bool(gimbal_state.set_mode(GimbalMode.AI_TRACK))
-
-
-def _update_sound_tracking_yaw() -> None:
-    """Yaw-only gimbal follow for multi-person recording mode."""
-    global _last_sound_yaw_cmd, _sound_follow_state
-    if not _sound_tracking or not gimbal_ctrl:
-        _sound_follow_state.update({"active": False, "reason": "sound_tracking_disabled"})
-        return
-    if not _ensure_doa_reader() or _doa_reader is None:
-        _sound_follow_state.update({"active": True, "age": 999.0, "has_speech": False, "reason": "doa_unavailable"})
-        return
-
-    now = time.monotonic()
-    if now - _last_sound_yaw_cmd < 0.2:
-        return
-
-    doa_deg, has_speech = _doa_reader.read()
-    conv_current = _conversation_recorder.state().get("current", {}) if _conversation_recorder is not None else {}
-    vad_speech = bool(conv_current.get("has_speech", False))
-    voice_active = bool(has_speech or vad_speech)
-    _sound_follow_state.update({
-        "active": True,
-        "doa_deg": round(float(doa_deg), 1),
-        "has_speech": voice_active,
-        "hid_speech": bool(has_speech),
-        "vad_speech": vad_speech,
-        "age": round(float(_doa_reader.age), 2),
-        "reason": "ready",
-    })
-    if _doa_reader.age > 1.0:
-        _sound_follow_state["reason"] = "stale_doa"
-        return
-    if not voice_active:
-        _sound_follow_state["reason"] = "waiting_for_speech"
-        return
-
-    cmd = None
-    _last_sound_yaw_cmd = now
-    if cmd and cmd.yaw is not None:
-        _sound_follow_state["target_yaw"] = round(float(cmd.yaw), 1)
-        _sound_follow_state["reason"] = cmd.reason or "command_sent"
-        logger.info("馃帳 Sound follow: doa=%.1f掳 ->yaw=%.0f掳 (%s)", doa_deg, cmd.yaw, cmd.reason)
-    else:
-        _sound_follow_state["reason"] = "no_command"
-
+# NOTE: removed _resume_ai_gimbal_mode and _update_sound_tracking_yaw
+# (gimbal control-mode + yaw-follow). DOA reader below is read-only perception.
 
 def _conversation_doa_provider() -> tuple[Optional[float], bool]:
     if _doa_reader is None:
@@ -1283,9 +560,6 @@ def _conversation_debug_state() -> dict:
         "sessions": sessions,
         "doa": _doa_status(),
         "audio": _audio_devices_debug(),
-        "sound_tracking": bool(_sound_tracking),
-        "sound_follow": _sound_follow_state,
-        "gimbal_mode": gimbal_state.mode_name,
     }
 
 
@@ -1459,21 +733,7 @@ def _apply_mediapipe_landmarks5(landmarks5) -> bool:
         return False
 
 
-def _tracking_point_from_landmarks5(landmarks5) -> Optional[tuple]:
-    """Prefer a real facial anchor over bbox center for visual tracking."""
-    if landmarks5 is None:
-        return None
-    try:
-        pts = np.asarray(landmarks5, dtype=np.float32)
-        if pts.shape[0] < 3:
-            return None
-        left_eye, right_eye, nose = pts[0, :2], pts[1, :2], pts[2, :2]
-        eye_mid = (left_eye + right_eye) / 2.0
-        target = 0.45 * eye_mid + 0.55 * nose
-        return (float(target[0]), float(target[1]))
-    except Exception:
-        return None
-
+# NOTE: removed _tracking_point_from_landmarks5 (used only by deleted face tracking).
 
 def _json_clean(value):
     """Recursively convert numpy/model outputs into JSON-native Python values."""
@@ -1494,40 +754,31 @@ def _json_clean(value):
     return value
 
 
-def build_state_snapshot() -> dict:
-    gs = gimbal_ctrl.get_state() if gimbal_ctrl else GimbalStateData()
-
-    # Extract detections from video boxes
+def _extract_detections() -> list:
+    """Convert SSCMA boxes [cx, cy, w, h, conf, cls] to UI/observer detection dicts."""
     detections = []
     if video_client:
         for box in video_client.boxes:
             if len(box) >= 6:
-                # SSCMA format: [cx, cy, w, h, conf, cls]
                 cx_b, cy_b, bw, bh = float(box[0]), float(box[1]), float(box[2]), float(box[3])
                 detections.append({
-                    "x": cx_b - bw/2, "y": cy_b - bh/2,
+                    "x": cx_b - bw / 2, "y": cy_b - bh / 2,
                     "w": bw, "h": bh,
                     "class_name": "person" if int(box[5]) == 0 else f"class_{int(box[5])}",
                     "confidence": float(box[4]) / 100.0 if float(box[4]) > 1 else float(box[4]),
                 })
+    return detections
+
+
+def build_state_snapshot() -> dict:
+    detections = _extract_detections()
 
     snapshot = {
         "type": "state_snapshot",
         "data": {
-            "gimbal": {
-                "connected": gs.connected,
-                "dry_run": bool(getattr(gimbal_ctrl, "_dry_run", True)) if gimbal_ctrl else True,
-                "sio_connected": bool(getattr(gimbal_ctrl, "_sio_connected", False)) if gimbal_ctrl else False,
-                "yaw_angle": gs.yaw_angle,
-                "yaw_target": gs.yaw_target,
-                "pitch_angle": gs.pitch_angle,
-                "pitch_target": gs.pitch_target,
-                "speed": gs.speed,
-                "tracking": gs.tracking,
-                "sound_tracking": bool(_sound_tracking),
-                "mode": gimbal_state.mode_name,
-            },
-            "tracking_mode": _tracking_mode,
+            # Gimbal telemetry = hardware truth only (RecameraClient.get_status()).
+            # FastAPI holds no control-state mirror; this is read-only.
+            "gimbal": dict(_gimbal_tlm),
             "video": {
                 "connected": True if video_client else False,  # MJPEG娴佸瓨娲诲嵆connected
                 "fps": video_client.fps if video_client else 0.0,
@@ -1537,15 +788,7 @@ def build_state_snapshot() -> dict:
             },
             "pose": _build_pose_data(),
             "doa": _doa_status(),
-            "sound_follow": _sound_follow_state,
             "conversation": _conversation_state(),
-            "face_tracking": gimbal_ctrl.face_tracking if gimbal_ctrl else False,
-            "face_lock": {
-                "locked": getattr(gimbal_ctrl, '_ft_locked', False) if gimbal_ctrl else False,
-                "lock_cnt": getattr(gimbal_ctrl, '_ft_lock_cnt', 0) if gimbal_ctrl else 0,
-            },
-            "face_capture": _json_clean(_face_capture_state),
-            "tracking_debug": _tracking_debug,
             "attention": _attn_result,
             "emotion": _emotion_result,
             "emotieff": _emotieff_result,
@@ -1553,6 +796,16 @@ def build_state_snapshot() -> dict:
             "llm_quote": _llm_quote_text,
             "mp_face": _mp_face_result,
             "eye_metrics": _eye_metrics,
+            # Observe-only control-plane mirror (FSM / decision / authority / safety).
+            "control": dict(_control_obs),
+            "trace": list(_decision_trace)[-12:],
+            "health": {
+                "video_fps": round(float(video_client.fps), 1) if video_client else 0.0,
+                "ws_clients": len(ws_mgr._connections),
+                "doa_age": round(float(getattr(_doa_reader, "age", 999.0)), 2) if _doa_reader else None,
+                "gimbal_latency_ms": round(float(getattr(recamera, "last_latency_ms", 0.0)), 1) if recamera else None,
+                "gimbal_connected": bool(_gimbal_tlm.get("connected")),
+            },
             "timestamp": time.time(),
         },
     }
@@ -1564,18 +817,21 @@ def build_state_snapshot() -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 
-    global video_client, gimbal_ctrl
+    global video_client, recamera
 
     # Start video client
     video_client = SSCMAVideoClient(device_ip=app_config.device_ip)
     video_client._frame_event = asyncio.Event()
     video_client.start()
 
-    # Start gimbal controller
-    gimbal_ctrl = GimbalController(
-        device_ip=app_config.device_ip, dry_run=app_config.dry_run
-    )
-    gimbal_ctrl.start()
+    # Read-only telemetry client (NO control). get_status() is the only call made.
+    recamera = RecameraClient(base_url=f"http://{app_config.device_ip}")
+    recamera.connect(dry_run=app_config.dry_run)
+
+    # Observe-only control-plane mirror (FSM/decision-trace telemetry; never commands).
+    global _observer, _safety
+    _observer = Orchestrator(frame_width=1920, frame_height=1080)
+    _safety = SafetyLayer(safe_mode=False, enable_real_control=True)
 
     # Attention engine
     global _attention_engine
@@ -1621,40 +877,38 @@ async def lifespan(app: FastAPI):
     get_emotieff_adapter()
 
     # DOA defaults to TCP input, so ReSpeaker does not need USB passthrough to WSL.
-    global _doa_reader, _sound_tracking, _conversation_recording_requested
+    global _doa_reader, _conversation_recording_requested
     _doa_reader = None
-    _sound_tracking = False
     _conversation_recording_requested = False
     _ensure_doa_reader()
 
-    # Background tasks
+    # Background tasks: perception/state push + read-only gimbal telemetry poll.
     push_task = asyncio.create_task(state_push_loop())
+    tlm_task = asyncio.create_task(gimbal_telemetry_loop())
 
     logger.info("=" * 55)
-    logger.info("reCamera Demo Dashboard (FastAPI)")
+    logger.info("reCamera Demo Dashboard (FastAPI) - display only")
     scheme = "https" if app_config.ssl_enabled else "http"
     ws_scheme = "wss" if app_config.ssl_enabled else "ws"
     logger.info("   Device IP:    %s", app_config.device_ip)
     logger.info("   Dashboard:    %s://localhost:%d/home", scheme, app_config.port)
-    logger.info("   Gimbal:       %s (sio_connected=%s dry_run=%s)",
-        "Socket.IO鈫扤ode-RED" if (gimbal_ctrl and gimbal_ctrl.connected) else "DRY-RUN / disconnected",
-        getattr(gimbal_ctrl, '_sio_connected', False) if gimbal_ctrl else False,
-        app_config.dry_run)
     logger.info("   MJPEG:        %s://localhost:%d/video_feed", scheme, app_config.port)
     logger.info("   WebSocket:    %s://localhost:%d/ws", ws_scheme, app_config.port)
-    logger.info("   Gimbal:       %s", "DRY-RUN" if app_config.dry_run else "Socket.IO ->Node-RED")
+    logger.info("   Gimbal:       telemetry read-only (control plane = core.orchestrator)")
     logger.info("=" * 55)
 
     yield
 
     # Cleanup
     push_task.cancel()
-    try: await push_task
-    except asyncio.CancelledError: pass
+    tlm_task.cancel()
+    for _t in (push_task, tlm_task):
+        try: await _t
+        except asyncio.CancelledError: pass
 
     _stop_conversation_recording(finalize=True)
     if video_client: video_client.stop()
-    if gimbal_ctrl: gimbal_ctrl.stop()
+    if recamera: recamera.close()
     if _doa_reader: _doa_reader.close()
     logger.info("Dashboard shutdown complete")
 
@@ -1675,252 +929,136 @@ app.mount("/static", StaticFiles(directory=str(DASHBOARD_DIR)), name="static")
 
 # 鈹€鈹€ State push loop 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
+def _map_status_to_telemetry(status) -> dict:
+    """Normalize hardware readback into UI telemetry. Hardware truth only."""
+    if not status or not isinstance(status, dict):
+        return {"connected": False, "yaw": None, "pitch": None, "speed": None, "mode": None}
+    def pick(*keys):
+        for k in keys:
+            if status.get(k) is not None:
+                return status[k]
+        return None
+    return {
+        "connected": bool(recamera.connected) if recamera else False,
+        "yaw": pick("yaw", "yaw_angle", "pan"),
+        "pitch": pick("pitch", "pitch_angle", "tilt"),
+        "speed": pick("speed"),
+        "mode": pick("mode"),
+    }
+
+
+_AUTHORITY = {
+    "IDLE": "idle",
+    "AUDIO_SEARCH": "audio",
+    "VISION_TRACK": "vision",
+    "FUSED_TRACK": "fusion",
+    "LOST": "lost",
+}
+
+
+def _cmd_brief(cmd) -> Optional[dict]:
+    if cmd is None:
+        return None
+    return {
+        "reason": cmd.reason,
+        "yaw": round(float(cmd.yaw), 1) if cmd.yaw is not None else None,
+        "pitch": round(float(cmd.pitch), 1) if cmd.pitch is not None else None,
+        "speed": cmd.speed,
+        "stop": bool(cmd.stop),
+        "source": cmd.source,
+    }
+
+
+def _ev_brief(ev) -> Optional[dict]:
+    if ev is None:
+        return None
+    return {"type": ev.type, "name": ev.name, "source": ev.source}
+
+
+def _observe_control_step(detections: list, fw: int, fh: int) -> None:
+    """Feed perception into the observe-only Orchestrator and record the trace.
+
+    NEVER issues a hardware command. This mirrors what the real control plane
+    (core/orchestrator.py) would decide, purely for dashboard observability.
+    """
+    global _control_obs
+    if _observer is None:
+        return
+    prev_state = _observer.state
+    last_cmd = None
+
+    # Audio event (from read-only DOA), only when speech is present and fresh.
+    if _doa_reader is not None and bool(getattr(_doa_reader, "has_speech", False)) and float(getattr(_doa_reader, "age", 999.0)) <= 1.0:
+        ev = Event.make("audio", "speech_detected", "doa",
+                        {"doa_deg": float(_doa_reader.doa), "speech": True})
+        cmd_a = _observer.handle(ev)
+        last_cmd = cmd_a or last_cmd
+
+    # Vision event (person detections -> bboxes).
+    bboxes = []
+    for d in detections:
+        if (d.get("class_name") == "person") and float(d.get("confidence", 0)) >= 0.42:
+            x1 = float(d["x"]); y1 = float(d["y"])
+            bboxes.append(BBox(x1=int(x1), y1=int(y1),
+                               x2=int(x1 + float(d["w"])), y2=int(y1 + float(d["h"])),
+                               class_name="person", confidence=float(d["confidence"])))
+    cmd_v = _observer.handle_vision(bboxes, source="vision")
+    last_cmd = cmd_v or last_cmd
+
+    state = _observer.state
+    last_event = _observer.fsm.last_event
+    safety_ok, safety_reason = (False, "no_command")
+    if _safety is not None:
+        safety_ok, safety_reason = _safety.passes(last_cmd)
+
+    _control_obs = {
+        "observe_only": True,
+        "fsm_state": state.value,
+        "authority": _AUTHORITY.get(state.value, "idle"),
+        "last_event": _ev_brief(last_event),
+        "command": _cmd_brief(last_cmd),
+        "safety": {"ok": bool(safety_ok), "reason": safety_reason},
+        "vision_lost_frames": _observer.vision_lost_frames,
+    }
+
+    # Append to decision trace when something meaningful happened.
+    if last_cmd is not None or state != prev_state:
+        _decision_trace.append({
+            "t": round(time.time(), 2),
+            "event": _ev_brief(last_event),
+            "state": state.value,
+            "transition": (state != prev_state),
+            "from": prev_state.value,
+            "command": _cmd_brief(last_cmd),
+            "authority": _AUTHORITY.get(state.value, "idle"),
+        })
+
+
+async def gimbal_telemetry_loop():
+    """Poll read-only hardware status into _gimbal_tlm. Issues NO control."""
+    global _gimbal_tlm
+    loop = asyncio.get_event_loop()
+    while True:
+        try:
+            status = await loop.run_in_executor(None, recamera.get_status) if recamera else None
+            _gimbal_tlm = _map_status_to_telemetry(status)
+        except Exception as e:
+            logger.debug("gimbal telemetry poll error: %s", str(e)[:80])
+        await asyncio.sleep(0.5)
+
+
 async def state_push_loop():
-    """Push UI snapshots to WebSocket clients."""
+    """Run perception and push UI snapshots. Contains NO gimbal control."""
     global _attn_result, _emotion_result, _emotieff_result, _eye_metrics
     global _mp_face, _eye_tracker, _mp_face_result, _mp_landmarks5
     global _llm_engine, _llm_diary_entry, _llm_quote_text, _last_llm_diary_time
-    global _doa_reader  # kept for potential future use, NOT used in pipeline
     pose_est = None
     pose_frame_count = 0
-    _sweep_yaw = SWEEP_CENTER_YAW; _sweep_dir = -1
-
-    # 鈹€鈹€ Pipeline: face first ->sweep search ->center person ->center face ->track 鈹€鈹€
-    # -1-> standby center ->0-> start sweep ->1-> person found ->2-> face locked
-    _startup_phase = -1       # -1: go to standby center first
-    _startup_ts = time.monotonic()
-    _startup_diag_done = False
 
     while True:
         try:
-            if not _startup_diag_done and video_client and video_client.connected:
-                _startup_diag_done = True
-                gc = gimbal_ctrl
-                logger.info("馃攳 DIAG: gimbal=%s dry_run=%s sio=%s",
-                    "present" if gc else "MISSING",
-                    gc._dry_run if gc else "?",
-                    gc._sio_connected if gc else "?")
-                if gc and gc._dry_run:
-                    logger.warning("馃敀 DRY-RUN ->add --no-dry-run for real gimbal control")
-
-            # 鈹€鈹€ Gimbal mode priority check 鈹€鈹€
-            # MANUAL / SLEEP / STANDBY / EMERGENCY_STOP override auto search/track.
-            # On MANUAL ->AI_TRACK transition, resume auto from current position.
-            snapshot = build_state_snapshot()
-            await ws_mgr.broadcast(snapshot)
-            await asyncio.sleep(0.2)
-            continue
-
-            gmode = gimbal_state.mode
-            _manual_active = (gmode != GimbalMode.AI_TRACK)
-
-            if _manual_active:
-                if gmode == GimbalMode.MANUAL:
-                    dpan, dtilt = gimbal_state.get_manual_control()
-                    if abs(dpan) > 0.001 or abs(dtilt) > 0.001:
-                        if gimbal_ctrl:
-                            gs = gimbal_ctrl._state if gimbal_ctrl else None
-                            cur_yaw = gs.yaw_target if gs else 180
-                            cur_pitch = gs.pitch_target if gs else 90
-                            gimbal_ctrl.ui_yaw_disabled(int(max(1, min(345, cur_yaw + dpan))))
-                            gimbal_ctrl.ui_pitch_disabled(int(max(1, min(175, cur_pitch + dtilt))))
-                        gimbal_state.set_manual_control(0.0, 0.0)  # consume
-                # Reset auto phases so we restart from standby center when AI resumes
-                if _startup_phase != -1:
-                    _startup_phase = -1
-                    _startup_ts = time.monotonic()
-                    _face_capture_reset("manual_or_non_ai_mode")
-
-            # 鈹€鈹€ Multi-person recording: pure sound-source yaw follow 鈹€鈹€
-            if _sound_tracking:
-                _ensure_doa_reader()
-                if _conversation_recording_requested and (
-                    _conversation_recorder is None or not _conversation_recorder.active
-                ):
-                    _start_conversation_recording()
-                if gimbal_ctrl and gimbal_ctrl.face_tracking:
-                    gimbal_ctrl.stop_face_tracking()
-                    gimbal_ctrl._rapid_align = False
-                _latest_pose_persons.clear()
-                _attn_result = {"has_face": False}
-                _mp_face_result = {"success": False, "ear_avg": 0.3, "eye_open": True, "head_yaw": 0, "head_pitch": 0}
-                if _startup_phase != -1:
-                    _startup_phase = -1
-                    _startup_ts = time.monotonic()
-                    _face_capture_reset("sound_tracking_mode")
-                if not _manual_active:
-                    _update_sound_tracking_yaw()
-                snapshot = build_state_snapshot()
-                await ws_mgr.broadcast(snapshot)
-                await asyncio.sleep(0.2)
-                continue
-
-            # 鈹€鈹€ Single-person auto search/track (only when AI mode active and sound tracking off) 鈹€鈹€
-            if _startup_phase < 3 and not _manual_active and not _sound_tracking:
-                now_ts = time.monotonic()
-                res = video_client.resolution if video_client else [1920, 1080]
-                fw, fh = res[0], res[1]
-                gs = gimbal_ctrl._state if gimbal_ctrl else None
-                cur_yaw = gs.yaw_target if gs else 180
-                ft = gimbal_ctrl
-
-                face_target = _best_complete_face(0.45, int(fw), int(fh))
-                person_target = _best_person_target(fw, fh, 0.42)
-
-                face_locked = (ft and ft.face_tracking and getattr(ft, '_ft_locked', False))
-                _set_tracking_debug(
-                    mode="single",
-                    startup_phase=_startup_phase,
-                    manual_active=bool(_manual_active),
-                    sound_tracking=bool(_sound_tracking),
-                    resolution=[int(fw), int(fh)],
-                    face_target=_face_debug_target(face_target),
-                    person_target=_person_debug_target(person_target),
-                    face_locked=bool(face_locked),
-                    latest_persons=len(_latest_pose_persons),
-                    yaw_target=round(float(gs.yaw_target), 2) if gs else None,
-                    pitch_target=round(float(gs.pitch_target), 2) if gs else None,
-                    rapid_align=bool(getattr(ft, "_rapid_align", False)) if ft else False,
-                    ft_lock_cnt=int(getattr(ft, "_ft_lock_cnt", 0)) if ft else 0,
-                    phase2_error=None,
-                    phase2_cmd=None,
-                    controller=None,
-                    face_capture=dict(_face_capture_state),
-                )
-
-                # 鈹€鈹€ Phase -1: initial check, otherwise return to standby center 鈹€鈹€
-                if _startup_phase == -1:
-                    if face_target:
-                        _startup_phase = 3
-                        if gimbal_ctrl:
-                            gimbal_ctrl.start_face_tracking()
-                            gimbal_ctrl._rapid_align = False
-                        logger.info("馃幆 Phase 3: 鍒濆鐘舵€佸凡璇嗗埆瀹屾暣浜鸿劯 ->鎸佺画杩借釜")
-                    elif person_target:
-                        _startup_phase = 2
-                        _startup_ts = now_ts
-                        if gimbal_ctrl:
-                            gimbal_ctrl.start_face_tracking()
-                            gimbal_ctrl._rapid_align = True
-                        logger.info("Phase 2: initial person detected (conf=%.0f%%); moving toward predicted face",
-                            person_target["conf"] * 100)
-                    else:
-                        if gimbal_ctrl:
-                            gimbal_ctrl.ui_yaw_disabled(180)
-                            gimbal_ctrl.ui_pitch_disabled(90)
-                        if now_ts - _startup_ts > 1.5:
-                            _startup_phase = 0
-                            logger.info("馃攧 鏈瘑鍒埌->->->宸插洖鍒板緟鏈轰綅 yaw=180掳, pitch=90掳")
-                        elif pose_frame_count % 10 == 0:
-                            logger.info("馃攧 Phase -1: 褰掍腑寰呮満->(yaw=180掳, pitch=90掳)...")
-
-                # 鈹€鈹€ Phase 0 ->1 鈹€鈹€
-                elif _startup_phase == 0:
-                    if face_target:
-                        _startup_phase = 3
-                        if gimbal_ctrl:
-                            gimbal_ctrl.start_face_tracking()
-                            gimbal_ctrl._rapid_align = False
-                        logger.info("馃幆 Phase 3: 鎼滅储鍓嶅凡璇嗗埆瀹屾暣浜鸿劯 ->鎸佺画杩借釜")
-                    elif person_target:
-                        _startup_phase = 2
-                        _startup_ts = now_ts
-                        if gimbal_ctrl:
-                            gimbal_ctrl.start_face_tracking()
-                            gimbal_ctrl._rapid_align = True
-                        logger.info("馃幆 Phase 2: 鎼滅储鍓嶅凡璇嗗埆->conf=%.0f%%) ->闈犺繎鑴搁儴鏂瑰悜",
-                            person_target["conf"] * 100)
-                    else:
-                        _startup_phase = 1
-                        _startup_ts = now_ts
-                        _sweep_yaw = SWEEP_CENTER_YAW
-                        _sweep_dir = -1
-                        if gimbal_ctrl:
-                            gimbal_ctrl.ui_yaw_disabled(SWEEP_CENTER_YAW)
-                            gimbal_ctrl.start_face_tracking()
-                            gimbal_ctrl._rapid_align = True
-                        logger.info(
-                            "Phase 1: sweep yaw %.0f..%.0f around %.0f, pitch unchanged",
-                            SWEEP_CENTER_YAW - SWEEP_AMPLITUDE_DEG,
-                            SWEEP_CENTER_YAW + SWEEP_AMPLITUDE_DEG,
-                            SWEEP_CENTER_YAW,
-                        )
-
-                # 鈹€鈹€ Phase 1: search 鈹€鈹€
-                elif _startup_phase == 1:
-                    # Priority 1: complete face ->Phase 3
-                    if face_locked or face_target:
-                        _startup_phase = 3
-                        if ft:
-                            ft._rapid_align = False; ft._ft_ema_yaw = None; ft._ft_ema_pitch = None
-                        logger.info("馃幆 Phase 3: 瀹屾暣浜鸿劯宸插埌->->鎸佺画杩借釜")
-                    # Priority 2: highest-confidence person detected ->Phase 2
-                    elif person_target is not None and now_ts - _startup_ts > 1.0:
-                        _startup_phase = 2
-                        _startup_ts = now_ts
-                        logger.info("Phase 2: person detected (conf=%.0f%%); yaw/pitch moving toward predicted face",
-                            person_target["conf"] * 100)
-                    # Priority 3: no person ->yaw sweep, keep pitch unchanged
-                    else:
-                        sweep_min = SWEEP_CENTER_YAW - SWEEP_AMPLITUDE_DEG
-                        sweep_max = SWEEP_CENTER_YAW + SWEEP_AMPLITUDE_DEG
-                        _sweep_yaw += _sweep_dir * SWEEP_STEP_DEG
-                        if _sweep_yaw >= sweep_max:
-                            _sweep_yaw = sweep_max
-                            _sweep_dir = -1
-                        elif _sweep_yaw <= sweep_min:
-                            _sweep_yaw = sweep_min
-                            _sweep_dir = 1
-                        if gimbal_ctrl:
-                            gimbal_ctrl.ui_yaw_disabled(int(_sweep_yaw))
-                        if pose_frame_count % 30 == 0:
-                            logger.info("馃幆 Phase 1: sweep yaw=%.0f掳 ->绛変汉(conf->2%%)", _sweep_yaw)
-
-                # 鈹€鈹€ Phase 2: center person ->find face 鈹€鈹€
-                elif _startup_phase == 2:
-                    if face_locked or face_target:
-                        _startup_phase = 3
-                        if ft:
-                            ft._rapid_align = False; ft._ft_ema_yaw = None; ft._ft_ema_pitch = None
-                        logger.info("馃幆 Phase 3: 瀹屾暣浜鸿劯宸查攣->->鎸佺画杩借釜")
-                    elif person_target is not None:
-                        # Yaw: center highest-confidence person horizontally
-                        error_x = person_target["cx"] - 0.5
-                        phase2_yaw_cmd = None
-                        phase2_pitch_cmd = None
-                        if abs(error_x) > 0.03:
-                            dyaw = -error_x * 60.0
-                            dyaw = max(-12, min(12, dyaw))
-                            if gimbal_ctrl:
-                                phase2_yaw_cmd = int(max(1, min(345, cur_yaw + dyaw)))
-                                gimbal_ctrl.ui_yaw_disabled(phase2_yaw_cmd)
-                        # Pitch: move toward predicted face location from person bbox/pose
-                        error_y = person_target["face_y"] - 0.45
-                        if abs(error_y) > 0.03:
-                            dpitch = error_y * 30.0
-                            dpitch = max(-5, min(5, dpitch))
-                            cp = gs.pitch_target if gs else 90
-                            new_p = max(30, min(150, cp + dpitch))
-                            if gimbal_ctrl and abs(dpitch) > 0.3:
-                                phase2_pitch_cmd = int(new_p)
-                                gimbal_ctrl.ui_pitch_disabled(phase2_pitch_cmd)
-                        _set_tracking_debug(
-                            phase2_error=[round(float(error_x), 4), round(float(error_y), 4)],
-                            phase2_cmd={"yaw": phase2_yaw_cmd, "pitch": phase2_pitch_cmd},
-                        )
-                    else:
-                        # Person lost ->back to sweep
-                        _startup_phase = 1
-                        _startup_ts = now_ts
-                        logger.info("馃幆 Phase 2->: 浜轰涪-> 鍥炲埌鎵弿")
-
-                    if pose_frame_count % 10 == 0:
-                        logger.info("馃幆 Phase 2: yaw=%.0f掳 person_cx=%.2f face=%s",
-                            cur_yaw, person_target["cx"] if person_target else 0,
-                            "LOCKED" if face_locked else "searching")
-                _set_tracking_debug(startup_phase_after=_startup_phase)
-            # 鈹€鈹€ Face detection: FaceTrackerV2 (SCRFD + Kalman/ByteTrack) 鈹€鈹€
             pose_frame_count += 1
+            # -- Face detection: FaceTrackerV2 (SCRFD + Kalman/ByteTrack), YOLO fallback --
             if video_client:
                 jpeg = video_client.jpeg_bytes
                 if jpeg:
@@ -1932,29 +1070,26 @@ async def state_push_loop():
                             arr = np.frombuffer(jpeg, np.uint8)
                             frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                             if frame is not None:
-                                tracks = await loop.run_in_executor(
-                                    None, _face_tracker.update, frame)
+                                tracks = await loop.run_in_executor(None, _face_tracker.update, frame)
                                 if tracks:
                                     persons = []
                                     for t in tracks:
-                                        x1,y1,x2,y2 = t['bbox']
-                                        cx,cy = t['face_center']
+                                        x1, y1, x2, y2 = t['bbox']
+                                        cx, cy = t['face_center']
                                         kps = []
                                         lm5 = t.get('landmarks_5')
                                         if lm5 is not None and lm5.shape[0] >= 5:
-                                            for idx, name in enumerate(['left_eye','right_eye','nose','left_mouth','right_mouth']):
-                                                kps.append(Keypoint(x=float(lm5[idx,0]),y=float(lm5[idx,1]),conf=0.9,name=name))
+                                            for idx, name in enumerate(['left_eye', 'right_eye', 'nose', 'left_mouth', 'right_mouth']):
+                                                kps.append(Keypoint(x=float(lm5[idx, 0]), y=float(lm5[idx, 1]), conf=0.9, name=name))
                                         else:
                                             lm = t.get('landmarks_106')
-                                            # Fallback only: prefer InsightFace's native 5-point kps when present.
-                                            # The 106-point model index layout can vary across model packs.
                                             if lm is not None and lm.shape[0] >= 60:
-                                                for idx, name in [(54,'nose'),(38,'left_eye'),(88,'right_eye'),(91,'left_mouth'),(100,'right_mouth')]:
+                                                for idx, name in [(54, 'nose'), (38, 'left_eye'), (88, 'right_eye'), (91, 'left_mouth'), (100, 'right_mouth')]:
                                                     if idx < lm.shape[0]:
-                                                        kps.append(Keypoint(x=float(lm[idx,0]),y=float(lm[idx,1]),conf=0.9,name=name))
+                                                        kps.append(Keypoint(x=float(lm[idx, 0]), y=float(lm[idx, 1]), conf=0.9, name=name))
                                         pp = PersonPose(
-                                            bbox=(x1,y1,x2,y2),conf=t['confidence'],
-                                            keypoints=kps,face_center=(cx,cy),face_conf=t['confidence'])
+                                            bbox=(x1, y1, x2, y2), conf=t['confidence'],
+                                            keypoints=kps, face_center=(cx, cy), face_conf=t['confidence'])
                                         pp._track_id = t.get('id')
                                         pp._is_primary = bool(t.get('is_primary', False))
                                         pp._lost_frames = int(t.get('lost_frames', 0) or 0)
@@ -1966,7 +1101,6 @@ async def state_push_loop():
                         except Exception as e:
                             if pose_frame_count % 30 == 0:
                                 logger.debug("FaceTrackerV2 error: %s", str(e)[:80])
-                    # Fallback
                     if not tracked_faces:
                         if pose_est is None:
                             from vision.pose_estimator import get_pose_estimator
@@ -1980,11 +1114,11 @@ async def state_push_loop():
                             if pose_frame_count % 30 == 0:
                                 logger.debug("YOLO fallback error: %s", str(e)[:80])
 
-            # 鈹€鈹€ Attention engine 鈹€鈹€
+            # -- Attention engine --
             if _attention_engine and _latest_pose_persons:
                 for p in _latest_pose_persons:
                     face_kps = {kp.name: (kp.x, kp.y) for kp in p.keypoints
-                                if kp.name in ('left_eye','right_eye','nose','left_mouth','right_mouth')}
+                                if kp.name in ('left_eye', 'right_eye', 'nose', 'left_mouth', 'right_mouth')}
                     if len(face_kps) >= 5:
                         landmarks = [
                             face_kps['left_eye'], face_kps['right_eye'], face_kps['nose'],
@@ -2003,7 +1137,7 @@ async def state_push_loop():
             else:
                 _attn_result = {"has_face": False}
 
-            # 鈹€鈹€ MediaPipe face + eye metrics (fine landmarks, throttled) 鈹€鈹€
+            # -- MediaPipe face + eye metrics (throttled) --
             if pose_frame_count % 2 == 0:
                 jpeg = video_client.jpeg_bytes if video_client else None
                 if jpeg:
@@ -2024,8 +1158,8 @@ async def state_push_loop():
                                 "landmarks5": [[round(float(x), 1), round(float(y), 1)]
                                                for x, y in np.asarray(mp_res.landmarks5)[:, :2]]
                                                if mp_res.landmarks5 is not None else [],
-                                "landmarks_eye": [[round(float(mp_res.landmarks[i][0]),1), round(float(mp_res.landmarks[i][1]),1)] for i in [33,160,158,133,153,144,362,385,387,263,373,380]],
-                                "landmarks_mesh": [[round(float(mp_res.landmarks[i][0]),1), round(float(mp_res.landmarks[i][1]),1)] for i in [10,152,234,454,0,17,61,291]]}
+                                "landmarks_eye": [[round(float(mp_res.landmarks[i][0]), 1), round(float(mp_res.landmarks[i][1]), 1)] for i in [33, 160, 158, 133, 153, 144, 362, 385, 387, 263, 373, 380]],
+                                "landmarks_mesh": [[round(float(mp_res.landmarks[i][0]), 1), round(float(mp_res.landmarks[i][1]), 1)] for i in [10, 152, 234, 454, 0, 17, 61, 291]]}
                             em = _eye_tracker.update(landmarks=mp_res.landmarks)
                             _eye_metrics = {"ear_avg": round(float(em.ear_avg), 3),
                                 "blink_rate": float(em.blink_rate), "perclos": round(float(em.perclos), 3),
@@ -2033,13 +1167,13 @@ async def state_push_loop():
                     except Exception as e:
                         logger.warning(f"MediaPipe: {e}")
 
-            # 鈹€鈹€ Emotion recognition (both models, same face crop) 鈹€鈹€
+            # -- Emotion recognition (EmotiEffLib) --
             jpeg = video_client.jpeg_bytes if video_client else None
             landmarks = None
             if _latest_pose_persons:
                 for p in _latest_pose_persons:
                     face_kps = {kp.name: (kp.x, kp.y) for kp in p.keypoints
-                                if kp.name in ('left_eye','right_eye','nose','left_mouth','right_mouth')}
+                                if kp.name in ('left_eye', 'right_eye', 'nose', 'left_mouth', 'right_mouth')}
                     if len(face_kps) >= 5:
                         landmarks = [face_kps['left_eye'], face_kps['right_eye'], face_kps['nose'],
                                      face_kps['left_mouth'], face_kps['right_mouth']]
@@ -2051,24 +1185,12 @@ async def state_push_loop():
                 if frame is not None:
                     from vision.face_crop import extract_face_crop
                     from vision.emotieff_adapter import get_emotieff_adapter
-
-                    # Use tight face crop (better accuracy than full-frame warp)
                     crop_result = extract_face_crop(frame, landmarks, None)
                     img_for_emo = crop_result.crop if crop_result.crop is not None else None
-
                     if img_for_emo is not None:
-                        # 鈹€鈹€ Frame counter (shared across both models) 鈹€鈹€
-                        if not hasattr(state_push_loop, '_emo_frame_cnt'):
-                            state_push_loop._emo_frame_cnt = 0
-                        state_push_loop._emo_frame_cnt += 1
-                        fc = state_push_loop._emo_frame_cnt
-
-                        # 鈹€鈹€ EmotiEffLib (8-class emotion): send raw max result to UI 鈹€鈹€
                         raw_result = get_emotieff_adapter().predict(img_for_emo)
                         if raw_result and raw_result.get("emotion"):
-                            raw_probs = {
-                                str(k): float(v) for k, v in raw_result.get("probabilities", {}).items()
-                            }
+                            raw_probs = {str(k): float(v) for k, v in raw_result.get("probabilities", {}).items()}
                             top_emo = max(raw_probs, key=raw_probs.get) if raw_probs else str(raw_result["emotion"])
                             top_conf = float(raw_probs.get(top_emo, raw_result.get("confidence", 0.0)))
                             _emotieff_result = {
@@ -2077,13 +1199,9 @@ async def state_push_loop():
                                 "probabilities": raw_probs,
                                 "source": "emotiefflib_raw_max",
                             }
-                            _emotion_result = _emotieff_result  # mirror for compatibility
+                            _emotion_result = _emotieff_result
 
-                        if fc % 30 == 0:
-                            cv2.imwrite("/tmp/debug_face_crop.jpg", img_for_emo)
-                            logger.info("馃摳 debug_face_crop.jpg saved (frame #%d) emotion=%s", fc, _emotieff_result.get("emotion","?"))
-
-            # 鈹€鈹€ LLM diary: trigger on emotion change 鈹€鈹€
+            # -- LLM diary: trigger on emotion change --
             if not hasattr(state_push_loop, '_last_llm_emo'):
                 state_push_loop._last_llm_emo = None
             emo_name = _emotieff_result.get("emotion", "Neutral") if (_emotieff_result and _emotieff_result.get("emotion")) else "Neutral"
@@ -2093,10 +1211,10 @@ async def state_push_loop():
                 try:
                     from vision.llm_reflect import get_llm
                     _llm_engine = get_llm()
-                except: pass
+                except Exception:
+                    pass
             if _llm_engine and _llm_engine.loaded:
                 loop = asyncio.get_event_loop()
-                # Diary: trigger on emotion change
                 if emotion_changed:
                     try:
                         text = await loop.run_in_executor(None, _llm_engine.diary, emo_name, attn_sc, "")
@@ -2104,113 +1222,24 @@ async def state_push_loop():
                             _llm_diary_entry = {"time": time.strftime("%H:%M"), "emotion": emo_name, "text": text, "editable": True}
                             _last_llm_diary_time = time.time()
                         state_push_loop._last_llm_emo = emo_name
-                    except: pass
-                # Quote every 5 min
-                if not hasattr(state_push_loop, '_lq'): state_push_loop._lq = 0
+                    except Exception:
+                        pass
+                if not hasattr(state_push_loop, '_lq'):
+                    state_push_loop._lq = 0
                 if time.time() - state_push_loop._lq > 300:
                     state_push_loop._lq = time.time()
                     try:
-                        lvl = "涓撴敞" if attn_sc >= 70 else "寰緶" if attn_sc >= 40 else "椋樿繙"
+                        lvl = "high" if attn_sc >= 70 else "mid" if attn_sc >= 40 else "low"
                         _llm_quote_text = await loop.run_in_executor(None, _llm_engine.quote, emo_name, lvl)
-                    except: pass
+                    except Exception:
+                        pass
 
-            # Face tracking display state.
-            if gimbal_ctrl and gimbal_ctrl.face_tracking:
+            # Observe-only control-plane mirror (FSM/decision-trace; never commands).
+            try:
                 res = video_client.resolution if video_client else [1920, 1080]
-                fw, fh = res[0], res[1]
-
-                if not hasattr(gimbal_ctrl, '_ft_lock_cnt'):
-                    gimbal_ctrl._ft_lock_cnt = 0
-                    gimbal_ctrl._ft_locked = False
-                    gimbal_ctrl._ft_last_center = None
-
-                best_face = _best_complete_face(0.45, int(fw), int(fh))
-                capture = _update_face_capture_state(best_face, int(fw), int(fh))
-
-                track_target = None
-                track_conf = 0.0
-                track_source = "none"
-                if best_face:
-                    x1, y1, x2, y2 = best_face.bbox
-                    fw_px, fh_px = x2 - x1, y2 - y1
-                    if fw_px >= 40 and fh_px >= 40:
-                        track_target = best_face.face_center
-                        mp_target = _tracking_point_from_landmarks5(_mp_landmarks5)
-                        if mp_target is not None:
-                            mx, my = mp_target
-                            if x1 - 80 <= mx <= x2 + 80 and y1 - 80 <= my <= y2 + 80:
-                                track_target = mp_target
-                                track_source = "mediapipe_eye_nose"
-                            else:
-                                track_source = "face_center_mp_outside"
-                        else:
-                            track_source = "face_center"
-                        track_conf = float(best_face.face_conf)
-
-                if capture.get("state") == "IO_PRESENT" and track_target is not None:
-                    gimbal_ctrl._ft_lock_cnt = max(2, int(capture.get("candidate_count", 0)))
-                    gimbal_ctrl._ft_last_center = track_target
-                    if not gimbal_ctrl._ft_locked:
-                        gimbal_ctrl._ft_locked = True
-                        gimbal_ctrl._rapid_align = False
-                        gimbal_ctrl._ft_ema_yaw = None
-                        gimbal_ctrl._ft_ema_pitch = None
-                        logger.info("馃幆 Face lock-in: tracking face (conf=%.2f size=%d脳%d px)",
-                            track_conf,
-                            int(fw_px), int(fh_px))
-                    cmd = None
-                    ctrl_debug = {
-                        "active": bool(cmd),
-                        "reason": cmd.reason if cmd else "no_command",
-                        "target": [round(float(track_target[0]), 1), round(float(track_target[1]), 1)],
-                        "cmd": {
-                            "yaw": round(float(cmd.yaw), 2) if cmd and cmd.yaw is not None else None,
-                            "pitch": round(float(cmd.pitch), 2) if cmd and cmd.pitch is not None else None,
-                        },
-                        "fsm_state": "unavailable",
-                    }
-                    _set_tracking_debug(
-                        face_capture=capture,
-                        track_target=[round(float(track_target[0]), 1), round(float(track_target[1]), 1)],
-                        track_source=track_source,
-                        track_conf=round(float(track_conf), 3),
-                        ft_locked=bool(gimbal_ctrl._ft_locked),
-                        ft_lock_cnt=int(gimbal_ctrl._ft_lock_cnt),
-                        controller=ctrl_debug,
-                    )
-                else:
-                    gimbal_ctrl._ft_lock_cnt = 0
-                    if capture.get("state") == "IO_MISSING":
-                        if gimbal_ctrl._ft_locked:
-                            logger.info("馃幆 Face temporarily lost: predictive local search")
-                        gimbal_ctrl._ft_locked = False
-                        gimbal_ctrl._ft_last_center = None
-                        reacquire_debug = _predictive_reacquire_step(gimbal_ctrl, int(fw), int(fh))
-                    else:
-                        reacquire_debug = None
-                        if gimbal_ctrl._ft_locked:
-                            logger.info("馃幆 Face lock lost: returning to search")
-                        gimbal_ctrl._ft_locked = False
-                        gimbal_ctrl._ft_last_center = None
-
-                    if capture.get("state") == "IO_IDLE" and _startup_phase == 3 and not _manual_active:
-                        _startup_phase = 1
-                        _startup_ts = time.monotonic()
-                        gimbal_ctrl._rapid_align = True
-
-                    if hasattr(gimbal_ctrl, '_ft_ema_yaw') and gimbal_ctrl._ft_ema_yaw is not None:
-                        gimbal_ctrl._ft_ema_yaw *= 0.55
-                        gimbal_ctrl._ft_ema_pitch *= 0.55
-
-                    _set_tracking_debug(
-                        face_capture=capture,
-                        track_target=None,
-                        track_source=track_source,
-                        track_conf=round(float(track_conf), 3),
-                        ft_locked=bool(gimbal_ctrl._ft_locked),
-                        ft_lock_cnt=int(gimbal_ctrl._ft_lock_cnt),
-                        reacquire=reacquire_debug,
-                    )
+                _observe_control_step(_extract_detections(), int(res[0]), int(res[1]))
+            except Exception as e:
+                logger.debug("observe step error: %s", str(e)[:80])
 
             snapshot = build_state_snapshot()
             await ws_mgr.broadcast(snapshot)
@@ -2225,7 +1254,11 @@ async def state_push_loop():
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
-    global _sound_tracking, _tracking_mode, _conversation_recording_requested
+    """Display-only WebSocket: pushes telemetry/perception snapshots.
+
+    No control messages are accepted here. All gimbal control lives in
+    core/orchestrator.py -> hardware/recamera_client.py.
+    """
     await ws_mgr.connect(ws)
     try:
         # Send initial snapshot immediately
@@ -2233,66 +1266,10 @@ async def ws_endpoint(ws: WebSocket):
 
         while True:
             msg = await ws.receive_text()
-
-            if msg == "gimbal_sleep":
-                await ws_mgr.send_to(ws, {"success": False, "reason": "fastapi_ui_only"})
-            elif msg == "gimbal_standby":
-                await ws_mgr.send_to(ws, {"success": False, "reason": "fastapi_ui_only"})
-            elif msg == "ui_emergency_disabled":
-                await ws_mgr.send_to(ws, {"success": False, "reason": "fastapi_ui_only"})
-            elif msg.startswith("ui_yaw_disabled:"):
-                try: await ws_mgr.send_to(ws, {"success": False, "reason": "fastapi_ui_only"})
-                except ValueError: pass
-            elif msg.startswith("ui_pitch_disabled:"):
-                try: await ws_mgr.send_to(ws, {"success": False, "reason": "fastapi_ui_only"})
-                except ValueError: pass
-            elif msg.startswith("ui_speed_disabled:"):
-                try: await ws_mgr.send_to(ws, {"success": False, "reason": "fastapi_ui_only"})
-                except ValueError: pass
-            elif msg == "request_state":
+            if msg == "request_state":
                 await ws_mgr.send_to(ws, build_state_snapshot())
-            # 鈹€鈹€ Face tracking 鈹€鈹€
-            elif msg == "face_track_start":
-                if gimbal_ctrl: gimbal_ctrl.start_face_tracking()
-            elif msg == "face_track_stop":
-                if gimbal_ctrl: gimbal_ctrl.stop_face_tracking()
-            elif msg == "face_track_toggle":
-                if gimbal_ctrl:
-                    if gimbal_ctrl.face_tracking: gimbal_ctrl.stop_face_tracking()
-                    else: gimbal_ctrl.start_face_tracking()
-            # 鈹€鈹€ Sound tracking 鈹€鈹€
-            elif msg == "sound_track_start":
-                _sound_tracking = True
-                _tracking_mode = "multi"
-                _conversation_recording_requested = False
-                _ensure_doa_reader()
-                if gimbal_ctrl:
-                    gimbal_ctrl._state.sound_tracking = True
-                    gimbal_ctrl.stop_face_tracking()
-                logger.info("馃帳 Sound tracking ENABLED")
-            elif msg == "sound_track_stop":
-                _sound_tracking = False
-                _tracking_mode = "single"
-                _conversation_recording_requested = False
-                _stop_conversation_recording(finalize=True)
-                if gimbal_ctrl:
-                    gimbal_ctrl._state.sound_tracking = False
-                logger.info("馃帳 Sound tracking DISABLED")
-            elif msg == "sound_track_toggle":
-                _sound_tracking = not _sound_tracking
-                _tracking_mode = "multi" if _sound_tracking else "single"
-                _conversation_recording_requested = False
-                if _sound_tracking:
-                    _ensure_doa_reader()
-                else:
-                    _stop_conversation_recording(finalize=True)
-                if gimbal_ctrl:
-                    gimbal_ctrl._state.sound_tracking = _sound_tracking
-                    if _sound_tracking:
-                        gimbal_ctrl.stop_face_tracking()
-                logger.info("馃帳 Sound tracking: %s", "ON" if _sound_tracking else "OFF")
             else:
-                logger.debug("Unknown WS message: %s", msg[:40])
+                logger.debug("Ignored WS message (display-only server): %s", msg[:40])
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -2350,267 +1327,13 @@ async def api_state():
 
 @app.get("/api/gimbal/state")
 async def api_gimbal_state():
-    gs = gimbal_ctrl.get_state() if gimbal_ctrl else GimbalStateData()
-    return {
-        "connected": gs.connected,
-        "dry_run": bool(getattr(gimbal_ctrl, "_dry_run", True)) if gimbal_ctrl else True,
-        "sio_connected": bool(getattr(gimbal_ctrl, "_sio_connected", False)) if gimbal_ctrl else False,
-        "yaw_angle": gs.yaw_angle, "yaw_target": gs.yaw_target,
-        "pitch_angle": gs.pitch_angle, "pitch_target": gs.pitch_target,
-        "speed": gs.speed, "tracking": gs.tracking,
-    }
+    # Read-only telemetry (hardware truth). No control is exposed here.
+    return dict(_gimbal_tlm)
 
 
-@app.post("/api/gimbal/yaw")
-async def ui_yaw_disabled(payload: dict):
-    return {"success": False, "reason": "fastapi_ui_only"}
-
-
-@app.post("/api/gimbal/pitch")
-async def ui_pitch_disabled(payload: dict):
-    return {"success": False, "reason": "fastapi_ui_only"}
-
-
-@app.post("/api/gimbal/speed")
-async def ui_speed_disabled(payload: dict):
-    return {"success": False, "reason": "fastapi_ui_only"}
-
-
-@app.post("/api/gimbal/sleep")
-async def gimbal_sleep():
-    return {"success": False, "reason": "fastapi_ui_only"}
-
-
-@app.post("/api/gimbal/standby")
-async def gimbal_standby():
-    return {"success": False, "reason": "fastapi_ui_only"}
-
-
-@app.post("/api/gimbal/stop")
-async def gimbal_stop():
-    return {"success": False, "reason": "fastapi_ui_only"}
-
-
-@app.post("/api/gimbal/calibrate")
-async def gimbal_calibrate():
-    return {"success": False, "message": "Direct gimbal calibration is disabled by single control plane"}
-
-
-@app.get("/api/face_track/state")
-async def api_face_track_state():
-    return {
-        "active": gimbal_ctrl.face_tracking if gimbal_ctrl else False,
-        "persons": _build_pose_data(),
-    }
-
-
-@app.post("/api/face_track/start")
-async def api_face_track_start():
-    if gimbal_ctrl: gimbal_ctrl.start_face_tracking()
-    return {"success": True, "active": gimbal_ctrl.face_tracking if gimbal_ctrl else False}
-
-
-@app.post("/api/face_track/stop")
-async def api_face_track_stop():
-    if gimbal_ctrl: gimbal_ctrl.stop_face_tracking()
-    return {"success": True, "active": False}
-
-
-@app.get("/api/single_track/state")
-async def api_single_track_state():
-    return {
-        "success": True,
-        "mode": _tracking_mode,
-        "active": bool(gimbal_ctrl.face_tracking) if gimbal_ctrl else False,
-        "face_lock": {
-            "locked": getattr(gimbal_ctrl, "_ft_locked", False) if gimbal_ctrl else False,
-            "lock_cnt": getattr(gimbal_ctrl, "_ft_lock_cnt", 0) if gimbal_ctrl else 0,
-        },
-        "attention": _attn_result,
-        "emotion": _emotieff_result or _emotion_result,
-        "tracking_debug": _tracking_debug,
-    }
-
-
-@app.post("/api/single_track/start")
-async def api_single_track_start(payload: dict = None):
-    global _tracking_mode, _sound_tracking, _conversation_recording_requested
-    _tracking_mode = "single"
-    _sound_tracking = False
-    _conversation_recording_requested = False
-    _stop_conversation_recording(finalize=True)
-    if gimbal_ctrl:
-        gimbal_ctrl._state.sound_tracking = False
-        gimbal_ctrl.start_face_tracking()
-        gimbal_ctrl._rapid_align = True
-        gimbal_ctrl._ft_locked = False
-        gimbal_ctrl._ft_lock_cnt = 0
-        gimbal_ctrl._ft_last_center = None
-        gimbal_ctrl._ft_ema_yaw = None
-        gimbal_ctrl._ft_ema_pitch = None
-        gimbal_ctrl.ui_speed_disabled(int((payload or {}).get("speed", 360)))
-    logger.info("馃懁 Single tracking started via UI")
-    return await api_single_track_state()
-
-
-@app.post("/api/single_track/stop")
-async def api_single_track_stop():
-    if gimbal_ctrl:
-        gimbal_ctrl.stop_face_tracking()
-        gimbal_ctrl._rapid_align = False
-    logger.info("馃懁 Single tracking stopped via UI")
-    return await api_single_track_state()
-
-
-@app.get("/api/multi_track/state")
-async def api_multi_track_state():
-    return {
-        "success": True,
-        "mode": _tracking_mode,
-        "active": bool(_sound_tracking),
-        "doa_available": _doa_reader is not None,
-        "doa": _doa_status(),
-        "sound_follow": _sound_follow_state,
-        "conversation": _conversation_state(),
-        "gimbal_mode": gimbal_state.mode_name,
-    }
-
-
-@app.post("/api/multi_track/start")
-async def api_multi_track_start(payload: dict = None):
-    global _tracking_mode, _sound_tracking, _conversation_recording_requested
-    payload = payload or {}
-    _tracking_mode = "multi"
-    _sound_tracking = True
-    _conversation_recording_requested = bool(payload.get("save_audio", False))
-    _resume_ai_gimbal_mode("multi_track_start")
-    doa_ok = _ensure_doa_reader()
-    recording_ok = _start_conversation_recording() if _conversation_recording_requested else True
-    if gimbal_ctrl:
-        gimbal_ctrl._state.sound_tracking = True
-        gimbal_ctrl.stop_face_tracking()
-        gimbal_ctrl._rapid_align = False
-    logger.info(
-        "馃帳 Multi DOA tracking started (audio_recording=%s)",
-        _conversation_recording_requested,
-    )
-    state = await api_multi_track_state()
-    state["success"] = bool(doa_ok)
-    state["recording_success"] = bool(recording_ok)
-    return state
-
-
-@app.post("/api/multi_track/stop")
-async def api_multi_track_stop(payload: dict = None):
-    global _sound_tracking, _conversation_recording_requested
-    payload = payload or {}
-    _sound_tracking = False
-    _conversation_recording_requested = False
-    _stop_conversation_recording(finalize=bool(payload.get("finalize", True)))
-    if gimbal_ctrl:
-        gimbal_ctrl._state.sound_tracking = False
-    _sound_follow_state.update({
-        "active": False,
-        "has_speech": False,
-        "target_yaw": None,
-        "reason": "stopped",
-    })
-    logger.info("馃帳 Multi tracking/recording stopped via UI")
-    return await api_multi_track_state()
-
-
-# 鈹€鈹€ Sound Tracking API 鈹€鈹€
-
-@app.get("/api/sound_track/state")
-async def api_sound_track_state():
-    global _sound_tracking
-    return {
-        "available": _doa_reader is not None,
-        "source": _doa_status().get("source"),
-        "active": bool(_sound_tracking),
-        "doa_deg": round(_doa_reader.doa, 1) if _doa_reader else None,
-        "has_speech": _doa_reader.has_speech if _doa_reader else False,
-    }
-
-@app.post("/api/sound_track/start")
-async def api_sound_track_start():
-    global _sound_tracking, _conversation_recording_requested
-    _sound_tracking = True
-    _conversation_recording_requested = False
-    _resume_ai_gimbal_mode("sound_track_start")
-    _ensure_doa_reader()
-    if gimbal_ctrl:
-        gimbal_ctrl._state.sound_tracking = True
-        gimbal_ctrl.stop_face_tracking()
-    logger.info("馃帳 Sound tracking started via API")
-    return {"success": _doa_reader is not None, "active": True, "available": _doa_reader is not None}
-
-@app.post("/api/sound_track/stop")
-async def api_sound_track_stop():
-    global _sound_tracking, _conversation_recording_requested
-    _sound_tracking = False
-    _conversation_recording_requested = False
-    _stop_conversation_recording(finalize=True)
-    if gimbal_ctrl:
-        gimbal_ctrl._state.sound_tracking = False
-    logger.info("馃帳 Sound tracking stopped via API")
-    return {"success": True, "active": False}
-
-@app.post("/api/sound_track/toggle")
-async def api_sound_track_toggle():
-    global _sound_tracking, _conversation_recording_requested
-    _sound_tracking = not _sound_tracking
-    if _sound_tracking:
-        _conversation_recording_requested = False
-        _resume_ai_gimbal_mode("sound_track_toggle")
-        _ensure_doa_reader()
-    else:
-        _conversation_recording_requested = False
-        _stop_conversation_recording(finalize=True)
-    if gimbal_ctrl:
-        gimbal_ctrl._state.sound_tracking = _sound_tracking
-        if _sound_tracking:
-            gimbal_ctrl.stop_face_tracking()
-    return {"success": (not _sound_tracking) or (_doa_reader is not None), "active": _sound_tracking, "available": _doa_reader is not None}
-
-
-@app.get("/api/tracking_mode")
-async def api_tracking_mode_state():
-    return {
-        "mode": _tracking_mode,
-        "sound_tracking": _sound_tracking,
-    }
-
-
-@app.post("/api/tracking_mode")
-async def api_tracking_mode_set(payload: dict = None):
-    global _tracking_mode, _sound_tracking, _conversation_recording_requested
-    payload = payload or {}
-    mode = payload.get("mode", "single")
-    _tracking_mode = "multi" if mode == "multi" else "single"
-    _sound_tracking = (_tracking_mode == "multi")
-    _conversation_recording_requested = bool(payload.get("save_audio", False)) if _sound_tracking else False
-    if _sound_tracking:
-        _resume_ai_gimbal_mode("tracking_mode_multi")
-    if gimbal_ctrl:
-        gimbal_ctrl._state.sound_tracking = _sound_tracking
-        if _sound_tracking:
-            gimbal_ctrl.stop_face_tracking()
-    if _sound_tracking:
-        _ensure_doa_reader()
-        if _conversation_recording_requested:
-            _start_conversation_recording()
-    else:
-        _stop_conversation_recording(finalize=True)
-    logger.info("馃帥->Tracking mode: %s (sound_tracking=%s)", _tracking_mode, _sound_tracking)
-    return {
-        "success": (not _sound_tracking) or (_doa_reader is not None),
-        "mode": _tracking_mode,
-        "sound_tracking": _sound_tracking,
-        "doa_available": _doa_reader is not None,
-        "gimbal_mode": gimbal_state.mode_name,
-        "sound_follow": _sound_follow_state,
-    }
+# NOTE: removed control endpoints: /api/gimbal/{yaw,pitch,speed,sleep,standby,
+# stop,calibrate}, /api/face_track/*, /api/single_track/*, /api/multi_track/*,
+# /api/sound_track/*, /api/tracking_mode. Control plane = core.orchestrator.
 
 
 # 鈹€鈹€ Conversation Recording API 鈹€鈹€
@@ -2627,18 +1350,12 @@ async def api_conversation_debug():
 
 @app.post("/api/conversation/start")
 async def api_conversation_start(payload: dict = None):
-    global _tracking_mode, _sound_tracking, _conversation_recording_requested
+    # Audio recording only — does not move the gimbal.
+    global _conversation_recording_requested
     payload = payload or {}
-    _tracking_mode = "multi"
-    _sound_tracking = True
     _conversation_recording_requested = bool(payload.get("save_audio", False))
-    _resume_ai_gimbal_mode("conversation_start")
-    _ensure_doa_reader()
     doa_ok = _ensure_doa_reader()
     ok = _start_conversation_recording() if _conversation_recording_requested else True
-    if gimbal_ctrl:
-        gimbal_ctrl._state.sound_tracking = True
-        gimbal_ctrl.stop_face_tracking()
     return {"success": bool(doa_ok), "recording_success": bool(ok), "state": _conversation_state()}
 
 
@@ -2657,184 +1374,7 @@ async def api_conversation_save(payload: dict = None):
     # frontend action that returns the current persisted session metadata.
     return {"success": True, "state": _conversation_state()}
 
-# 鈹€鈹€ Face Auto-Alignment 鈹€鈹€
-
-@app.post("/api/auto_align")
-async def api_auto_align():
-    """
-    Yaw鈫擯itch 浜ゆ浛瀵瑰噯: 鍏堣皟 Yaw 璁╀汉灞呬腑, 鍐嶈皟 Pitch 璁╄劯灞呬腑, 鍥炲ご->Yaw, 寰幆鐩村埌涓よ€呴兘 OK.
-    """
-    FOV = 70
-    YAW_OK, PITCH_OK = 0.04, 0.05  # 鏇翠弗鏍肩殑瀵瑰噯闃?>(25px/32px)
-
-    def _yaw(y):
-        y = max(1, min(345, int(y) % 360))
-        logger.info(f"  ->YAW {y}掳")
-        if gimbal_ctrl and gimbal_ctrl.connected: gimbal_ctrl.ui_yaw_disabled(y)
-
-    def _pitch(p):
-        p = max(1, min(175, int(p)))
-        logger.info(f"  ->PITCH {p}掳")
-        if gimbal_ctrl and gimbal_ctrl.connected: gimbal_ctrl.ui_pitch_disabled(p)
-
-    def _jpeg(): return video_client.jpeg_bytes if video_client else None
-
-    # 鈹€鈹€ 妫€娴嬬紦-> 杩炵画2甯х‘->鈹€鈹€
-    _last_cx_cache = [None, None]  # 2甯х紦鍐插尯
-    _last_cy_cache = [None, None]
-
-    def _get_target_cx():
-        """杩斿洖浜轰綋姘村钩涓績 cx(0-1). 杩炵画2甯ч兘鏃犳墠鍒one."""
-        boxes = video_client.boxes if video_client else []
-        # Get actual frame width from video resolution
-        res = video_client.resolution if video_client else [1920, 1080]
-        fw = res[0] if res[0] > 0 else 1920
-        cx = None
-        # 璁惧 YOLO person (闃?>2%, 闈㈢Н->.5%)
-        for b in boxes:
-            if len(b) < 6: continue
-            if int(b[5]) != 0: continue
-            conf = b[4]/100.0 if b[4] > 1 else float(b[4])
-            if conf < 0.42: continue
-            cx_b, cy_b = float(b[0]), float(b[1])
-            bw, bh = float(b[2]), float(b[3])
-            if bw*bh/(fw*fw) < 0.015: continue
-            logger.info(f"  body: conf={conf:.0%} cx={cx_b/fw:.2f} {bw:.0f}x{bh:.0f}")
-            cx = cx_b / fw
-            break
-        # fallback: 鑲╄唨
-        if cx is None:
-            for p in _latest_pose_persons:
-                s = [kp for kp in p.keypoints if kp.name in ("left_shoulder","right_shoulder") and kp.conf > 0.35]
-                if len(s) >= 1:
-                    cx = sum(kp.x for kp in s) / len(s) / fw
-                    break
-        _last_cx_cache.pop(0); _last_cx_cache.append(cx)
-        return cx if any(v is not None for v in _last_cx_cache) else None
-
-    def _get_face_cy():
-        """杩斿洖浜鸿劯鍨傜洿涓績 cy(0-1). 杩炵画2甯ч兘鏃犳墠鍒one."""
-        jpeg = _jpeg()
-        cy = None
-        if jpeg:
-            import cv2, numpy as np
-            arr = np.frombuffer(jpeg, dtype=np.uint8)
-            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if img is not None:
-                h, w = img.shape[:2]
-                # YuNet: 闃堝€奸檷->.35
-                try:
-                    yunet = cv2.FaceDetectorYN_create("models/face_detection_yunet.onnx","",(w,h),0.35,0.3,5000)
-                    _, faces = yunet.detect(img)
-                except: faces = None
-                if faces is not None and len(faces)>0:
-                    best = max(faces, key=lambda f: f[14] if len(f)>14 else 0)
-                    if float(best[14]) >= 0.35:
-                        cy = (float(best[1]) + float(best[3])/2) / h
-                # bbox top
-                if cy is None:
-                    boxes = video_client.boxes if video_client else []
-                    for b in boxes:
-                        if len(b) < 6: continue
-                        if int(b[5]) != 0: continue
-                        conf = b[4]/100.0 if b[4] > 1 else float(b[4])
-                        if conf < 0.42: continue
-                        cy_b2, bh_v = float(b[1]), float(b[3])
-                        if bh_v > 40:
-                            cy = (cy_b2 - bh_v * 0.3) / h
-                            break
-        _last_cy_cache.pop(0); _last_cy_cache.append(cy)
-        return cy if any(v is not None for v in _last_cy_cache) else None
-
-    # 鈹€鈹€ 闄?>+ 绛夋娴嬬绾垮氨->鈹€鈹€
-    saved = gimbal_ctrl._state.speed if gimbal_ctrl else 360
-    if gimbal_ctrl and gimbal_ctrl.connected: gimbal_ctrl.ui_speed_disabled(60)
-    await asyncio.sleep(1.5)
-
-    yaw = gimbal_ctrl._state.yaw_target if gimbal_ctrl else 180
-    pitch = gimbal_ctrl._state.pitch_target if gimbal_ctrl else 90
-    steps = []
-    yaw_aligned = pitch_aligned = False
-
-    # 鈹€鈹€ 浜ゆ浛寰幆: Yaw ->Pitch ->->Yaw (鏈€->12 -> 鈹€鈹€
-    no_target_count = 0
-    for round_num in range(12):
-        if no_target_count >= 3:
-            steps.append({"r":"abort","reason":"no_target_3x"}); break
-
-        if not yaw_aligned:
-            cx = _get_target_cx()
-            if cx is not None:
-                no_target_count = 0  # 鎵惧埌鐩爣, 閲嶇疆
-                rx = cx - 0.5
-                if abs(rx) < YAW_OK:
-                    yaw_aligned = True
-                    steps.append({"r":round_num+1,"axis":"yaw","result":"aligned","rx":round(rx,3)})
-                else:
-                    dy = -rx * FOV * (0.5 if round_num < 2 else 0.7 if round_num < 4 else 0.6)
-                    dy = max(-20, min(20, dy))  # gentler first step, prevent overshoot
-                    yaw = max(1, min(345, (yaw + int(dy)) % 360))
-                    _yaw(yaw)
-                    steps.append({"r":round_num+1,"axis":"yaw","rx":round(rx,3),"dy":round(dy,1)})
-                    await asyncio.sleep(1.0)  # reduced from 1.5s
-                    continue  # 璋冧簡 Yaw, 涓嬩竴杞厛->Yaw 鍐嶈皟 Pitch
-            else:
-                steps.append({"r":round_num+1,"axis":"yaw","result":"no_target"})
-                no_target_count += 1
-                await asyncio.sleep(0.5)
-
-        elif not pitch_aligned:
-            cy = _get_face_cy()
-            if cy is not None:
-                no_target_count = 0  # 鎵惧埌-> 閲嶇疆
-                ry = cy - 0.5
-                if abs(ry) < PITCH_OK:
-                    pitch_aligned = True
-                    steps.append({"r":round_num+1,"axis":"pitch","result":"aligned","ry":round(ry,3)})
-                else:
-                    dp = ry * FOV * (0.5 if round_num < 2 else 0.7 if round_num < 4 else 0.6)
-                    pitch = max(1, min(175, pitch + int(dp)))
-                    _pitch(pitch)
-                    steps.append({"r":round_num+1,"axis":"pitch","ry":round(ry,3),"dp":round(dp,1)})
-                    await asyncio.sleep(1.0)  # reduced from 1.5s
-                    # Pitch 璋冨畬 ->閲嶉獙 Yaw (鍥犱负 Pitch 鍙樺寲浼氬奖鍝嶆按->
-                    yaw_aligned = False
-                    continue
-            else:
-                steps.append({"r":round_num+1,"axis":"pitch","result":"no_face"})
-                no_target_count += 1
-                await asyncio.sleep(0.5)
-
-        if yaw_aligned and pitch_aligned:
-            break
-
-    # 鈹€鈹€ 鎼滅储锛堥兘娌℃壘鍒版椂, 浠庡師濮嬩綅缃乏鍙充氦鏇挎壂锛夆攢鈹€
-    if not yaw_aligned and not pitch_aligned:
-        orig_yaw = gimbal_ctrl._state.yaw_target if gimbal_ctrl else 180
-        for deg in [15, -15, 30, -30, 45, -45]:
-            target_yaw = max(1, min(345, (orig_yaw + deg) % 360))
-            _yaw(target_yaw)
-            await asyncio.sleep(2.0)
-            cx = _get_target_cx()
-            if cx:
-                rx = cx - 0.5
-                final_yaw = max(1, min(345, (target_yaw + int(-rx * FOV * 0.5)) % 360))
-                _yaw(final_yaw)
-                steps.append({"r":"search","found":True,"deg":deg}); break
-            steps.append({"r":"search","deg":deg})
-        else:
-            _yaw(180); _pitch(90); steps.append({"r":"search","result":"back_to_center"})
-
-    # 鈹€鈹€ 涓や釜杞撮兘 OK 鎵嶇畻瀵瑰噯鎴愬姛 ->auto face tracking 鈹€鈹€
-    ok = yaw_aligned or pitch_aligned  # yaw瀵瑰噯灏卞紑杩借釜
-    if ok and gimbal_ctrl and gimbal_ctrl.connected:
-        gimbal_ctrl.start_face_tracking()
-        steps.append({"r":"done","face_tracking":"on"})
-
-    if gimbal_ctrl and gimbal_ctrl.connected: gimbal_ctrl.ui_speed_disabled(saved)
-    logger.info(f"=== AUTO_ALIGN: {len(steps)} steps, yaw_ok={yaw_aligned}, pitch_ok={pitch_aligned} ===")
-    return {"success": ok, "yaw_aligned": yaw_aligned, "pitch_aligned": pitch_aligned, "steps": steps}
-
+# NOTE: removed /api/auto_align (gimbal yaw/pitch search + face-tracking start).
 
 _last_snapshot = None  # cache last good frame
 
@@ -2973,79 +1513,39 @@ async def health():
     return {
         "status": "ok",
         "video": video_client._connected if video_client else False,
-        "gimbal": gimbal_ctrl.connected if gimbal_ctrl else False,
+        "gimbal": bool(_gimbal_tlm.get("connected")),
     }
 
 
-# 鈹€鈹€ Dashboard HTML 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# 鈹€鈹€ Two pages only 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# PAGE 1 = Control Dashboard (real telemetry/observability) -> /control , /v2
+# PAGE 2 = App / Demo (mock only)                           -> / , /home
+HOME_FILE = DASHBOARD_DIR / "home.html"
+_NOCACHE = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache", "Expires": "0"}
+
+
+def _serve_html(path: Path):
+    return (HTMLResponse(path.read_text(encoding="utf-8"), headers=dict(_NOCACHE))
+            if path.is_file() else HTMLResponse("Not found", status_code=404))
+
 
 @app.get("/")
-async def serve_dashboard():
-    # Tablet/PWA default entry.
-    return RedirectResponse("/home")
-
-
-@app.get("/simple")
-async def serve_simple():
-    t = DASHBOARD_DIR / "simple.html"
-    return HTMLResponse(t.read_text(), headers={"Cache-Control":"no-store"}) if t.is_file() else HTMLResponse("Not found", status_code=404)
-
-
-@app.get("/debug.html")
-async def serve_debug():
-    t = DASHBOARD_DIR / "debug.html"
-    return HTMLResponse(t.read_text()) if t.is_file() else HTMLResponse("Not found", status_code=404)
-
-
-@app.get("/xinyu")
-async def serve_xinyu():
-    """Redirect to /home ->the definitive 蹇冨笨 page."""
+async def serve_root():
     return RedirectResponse("/home")
 
 
 @app.get("/home")
-async def serve_home(request: Request):
-    t = DASHBOARD_DIR / "home.html"
-    headers = {
-        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-        "Pragma": "no-cache", "Expires": "0"
-    }
-    if request.query_params.get("reset-sw") == "1":
-        headers["Clear-Site-Data"] = '"cache", "storage"'
-    return HTMLResponse(t.read_text(), headers=headers) if t.is_file() else HTMLResponse("Not found", status_code=404)
+async def serve_home():
+    # PAGE 2: product demo / feature preview (mock data only).
+    return _serve_html(HOME_FILE)
 
 
-@app.get("/tablet")
-async def serve_tablet_control():
-    t = DASHBOARD_DIR / "tablet_control.html"
-    headers = {
-        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-        "Pragma": "no-cache",
-        "Expires": "0",
-    }
-    return HTMLResponse(t.read_text(), headers=headers) if t.is_file() else HTMLResponse("Not found", status_code=404)
-
-
-@app.get("/conversation-mock")
-async def serve_conversation_mock():
-    t = DASHBOARD_DIR / "conversation_mock.html"
-    headers = {
-        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-        "Pragma": "no-cache",
-        "Expires": "0",
-    }
-    return HTMLResponse(t.read_text(), headers=headers) if t.is_file() else HTMLResponse("Not found", status_code=404)
-
-
-@app.get("/video-demo")
-async def serve_video_demo():
-    t = DASHBOARD_DIR / "video_demo.html"
-    headers = {
-        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-        "Pragma": "no-cache",
-        "Expires": "0",
-    }
-    return HTMLResponse(t.read_text(), headers=headers) if t.is_file() else HTMLResponse("Not found", status_code=404)
+@app.get("/control")
+@app.get("/v2")
+async def serve_control():
+    # PAGE 1: real-time control dashboard + observability.
+    return _serve_html(HTML_FILE)
 
 
 @app.get("/manifest.webmanifest")
@@ -3071,32 +1571,6 @@ async def serve_service_worker():
     ) if t.is_file() else HTMLResponse("Not found", status_code=404)
 
 
-@app.get("/camtest.html")
-async def serve_camtest():
-    t = DASHBOARD_DIR / "camtest.html"
-    return HTMLResponse(t.read_text()) if t.is_file() else HTMLResponse("Not found", status_code=404)
-
-
-@app.get("/device.html")
-async def serve_device_dashboard():
-    device_html = DASHBOARD_DIR / "recamera_device.html"
-    if device_html.is_file():
-        return HTMLResponse(device_html.read_text(),
-            headers={"Cache-Control": "no-cache"})
-    return HTMLResponse("Not found", status_code=404)
-
-
-@app.get("/v2")
-async def serve_dashboard_v2():
-    if HTML_FILE.is_file():
-        return HTMLResponse(
-            HTML_FILE.read_text(),
-            headers={"Cache-Control": "no-cache, no-store, must-revalidate",
-                     "Pragma": "no-cache", "Expires": "0"},
-        )
-    return HTMLResponse("<h1>Dashboard not found</h1>", status_code=404)
-
-
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  CLI + Entry point
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
 def parse_args():
@@ -3104,11 +1578,11 @@ def parse_args():
         description="reCamera Demo Dashboard (FastAPI+MJPEG)",
         epilog="Examples:\n"
                "  %(prog)s                          # safe: video + TCP DOA + gimbal dry-run\n"
-               "  %(prog)s --device-ip 192.168.201.84  # use the current WiFi device\n"
+               "  %(prog)s --device-ip 192.168.106.85  # use the current WiFi device\n"
                "  %(prog)s --no-dry-run             # enable real gimbal control",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--device-ip", default="192.168.201.84", help="reCamera device IP")
+    p.add_argument("--device-ip", default="192.168.106.85", help="reCamera device IP")
     p.add_argument("--host", default="0.0.0.0", help="Server host")
     p.add_argument("--port", type=int, default=8001, help="Server port")
     p.add_argument("--no-dry-run", action="store_true", help="Send REAL gimbal commands to device")

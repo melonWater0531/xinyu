@@ -1,64 +1,71 @@
-# reCamera Multimodal：架构、运行流程与 Debug 手册
+# reCamera Multimodal — 架构、运行流程与 Debug 手册
 
-> 唯一流程主文档
-> 版本：3.0
-> 更新日期：2026-06-19
-> 当前 reCamera 无线 IP：`192.168.201.84`
+> 唯一流程主文档  
+> 版本：4.0  
+> 更新日期：2026-06-26  
+> 当前 reCamera 无线 IP：`192.168.106.85`
 
-本文档描述当前代码真实实现，不描述尚未完成的产品设想。部署、启动、单人追踪、多人 DOA、页面、API、实现细节、测试和排障统一以本文为准。
+本文档描述当前代码真实实现。架构深度说明见 `docs/ARCHITECTURE.md`。
 
 ---
 
 ## 1. 系统目标与当前能力
 
-本项目把 reCamera 云台摄像头、视觉模型、ReSpeaker DOA 和 Web 控制台整合为两个互斥工作模式：
+本项目把 reCamera 云台摄像头、视觉模型、ReSpeaker DOA 和 Web 控制台整合为单一感知与展示系统，实际硬件控制由独立控制进程负责。
 
-| 模式 | 输入 | 核心处理 | 云台行为 | 当前输出 |
-|---|---|---|---|---|
-| 单人模式 | reCamera 视频 | 人体/人脸检测、目标锁定、情绪与专注分析 | yaw + pitch 视觉追踪 | 视频、框选、追踪状态、情绪、专注度 |
-| 多人模式 | TCP DOA | 声源角度、speech 状态、新鲜度判断 | 仅 yaw 声源跟随 | DOA、声源方向、目标 yaw、链路状态 |
+| 能力 | 状态 | 说明 |
+|---|---|---|
+| 实时视频流（MJPEG） | ✅ 已实现 | reCamera SSCMA → FastAPI → 浏览器 |
+| 人体/人脸检测与追踪 | ✅ 已实现 | FaceTrackerV2 + YOLO11 pose + SSCMA 框 |
+| 情绪分析（8 类） | ✅ 已实现 | EmotiEffLib，需 insightface 依赖 |
+| 专注度评分 | ✅ 已实现 | EMA + 个人基线，0–100 分 |
+| 眼部指标 | ✅ 已实现 | EAR、PERCLOS、眨眼率 |
+| 声源定位（DOA） | ✅ 已实现 | TCP 接收 ReSpeaker 数据（`0.0.0.0:9999`） |
+| FSM 状态可观测 | ✅ 已实现 | Observe-only Orchestrator 镜像，零控制权 |
+| 云台遥测（只读） | ✅ 已实现 | `RecameraClient.get_status()` 硬件 readback |
+| LLM 对话/日记 | ✅ 已实现 | DeepSeek API + 本地轻量 fallback |
+| 云台自动控制 | ✅ 已实现 | 仅通过 `main_phase3.py`（单独控制进程） |
 
-当前多人模式默认是 `doa_only`：
-
-- ReSpeaker 不挂载到 WSL。
-- DOA 由连接 ReSpeaker 的 Windows、reCamera 或其他主机读取。
-- DOA 通过 TCP `9999` 转发给 FastAPI。
-- 默认不启动 WSL 本地录音。
-- `save_audio=true` 仍保留为可选实验入口，但不属于当前标准流程。
-- ASR、说话人分离和会议摘要尚未成为生产链路。
+---
 
 ## 2. 总体架构
 
-```mermaid
-flowchart LR
-    RC["reCamera<br/>192.168.201.84"] -->|"SSCMA WebSocket :8090<br/>JPEG + boxes"| API["recamera_fastapi.py<br/>FastAPI :8001"]
-    API -->|"Socket.IO :1880"| NR["reCamera Node-RED<br/>云台控制"]
-
-    RS["ReSpeaker XVF3800"] --> HOST["Windows / reCamera / Linux<br/>xvf_host 或 DOA 读取程序"]
-    HOST -->|"TCP 文本 :9999"| API
-
-    API --> VISION["视觉处理<br/>FaceTracker / Pose / MediaPipe<br/>Emotion / Attention"]
-    API --> MODE{"工作模式"}
-    MODE -->|"single"| SINGLE["视觉搜索、对准、追踪<br/>yaw + pitch"]
-    MODE -->|"multi"| MULTI["DOA 声源跟随<br/>yaw only"]
-
-    API --> WEB["Web UI<br/>/home /v2 /device.html"]
-    API --> STATE["/api/state + /ws<br/>统一状态输出"]
 ```
+reCamera 192.168.106.85
+  ├─ :8090  SSCMA WebSocket ──────────────> recamera_fastapi.py :8001
+  └─ :1880  Node-RED Socket.IO <────────── main_phase3.py（唯一控制进程）
+
+ReSpeaker → xvf_host/Windows → TCP :9999 ──> recamera_fastapi.py
+
+recamera_fastapi.py
+  ├─ 视频: /video_feed（MJPEG）
+  ├─ 感知: FaceTracker / Pose / Emotion / Attention / DOA
+  ├─ 遥测镜像: Observe-only Orchestrator（不发控制指令）
+  ├─ 云台状态: RecameraClient.get_status()（只读）
+  ├─ WebSocket /ws（每 200ms 推状态快照）
+  ├─ PAGE 1 /control /v2: 实时控制台（只读）
+  └─ PAGE 2 /home:      产品 Demo（纯 mock）
+
+控制链路（单一）：
+  main_phase3.py → Orchestrator → RecameraClient.apply_command() → 云台
+```
+
+**架构保证**：FastAPI 进程**永远不调用** `RecameraClient.apply_command()`。  
+所有云台指令唯一来源：`main_phase3.py` → `core/orchestrator.py` → `hardware/recamera_client.py`。
 
 ### 2.1 网络端口
 
 | 地址/端口 | 服务 | 用途 |
 |---|---|---|
-| `192.168.42.1:22` | reCamera USB 网络 SSH | 初始化及查询无线 IP |
-| `192.168.201.84:22` | reCamera Wi-Fi SSH | 无线维护 |
-| `192.168.201.84:80` | 官方 Demo | reCamera 官方页面 |
-| `192.168.201.84:1880` | Node-RED Dashboard | 云台 Socket.IO 控制 |
-| `192.168.201.84:8090` | SSCMA WebSocket | 视频和设备检测框 |
-| `0.0.0.0:9999` | Network DOA Receiver | 接收远程 DOA |
+| `192.168.42.1:22` | reCamera USB SSH | 初始化及查询无线 IP |
+| `192.168.106.85:22` | reCamera Wi-Fi SSH | 无线维护 |
+| `192.168.106.85:80` | 官方 Demo | reCamera 官方页面 |
+| `192.168.106.85:1880` | Node-RED Dashboard | 云台 Socket.IO 控制（仅 `main_phase3.py` 使用） |
+| `192.168.106.85:8090` | SSCMA WebSocket | 视频和检测框（FastAPI 接收） |
+| `0.0.0.0:9999` | Network DOA Receiver | 接收远程 DOA 数据 |
 | `0.0.0.0:8001` | FastAPI | 项目页面、API、MJPEG、WebSocket |
 
-旧的 `设备IP:8080/api/...` 链路不可用。所有项目页面必须调用 FastAPI 同源 `/api/...`。
+---
 
 ## 3. 目录与模块职责
 
@@ -66,126 +73,84 @@ flowchart LR
 
 | 文件 | 职责 |
 |---|---|
-| `recamera_fastapi.py` | 当前推荐入口；统一管理视频、模式、云台、DOA、模型、API 和页面 |
-| `main_phase3.py` | 旧 Phase 3 控制实验入口；适合 Mock 和状态机测试 |
-| `recamera_demo.py` | 轻量设备/DOA 演示入口；不是当前主流程 |
+| `recamera_fastapi.py` | **主生产入口**：视频、感知、遥测、页面服务；零控制权 |
+| `main_phase3.py` | **控制进程**：单 FSM 控制平面，唯一可驱动云台的进程 |
+| `recamera_demo.py` | 轻量演示入口（非主流程） |
 
-日常开发和演示使用 `recamera_fastapi.py`。
+日常开发和演示使用 `recamera_fastapi.py`。  
+需要测试真实云台控制时，使用 `main_phase3.py`。
 
-### 3.2 硬件与数据输入
+### 3.2 控制核心（`core/`）
 
-| 文件 | 职责 |
-|---|---|
-| `vision/video_stream.py` | 连接 `ws://<device>:8090/`，接收 JPEG 与检测框 |
-| `hardware/recamera_client.py` | Phase 3/旧 Demo 使用的通用设备客户端 |
-| `audio/network_doa.py` | 当前默认 DOA 接收器；监听 TCP 文本并提供统一读取接口 |
-| `audio/doa.py` | DOA 文本解析及可插拔 source 基础实现 |
-| `audio/respeaker_doa.py` | 旧 USB HID DOA 实现，仅作为可选回退 |
-| `tools/send_doa_tcp.py` | 从 mock、stdin 或 `xvf_host` 命令向 TCP 接收器转发 DOA |
-
-### 3.3 视觉处理
-
-| 文件 | 职责 |
-|---|---|
-| `vision/face_tracker_v2.py` | InsightFace/SCRFD 检脸、Kalman/ByteTrack、ArcFace 信息 |
-| `vision/pose_estimator.py` | YOLO11 pose，提供人体框和关键点 fallback |
-| `vision/mediapipe_face.py` | Face Landmarker 精细面部点 |
-| `vision/emotieff_adapter.py` | EmotiEffLib 情绪推理 |
-| `vision/attention_engine.py` | 专注度及基线计算 |
-| `vision/eye_metrics.py` | EAR、眨眼、PERCLOS 等眼部指标 |
-| `vision/llm_reflect.py` | 本地轻量反思/日记回复 fallback |
-
-### 3.4 控制与状态
-
-| 文件 | 职责 |
-|---|---|
-| `core/gimbal_mode_state.py` | AI、手动、睡眠、待机、急停模式优先级 |
-| `core/state_machine.py` | Phase 3 实验状态机 |
-| `core/control_filter.py` | 控制平滑、死区、步长限制 |
-| `core/safety_layer.py` | 真实控制安全门 |
-| `core/fusion_controller.py` | Phase 3 多源融合实验 |
-
-FastAPI 主流程的实时控制主要位于 `recamera_fastapi.py` 中的 `state_push_loop()`、`GimbalController`、人脸捕获状态和 DOA 跟随函数。
-
-### 3.5 页面
-
-| 页面 | 路由 | 用途 |
+| 文件 | 生产状态 | 职责 |
 |---|---|---|
-| `dashboard/home.html` | `/home` | 心屿用户侧产品主界面：情绪、专注、多人场景、日记、LLM 对话、健康建议 |
-| `dashboard/recamera_v2_live.html` | `/v2` | 开发/调试控制台：实时视频、单人追踪、多人 DOA、云台、安全控制、日志 |
-| `dashboard/recamera_device.html` | `/device.html` | Legacy 设备调试页：底层云台与设备状态控制，不作为主产品入口 |
-| `dashboard/debug.html` | `/debug.html` | 通用 Debug 页 |
-| `dashboard/camtest.html` | `/camtest.html` | 摄像头测试 |
+| `core/fsm.py` | **ACTIVE** | 单一 FSM；5 状态；事件表 + debounce |
+| `core/orchestrator.py` | **ACTIVE** | 唯一控制决策引擎；audio/vision/fusion 三策略 |
+| `core/event.py` | **ACTIVE** | 数据类：Event、BBox、ControlCommand（frozen） |
+| `core/safety_layer.py` | **ACTIVE** | ControlCommand 约束过滤：rate limit / 步长 / 加速度 |
+| `core/control_filter.py` | **ORPHAN** | 遗留比例控制模块；未被生产代码 import，可忽略 |
 
-所有页面使用相对路径调用 FastAPI，便于 localhost、局域网和平板访问。
+### 3.3 硬件
 
-### 3.6 Web 页面打开方式
+| 文件 | 职责 |
+|---|---|
+| `hardware/recamera_client.py` | 唯一硬件出口；`apply_command()` → Socket.IO 或 HTTP；`get_status()` 只读 |
 
-前提：FastAPI 服务已经启动，并监听 `0.0.0.0:8001`。
+### 3.4 视觉处理（`vision/`）
 
-本机预览：
+| 文件 | 职责 |
+|---|---|
+| `vision/video_stream.py` | SSCMA WebSocket 接收（JPEG + 检测框） |
+| `vision/face_tracker_v2.py` | SCRFD + Kalman/ByteTrack + ArcFace 多脸追踪 |
+| `vision/pose_estimator.py` | YOLO11 pose：人体框 + 17 关键点 |
+| `vision/mediapipe_face.py` | Face Landmarker：精细面部点（可选精度提升） |
+| `vision/emotieff_adapter.py` | EmotiEffLib 情绪推理 |
+| `vision/attention_engine.py` | EMA 专注度评分 + 基线自适应 |
+| `vision/eye_metrics.py` | EAR / 眨眼 / PERCLOS |
+| `vision/llm_reflect.py` | 本地轻量日记反思 fallback |
 
-```text
-http://localhost:8001/home
-http://localhost:8001/v2
-http://localhost:8001/device.html
-```
+### 3.5 音频（`audio/`）
 
-Windows 浏览器访问 WSL 服务时，也可以使用：
+| 文件 | 职责 |
+|---|---|
+| `audio/network_doa.py` | TCP `0.0.0.0:9999` DOA 接收器（当前默认） |
+| `audio/doa.py` | DOA 文本解析 + 可插拔 source 基础实现 |
+| `audio/respeaker_doa.py` | USB HID DOA（可选 fallback） |
+| `audio/conversation_recorder.py` | 可选录音会话（`save_audio=true`） |
 
-```text
-http://127.0.0.1:8001/home
-http://127.0.0.1:8001/v2
-http://127.0.0.1:8001/device.html
-```
+### 3.6 前端（`dashboard/`）
 
-iPad、手机或同一局域网内其他设备访问时，不要使用 `localhost`，需要替换成运行 FastAPI 的电脑局域网 IP：
+| 文件 | 路由 | 用途 |
+|---|---|---|
+| `recamera_v2_live.html` | `/control` `/v2` | PAGE 1：实时控制台（观测 FSM、遥测、感知、决策链） |
+| `home.html` | `/home` | PAGE 2：产品 Demo（纯 mock，无任何真实硬件调用） |
+| `manifest.webmanifest` `/sw.js` | 同名 | PWA 支持 |
 
-```text
-http://<PC局域网IP>:8001/home
-http://<PC局域网IP>:8001/v2
-http://<PC局域网IP>:8001/device.html
-```
+`/`（根路由）重定向到 `/home`。
 
-页面选择：
+---
 
-- `/home`：真实产品主界面。用户侧功能都从这里进入或直接操作，包括情绪监测、专注度监测、多人场景跟踪、情绪日记、LLM 对话和健康建议。
-- `/v2`：开发/调试控制台。用于观察实时视频、检测框、情绪/专注数据、DOA、云台状态、WebSocket/HTTP 状态和事件日志。
-- `/device.html`：legacy 设备调试页。仅在需要旧版底层云台控制或设备状态排查时使用。
-- `/debug.html`：通用调试页。
-- `/camtest.html`：摄像头测试页。
+## 4. reCamera 初始化
 
-官方 reCamera demo 与本项目页面不是同一个入口。官方 demo 打开方式见下一节“reCamera 初始化与官方 Demo”。
-
-## 4. reCamera 初始化与官方 Demo
-
-1. 接上 USB 线，在 Ubuntu 中登录：
-
+1. 接 USB 线，SSH 登录：
    ```bash
    ssh recamera@192.168.42.1
+   # 密码：recamera0526_
    ```
 
-2. 如需密码：
-
-   ```text
-   IntelligentHardware0526_
-   ```
-
-3. 查询无线地址：
-
+2. 查询无线 IP：
    ```bash
-   ip addr
+   ip addr   # 找 wlan0
    ```
 
-4. 找到 `wlan0` 的 IP。电脑与 reCamera 必须处于同一网络。
-
-5. 拔掉 USB，在浏览器访问该 IP：
-
+3. 拔 USB，浏览器访问：
    ```text
-   http://192.168.201.84/
+   http://192.168.106.85/
    ```
 
-无线 IP 可能被 DHCP 重新分配。网络环境变化后必须重新查询，并同步更新代码默认值和本文档。
+无线 IP 可能被 DHCP 重新分配，网络变化后必须重新查询并更新代码默认值。
+
+---
 
 ## 5. 安装与配置
 
@@ -194,604 +159,545 @@ http://<PC局域网IP>:8001/device.html
 ```bash
 cd ~/recamera_multimodal
 python3 -m pip install -r requirements.txt --break-system-packages
+python3 -m pip install insightface --break-system-packages   # 推荐：FaceTrackerV2
 ```
-
-主要依赖包括 FastAPI、Uvicorn、OpenCV、ONNX Runtime、MediaPipe、Socket.IO、WebSocket 和 NumPy。
-
-`insightface` 为推荐可选依赖：
-
-```bash
-python3 -m pip install insightface --break-system-packages
-```
-
-`pyusb` 和 `sounddevice` 是旧 USB/可选录音能力所需；TCP DOA-only 标准流程不依赖 WSL 访问 ReSpeaker USB。
 
 ### 5.2 环境变量
 
 #### DOA
-
 ```bash
-export RECAMERA_DOA_SOURCE=tcp
-export RECAMERA_DOA_HOST=0.0.0.0
-export RECAMERA_DOA_PORT=9999
-export RECAMERA_DOA_SPEECH_HOLD=0.8
-```
-
-上述均为默认值。临时回退旧 USB HID：
-
-```bash
+export RECAMERA_DOA_SOURCE=tcp          # 默认
+export RECAMERA_DOA_HOST=0.0.0.0        # 默认
+export RECAMERA_DOA_PORT=9999           # 默认
+export RECAMERA_DOA_SPEECH_HOLD=0.8    # 默认（秒）
+# 临时回退 USB HID：
 export RECAMERA_DOA_SOURCE=usb
 ```
 
-#### 可选本地录音
-
-```bash
-export RECAMERA_AUDIO_DEVICE=<sounddevice输入设备编号>
-```
-
-标准 DOA-only 流程不设置它。
-
-#### LLM/DeepSeek
-
+#### LLM / DeepSeek
 ```bash
 export DEEPSEEK_API_KEY=<key>
 export DEEPSEEK_API_URL=https://api.deepseek.com/chat/completions
 export DEEPSEEK_MODEL=deepseek-v4-flash
 export DEEPSEEK_MAX_TOKENS=600
 ```
+未配置时自动回退本地轻量 fallback。
 
-未配置 API Key 时，日记聊天会使用本地轻量 fallback。
+---
 
-## 6. 标准启动流程
+## 6. 系统启动与运行模式
+
+### 6.0 架构前提（重要）
+
+> **PAGE 1（`/control`）是只读观测界面，不能直接发出云台指令。**
+>
+> 真实云台控制由 `main_phase3.py` 独立进程负责，与 FastAPI 并行运行。
+> PAGE 1 展示的 FSM 状态来自 FastAPI 内的 observe-only Orchestrator 镜像——
+> 它运行与 `main_phase3.py` 相同的感知逻辑，计算"应该怎么控制"，但**永远不发指令**。
+> 实际指令只能来自 `main_phase3.py → RecameraClient.apply_command()`。
+
+三种运行模式：
+
+| 模式 | 启动进程 | 能看到 | 不能做 |
+|---|---|---|---|
+| **M1 纯观测** | 仅 FastAPI（dry-run） | 视频、感知、FSM 镜像状态 | 云台遥测为 null，不控制硬件 |
+| **M2 观测 + 遥测** | FastAPI `--no-dry-run` | 视频、感知、FSM 镜像、实时云台角度 | 不自动控制云台 |
+| **M3 完整系统** | FastAPI + main_phase3.py | 所有数据 + 云台实际移动 + 遥测 | — |
+
+---
 
 ### 6.1 启动前检查
-
 ```bash
-ping -c 3 192.168.201.84
-nc -zv 192.168.201.84 80
-nc -zv 192.168.201.84 1880
-nc -zv 192.168.201.84 8090
+cd ~/recamera_multimodal
+ping -c 3 192.168.106.85          # reCamera 可达
+nc -zv 192.168.106.85 8090        # SSCMA 视频端口
+nc -zv 192.168.106.85 1880        # Node-RED（M3 需要）
+usbipd.exe list | grep 2886       # ReSpeaker 状态（Shared / Attached）
 ```
 
-### 6.2 安全模式
+---
+
+### 6.2 模式 M1：纯观测（最安全，不接触硬件控制）
+
+适合：首次测试、UI 调试、不需要云台遥测时。
 
 ```bash
+# 终端 1 — FastAPI（TCP DOA，dry-run）
 cd ~/recamera_multimodal
 python3 recamera_fastapi.py
 ```
 
-安全模式会：
-
-- 连接真实视频；
-- 加载视觉模型；
-- 监听 TCP DOA；
-- 执行完整状态逻辑；
-- 更新云台目标状态；
-- 不向真实云台发送运动指令。
-
-关键日志：
-
-```text
-Device IP: 192.168.201.84
-SSCMA connected
+启动成功日志：
+```
+SSCMA connected to ws://192.168.106.85:8090/
 Network DOA listening on 0.0.0.0:9999
-DOA ready for yaw-only sound tracking (source=tcp)
-GIMBAL DRY-RUN
+DRY-RUN mode → gimbal commands NOT sent
+Uvicorn running on http://0.0.0.0:8001
 ```
 
-服务启动后可打开页面。完整页面定位与局域网访问方式见“3.6 Web 页面打开方式”。
+PAGE 1 能看到：视频流、人体/人脸检测框、FSM 状态（IDLE 起点）、感知通道数值。  
+PAGE 1 看不到：云台真实 yaw/pitch（显示 null，因为 dry-run 不连硬件）。
 
-```text
-http://localhost:8001/home
-http://localhost:8001/v2
-http://localhost:8001/device.html
+---
+
+### 6.3 模式 M2：观测 + 云台遥测（推荐日常开发）
+
+适合：验证感知 → FSM 逻辑，同时看到云台真实角度 readback。
+
+**步骤 1：挂载 ReSpeaker（如使用 USB 直连方式 A）**
+```bash
+usbipd.exe attach --busid 1-2 --wsl
+lsusb | grep 2886   # 确认出现
 ```
 
-### 6.3 自动验收
-
-保持服务运行，另开终端：
-
+**步骤 2：启动 FastAPI**
 ```bash
 cd ~/recamera_multimodal
-python3 tools/debug_home_pipelines.py
+export RECAMERA_DOA_SOURCE=usb          # USB ReSpeaker（或不设置 → TCP）
+python3 recamera_fastapi.py --no-dry-run
 ```
 
-诊断依次验证：
-
-1. 单人模式 API 成功；
-2. 单人模式启用视觉追踪；
-3. 多人模式关闭人脸追踪；
-4. 自动连接 TCP `9999`；
-5. 注入 `35°`、`speech=true`；
-6. `packet_count` 增长；
-7. DOA 角度进入 `/api/state`；
-8. `sound_follow` 产生目标 yaw；
-9. 多人模式不访问本地录音设备。
-
-通过标志：
-
-```text
-Result: all checks passed
+关键日志：
+```
+🎤 ReSpeaker XVF3800 connected (VID=0x2886 PID=0x001A)
+🎤 DOA polling started @ 10 Hz
+RecameraClient: CONNECTED via Socket.IO → 192.168.106.85:1880
+Uvicorn running on http://0.0.0.0:8001
 ```
 
-### 6.4 真实云台控制
+PAGE 1 能看到：视频、检测框、FSM 状态变化、DOA 角度、云台真实 yaw/pitch 遥测。  
+注意：`--no-dry-run` 让 FastAPI 侧 RecameraClient 真实连接云台（仅用于 get_status() readback），**仍然不发任何控制指令**。
 
-只有安全模式验收通过后执行：
+---
+
+### 6.4 模式 M3：完整系统（感知 + FSM + 真实云台控制）
+
+适合：端到端验证，确认人脸追踪 / 声源定位 → 云台实际移动。
+
+**两个独立终端并行运行：**
 
 ```bash
-python3 recamera_fastapi.py --device-ip 192.168.201.84 --no-dry-run
+# 终端 1 — FastAPI（观测 + 遥测）
+cd ~/recamera_multimodal
+export RECAMERA_DOA_SOURCE=usb
+python3 recamera_fastapi.py --no-dry-run
 ```
-
-确认日志包含：
-
-```text
-Gimbal connected via Socket.IO
-```
-
-真实控制首次测试应使用小角度，并保持设备周围无障碍物。
-
-### 6.5 停止
-
-正常停止：
-
-```text
-Ctrl+C
-```
-
-API 急停：
 
 ```bash
-curl -X POST http://localhost:8001/api/gimbal/stop
+# 终端 2 — 控制进程（真实云台控制）
+cd ~/recamera_multimodal
+python3 main_phase3.py \
+  --enable-control \
+  --gimbal-ip 192.168.106.85 \
+  --fps 10 \
+  --max-cycles 500
 ```
 
-## 7. 单人模式完整流程
-
-### 7.1 模式切换
-
-入口：
-
-```http
-POST /api/single_track/start
-POST /api/single_track/stop
-GET  /api/single_track/state
+`main_phase3.py` 关键日志：
+```
+CONNECTED via Socket.IO → 192.168.106.85:1880
+[0001] state=IDLE target=no command=hold
+[0004] state=VISION_TRACK target=yes command=vision_track   ← 检测到目标
 ```
 
-启动单人模式时：
+此时 PAGE 1 可观测到：
+- FSM 镜像从 IDLE → VISION_TRACK
+- 决策 trace 出现 `vision_track` 命令记录
+- Gimbal 遥测 yaw/pitch 数值随追踪实时变化（由 main_phase3.py 驱动，FastAPI 读 readback）
 
-```text
-tracking_mode = single
-_sound_tracking = false
-_conversation_recording_requested = false
-face_tracking = true
-gimbal sound_tracking = false
+**注意 SSCMA 双连接**：FastAPI 和 main_phase3.py 各自独立连接 `ws://192.168.106.85:8090/`，二者同时持有连接。reCamera 通常支持多客户端，但若出现视频断连，先停 main_phase3.py，单独验证 FastAPI。
+
+---
+
+### 6.5 Mock 控制进程（不连真实云台，仅验证 FSM 逻辑）
+
+```bash
+python3 main_phase3.py --mock --max-cycles 30 --log-level DEBUG
 ```
 
-单人和多人模式互斥。
+---
 
-### 7.2 视频输入
+### 6.6 停止
 
-`SSCMAVideoClient` 连接：
-
-```text
-ws://192.168.201.84:8090/
+```bash
+Ctrl+C      # 停止各进程
+# main_phase3.py 会自动发送 emergency stop（atexit hook）
 ```
 
-后台线程持续保存：
+---
 
-- 最新 JPEG；
-- SSCMA 检测框；
-- 分辨率；
-- FPS；
-- 连接状态。
+---
 
-FastAPI 将 JPEG 转为：
+## 7. ReSpeaker XVF3800 连接与 DOA 数据传输
 
-```text
-/video_feed
-```
+本节描述两种接入方式，**推荐方式 A（usbipd WSL 直连）**，已在当前机器验证可用。
 
-前端通过 `/ws` 和 `/api/state` 获得状态与叠加信息。
+### 7.0 设备信息
 
-### 7.3 搜索、对准与追踪状态
-
-启动搜索阶段由 `_startup_phase` 表示：
-
-| Phase | 含义 | 行为 |
-|---|---|---|
-| `-1` | 初始检查/归中 | 若已有脸直接追踪；若有人进入 Phase 2；否则回 `yaw=180, pitch=90` |
-| `0` | 归中完成 | 再检查脸/人；没有目标则准备扫描 |
-| `1` | 扫描找人 | yaw 围绕 `180°` 在约 `140°..220°` 扫描，pitch 保持 |
-| `2` | 人体已发现 | 根据人体框预测脸部区域，同时调整 yaw/pitch |
-| `3` | 完整人脸追踪 | 持续使用人脸目标控制云台 |
-
-关键参数：
-
-```text
-SWEEP_CENTER_YAW = 180
-SWEEP_AMPLITUDE_DEG = 40
-SWEEP_STEP_DEG = 2
-person minimum confidence ≈ 0.42
-face minimum confidence ≈ 0.45
-```
-
-### 7.4 检测优先级
-
-目标输入优先级：
-
-1. `FaceTrackerV2` 完整人脸；
-2. YOLO pose 人体；
-3. YuNet/关键点 fallback；
-4. 无目标时扫描。
-
-`FaceTrackerV2` 提供 SCRFD 检测、track ID、bbox、face center 和五点信息。YOLO pose 用于人脸暂不可用时的人体对准。MediaPipe 提供更密集的面部点，服务于精细指标和 fallback。
-
-### 7.5 人脸捕获状态
-
-除启动 Phase 外，还有细粒度人脸捕获状态：
-
-| 状态 | 含义 |
+| 属性 | 值 |
 |---|---|
-| `SEARCHING` | 尚未稳定确认目标 |
-| `CANDIDATE` | 发现候选，等待连续确认 |
-| `LOCKED` | 已锁定稳定目标 |
-| `LOST_GRACE` | 短暂丢脸，按速度预测进行局部重捕获 |
+| USB VID:PID | `2886:001a`（Seeed Technology / reSpeaker XVF3800） |
+| usbipd BUSID | `1-2`（当前机器，重插可能变化） |
+| usbipd 状态 | `Shared`（已预 bind，无需再 bind） |
+| WSL IP | `192.168.106.23`（mirror 网络模式，Windows → WSL 用此 IP） |
+| pyusb 路径 | `audio/respeaker_doa.py`（VID=0x2886, PID=0x001a，10Hz 轮询） |
+| TCP 接收路径 | `audio/network_doa.py`（`0.0.0.0:9999`） |
 
-短暂丢失时不会立即全局扫描，而会在最后目标附近进行预测性小范围搜索。超过宽限时间后回到 `SEARCHING`。
+---
 
-### 7.6 控制原则
+### 方式 A：usbipd WSL 直连（推荐）
 
-- yaw 控制水平居中；
-- pitch 控制垂直脸部位置；
-- 使用 EMA、步长限制和死区降低抖动；
-- 手动、睡眠、待机、急停模式优先于 AI；
-- 非 AI 模式结束后，自动流程会重新从安全阶段恢复。
+USB 直接挂载到 WSL，FastAPI 用 pyusb 读取，零网络延迟。
 
-### 7.7 情绪与专注
+#### 前置条件
 
-完整脸部可用时：
+- Windows 已安装 `usbipd-win`（当前版本 5.3.0，已确认可用）
+- WSL 已安装 `pyusb`（当前已安装）
 
-```text
-face crop
-  -> EmotiEffAdapter
-  -> emotion + confidence + probabilities
+验证：
+```bash
+# 在 WSL 内执行
+usbipd.exe list
+# 应看到：1-2  2886:001a  reSpeaker XVF3800 ...  Shared
 ```
 
-专注链路：
+#### A1. 一次性 bind（已完成，无需再做）
 
-```text
-face landmarks / eye metrics
-  -> AttentionEngine
-  -> attention state + score
+状态为 `Shared` 说明已 bind。若设备变为 `Not shared`：
+```powershell
+# Windows 管理员 PowerShell
+usbipd bind --busid 1-2
 ```
 
-相关状态位于：
+#### A2. 每次会话 attach（WSL 启动后执行一次）
 
-```text
-emotieff
-attention
-mp_face
-eye_metrics
+```bash
+# 在 WSL 内执行（无需管理员）
+usbipd.exe attach --busid 1-2 --wsl
 ```
 
-情绪和专注不是云台控制的安全前置条件；模型不可用时不应阻塞视频和基础追踪。
-
-## 8. 多人 TCP DOA 模式完整流程
-
-### 8.1 为什么不挂载到 WSL
-
-当前架构把 ReSpeaker 的硬件读取留在真正连接设备的主机，WSL 只接收标准文本：
-
+预期输出：
 ```text
-ReSpeaker
-  -> xvf_host / 设备侧读取
-  -> TCP 文本
-  -> NetworkDOA
-  -> FastAPI 多人模式
+usbipd: info: Using WSL distribution 'Ubuntu' to attach; the device will be available in all WSL 2 distributions.
+usbipd: info: Loading vhci_hcd module.
+usbipd: info: Detected networking mode 'mirrored'.
+usbipd: info: Using IP address 127.0.0.1 to reach the host.
 ```
 
-这样避免 USBIP、HID 权限、PortAudio 设备映射和 WSL 重连问题。
-
-### 8.2 TCP 接收器
-
-`audio/network_doa.py` 默认监听：
-
-```text
-0.0.0.0:9999
+验证挂载成功：
+```bash
+lsusb | grep 2886
+# Bus 001 Device 002: ID 2886:001a Seeed Technology Co., Ltd. reSpeaker XVF3800 4-Mic Array
+ls /dev/hidraw0
+# /dev/hidraw0
 ```
 
-支持输入：
+#### A3. 自动持久化 attach（可选，usbipd 4.x+）
 
-```text
-35
-35 deg
-0.6109 rad
-AUDIO_MGR_SELECTED_AZIMUTHS 0.6109 (35.0 deg)
-{"azimuth_deg":35,"speech":true}
-{"doa":0.6109,"unit":"rad","has_speech":true}
+若不想每次手动执行：
+```bash
+usbipd.exe attach --busid 1-2 --wsl --auto-attach
+```
+此命令在后台持续监听，USB 重插或 WSL 重启后自动重新 attach。建议在 Windows 启动项或独立终端中保持运行。
+
+#### A4. 启动 FastAPI（USB 模式）
+
+```bash
+export RECAMERA_DOA_SOURCE=usb
+python3 recamera_fastapi.py
 ```
 
-接收器维护：
+启动成功日志：
+```text
+🎤 ReSpeaker XVF3800 connected (VID=0x2886 PID=0x001A)
+🎤 DOA polling started @ 10 Hz
+```
+
+`/api/state` 中 `doa.source = "usb"`，`doa.available = true`。
+
+#### A5. detach（归还给 Windows）
+
+```bash
+usbipd.exe detach --busid 1-2
+```
+
+---
+
+### 方式 B：Windows 侧 Python + TCP 转发
+
+ReSpeaker 留在 Windows 侧，通过 TCP 把 DOA 角度发到 WSL。不需要 usbipd，但需要 Windows 上有 Python 和 libusb。
+
+#### B1. Windows 环境准备
+
+1. 安装 Python 3.10+（Windows）
+2. 安装 libusb 驱动（推荐用 [Zadig](https://zadig.akeo.ie/) 为 ReSpeaker Control Interface 安装 `WinUSB`）
+3. 安装 pyusb：
+   ```cmd
+   pip install pyusb
+   ```
+
+#### B2. 确认 WSL IP
+
+```bash
+# 在 WSL 内执行
+hostname -I | awk '{print $1}'
+# 当前：192.168.106.23
+```
+
+#### B3. 启动 DOA 转发
+
+```cmd
+# Windows 命令行（tools/ 目录）
+python tools\send_doa_tcp.py --host 192.168.106.23 --mock-angle 35
+```
+
+真实 xvf_host 输出（如 ReSpeaker SDK xvf_host.exe 可用）：
+```cmd
+python tools\send_doa_tcp.py --host 192.168.106.23 --command "xvf_host.exe AUDIO_MGR_SELECTED_AZIMUTHS"
+```
+
+Windows 防火墙放行：
+```powershell
+New-NetFirewallRule -DisplayName "WSL DOA 9999" -Direction Outbound -Protocol TCP -RemotePort 9999 -Action Allow
+```
+
+#### B4. 启动 FastAPI（TCP 模式，默认）
+
+```bash
+# WSL 内，无需设置 DOA_SOURCE
+python3 recamera_fastapi.py
+```
+
+启动成功日志：
+```text
+Network DOA listening on 0.0.0.0:9999
+DOA source: tcp, port: 9999
+```
+
+---
+
+### 7.1 DOA 数据格式（TCP 接收器接受的格式）
+
+`audio/network_doa.py` 默认监听 `0.0.0.0:9999`，支持以下输入格式（每行一条）：
+
+```text
+35                                                      # 纯角度（度）
+35 deg                                                  # 角度 + 单位
+0.6109 rad                                              # 弧度
+AUDIO_MGR_SELECTED_AZIMUTHS 0.6109 (35.0 deg)         # xvf_host 格式
+{"azimuth_deg":35,"speech":true}                       # JSON，推荐
+{"doa":0.6109,"unit":"rad","has_speech":true}          # JSON 弧度
+```
+
+接收器维护字段：
 
 | 字段 | 含义 |
 |---|---|
-| `doa_deg` | 最新角度 |
-| `has_speech` | 当前是否处于 speech hold 窗口 |
-| `age` | 距离最新有效包的秒数 |
+| `doa_deg` | 最新角度（0–359°，0=正前方） |
+| `has_speech` | speech hold 窗口内为 true（每个有效包自动维持 0.8s） |
+| `age` | 距离最新有效包的秒数（>1s 则 FSM 不触发音频事件） |
+| `packet_count` | 累计有效包数 |
 | `sender_connected` | TCP 发送端是否在线 |
-| `packet_count` | 累计有效角度包数 |
-| `last_line` | 最近一次原始输入 |
 
-纯角度和 `xvf_host` 文本无法显式携带 VAD，因此每个有效包会将 speech 保持约 `0.8s`。JSON 可以使用 `speech` 或 `has_speech` 明确控制。
-
-### 8.3 发送端
-
-Mock：
+### 7.2 Mock 发送端（开发/测试）
 
 ```bash
-python3 tools/send_doa_tcp.py \
-  --host 127.0.0.1 \
-  --mock-angle 35
+# WSL 内
+python3 tools/send_doa_tcp.py --host 127.0.0.1 --mock-angle 35
 ```
 
-真实 `xvf_host`：
+### 7.3 DOA → FSM 映射
 
-```bash
-python tools/send_doa_tcp.py \
-  --host <WSL_IP> \
-  --command "xvf_host.exe AUDIO_MGR_SELECTED_AZIMUTHS"
-```
+两种模式下，FastAPI 的 observe-only Orchestrator 均消费 DOA 事件，FSM 在静音时维持 IDLE，在 speech 触发后进入 AUDIO_SEARCH。此过程**不发出实际控制指令**，仅用于 PAGE 1 决策链展示。
 
-Windows 访问 WSL 时先尝试 `127.0.0.1`；不通时在 Ubuntu 查询：
+真实云台 DOA 跟随由 `main_phase3.py` 处理（Audio Event → Orchestrator._audio_command() → RecameraClient.apply_command()）。
 
-```bash
-hostname -I
-```
+### 7.4 模式环境变量
 
-并使用实际 WSL IP。还需允许 Windows 防火墙访问 TCP `9999`。
+| 变量 | 值 | 含义 |
+|---|---|---|
+| `RECAMERA_DOA_SOURCE` | `tcp`（默认） | 使用 TCP NetworkDOA |
+| `RECAMERA_DOA_SOURCE` | `usb` | 使用 pyusb ReSpeakerDOA（方式 A） |
+| `RECAMERA_DOA_PORT` | `9999`（默认） | TCP 接收端口 |
+| `RECAMERA_DOA_SPEECH_HOLD` | `0.8`（默认） | speech 保持时间（秒） |
 
-### 8.4 模式切换
+---
 
-入口：
+## 8. 前端状态同步
 
-```http
-POST /api/multi_track/start
-POST /api/multi_track/stop
-GET  /api/multi_track/state
-```
+### 8.1 WebSocket `/ws`
 
-标准启动：
+后端每 ~200ms 推送 `state_snapshot`，字段：
 
-```bash
-curl -X POST http://localhost:8001/api/multi_track/start \
-  -H 'Content-Type: application/json' \
-  -d '{"save_audio":false}'
-```
-
-启动后：
-
-```text
-tracking_mode = multi
-_sound_tracking = true
-_conversation_recording_requested = false
-face_tracking = false
-gimbal sound_tracking = true
-```
-
-主循环会跳过单人视觉追踪、情绪和专注流程，只执行 DOA 状态及 yaw 跟随。
-
-### 8.5 yaw 映射
-
-输入约定：
-
-```text
-0° = 正前方
-正角度 = 右侧
-负角度 = 左侧
-```
-
-基础映射：
-
-```text
-target_yaw = 180 + signed_doa
-```
-
-控制限制：
-
-- 目标裁剪到云台安全范围；
-- 单次最大变化约 `12°`；
-- DOA `age > 1s` 时不移动；
-- 没有 speech 时不移动；
-- pitch 不参与多人声源跟随。
-
-`sound_follow.reason` 常见值：
-
-| 值 | 含义 |
+| 顶级字段 | 内容 |
 |---|---|
-| `sound_tracking_disabled` | 多人声源模式未启用 |
-| `doa_unavailable` | 接收器无法创建 |
-| `stale_doa` | 数据过期 |
-| `waiting_for_speech` | 有角度但当前无 speech |
-| `command_ready` | 已生成目标 |
-| `command_sent` | 已发送真实或 dry-run 控制 |
-| `already_aligned` | 已接近目标 |
+| `video` | connected / fps / width / height / detections |
+| `pose` | persons 列表 / count |
+| `gimbal` | connected / yaw / pitch / speed / mode（硬件 readback） |
+| `doa` | available / doa_deg / has_speech / age / packet_count |
+| `attention` | has_face / score / state |
+| `emotieff` | emotion / confidence / probabilities |
+| `eye_metrics` | ear / perclos / blink_rate |
+| `control` | observe_only=true / fsm_state / authority / last_event / command / safety |
+| `trace` | 最近 12 条决策链（from → state → event → cmd） |
+| `health` | video_fps / ws_clients / doa_age / gimbal_latency_ms |
+| `conversation` | mode / active / state |
 
-### 8.6 DOA-only 与录音
+客户端可发送 `"request_state"` 文本消息立即拉取一次快照。其他 WS 消息被忽略（服务端只读）。
 
-默认：
-
-```text
-conversation.mode = doa_only
-conversation.active = false
-```
-
-这是正常状态。
-
-只有显式设置：
-
-```json
-{"save_audio":true}
-```
-
-才会创建 `ConversationRecorder` 并尝试 `sounddevice.InputStream`。如果 WSL 没有音频输入，录音失败不代表 TCP DOA 失败。
-
-当前标准流程不保证：
-
-- 音频文件；
-- ASR 转写；
-- 说话人声纹分离；
-- 会议摘要。
-
-## 9. 前端与状态同步
-
-### 9.1 状态来源
-
-后端约每 `200ms` 构建状态快照：
-
-```text
-build_state_snapshot()
-  -> WebSocket /ws
-  -> GET /api/state
-```
-
-`/api/state` 返回 `{"type":"state_snapshot","data":{...}}`，主要业务字段位于 `data`：
-
-```text
-gimbal
-tracking_mode
-video
-pose
-doa
-sound_follow
-conversation
-face_tracking
-face_lock
-face_capture
-tracking_debug
-attention
-emotion / emotieff
-eye_metrics
-```
-
-### 9.2 模式互斥
-
-单人模式：
-
-- 显示视觉、情绪、专注；
-- 启用 face tracking；
-- 关闭 sound tracking。
-
-多人模式：
-
-- 启用 TCP DOA；
-- 关闭 face tracking；
-- 仅控制 yaw；
-- 页面显示 DOA 和声源目标；
-- 默认不显示正在录音状态。
-
-### 9.3 局域网和平板
-
-FastAPI 默认监听 `0.0.0.0`，平板访问：
-
-```text
-http://<PC局域网IP>:8001/home
-```
-
-不要在平板使用 `localhost`。
-
-Windows 防火墙可放行：
-
-```powershell
-New-NetFirewallRule `
-  -DisplayName "reCamera FastAPI 8001" `
-  -Direction Inbound `
-  -Protocol TCP `
-  -LocalPort 8001 `
-  -Action Allow
-```
-
-页面使用相对 API、相对 WebSocket 和 `/video_feed`，因此不需要为平板硬编码后端地址。
-
-PWA 文件：
-
-```text
-/manifest.webmanifest
-/sw.js
-```
-
-部分浏览器安装 PWA 需要 HTTPS，可使用：
+### 8.2 HTTP 轮询回退
 
 ```bash
-./tools/make_pwa_cert.sh <PC局域网IP>
-python3 recamera_fastapi.py \
-  --ssl-keyfile certs/xinyu-key.pem \
-  --ssl-certfile certs/xinyu-cert.pem
+curl http://localhost:8001/api/state
 ```
+
+返回 `{"type":"state_snapshot","data":{...}}`。
+
+---
+
+## 9. 前端页面说明与验证手册
+
+### 9.1 双页面访问入口
+
+| 页面 | 路由 | 定位 | 数据来源 |
+|---|---|---|---|
+| PAGE 1 控制台 | `/control` 或 `/v2` | 实时 FSM 观测 + 感知 + 遥测 | FastAPI 真实后端（WebSocket + MJPEG） |
+| PAGE 2 Demo | `/home`（`/` 重定向） | 产品演示 | 纯 mock，无任何硬件调用 |
+
+```text
+http://localhost:8001/control     # PAGE 1
+http://localhost:8001/home        # PAGE 2
+http://<局域网IP>:8001/control    # 平板/手机访问 PAGE 1
+```
+
+---
+
+### 9.2 PAGE 1 控制台界面说明（`/control`）
+
+> 访问路径：`http://localhost:8001/control`（FastAPI 必须运行）  
+> 定位：**只读观测**。展示真实感知数据 + FSM 决策镜像 + 硬件遥测，不发出任何控制指令。
+
+#### 布局
+
+```
+┌─────────────────────────────────┬──────────────────────────┐
+│                                 │  FSM 状态机              │
+│      实时视频                    │  控制权 (Authority)       │
+│      MJPEG + 检测框 overlay      │  决策链 (Decision Chain)  │
+│                                 │  决策 Trace 日志         │
+│                                 ├──────────────────────────┤
+│                                 │  云台遥测 (Gimbal)        │
+│                                 │  感知通道 (Perception)    │
+│                                 │  单人分析                 │
+│                                 │  系统健康                 │
+└─────────────────────────────────┴──────────────────────────┘
+```
+
+#### 各面板说明
+
+**① 实时视频**
+- MJPEG 流 `/video_feed`，直接来自 reCamera SSCMA
+- overlay 叠加：蓝色框 = 人体检测框；绿色框 = 人脸；关键点连线
+- 视频不加载：检查 `video.connected = true`，确认 SSCMA :8090 可达
+
+**② FSM 状态机**
+- 5 个状态节点：`IDLE` `AUDIO_SEARCH` `VISION_TRACK` `FUSED_TRACK` `LOST`
+- 高亮节点 = 当前 FSM 状态（来自 observe-only Orchestrator）
+- 顶部徽章：`OBSERVE · READ-ONLY`（提示：此 FSM 不控制云台）
+- **验证**：进入摄像头画面 → 应变为 `VISION_TRACK`；说话 → 应变为 `FUSED_TRACK`
+
+**③ 控制权（Authority）**
+- `AUDIO` = 声源主导（AUDIO_SEARCH 态）
+- `VISION` = 视觉主导（VISION_TRACK 态）
+- `FUSION` = 音视融合（FUSED_TRACK 态）
+- `IDLE` = 无目标
+- 与 FSM 状态节点联动高亮
+
+**④ 决策链（Decision Chain）**
+- Last Event：最近触发的感知事件（`vision/target_detected`、`audio/speech_detected` 等）
+- Last Command：observe Orchestrator 计算出"本该发出"的命令（`yaw=xxx, pitch=xxx, reason=vision_track`）
+- Safety Gate：`PASS` / `BLOCK·rate_limit`（observe SafetyLayer 以 5Hz 限速，BLOCK 是正常展示状态）
+- **注意**：Command 这里仅是观测计算结果，不会实际发到云台
+
+**⑤ 决策 Trace 日志**
+- 滚动记录最近 12 条 FSM 状态迁移
+- 格式：`HH:MM:SS  IDLE → VISION_TRACK  [event: vision/target_detected]  cmd: vision_track`
+- **验证**：走进画面 → 应出现 `IDLE → VISION_TRACK` 条目
+
+**⑥ 云台遥测（Gimbal Telemetry）**
+- 来源：`RecameraClient.get_status()` 硬件 readback，每 500ms 刷新
+- 字段：`yaw` / `pitch` / `speed` / `mode` / `connected`
+- dry-run 模式下全部显示 `null`；`--no-dry-run` 后显示真实值
+- 若 main_phase3.py 正在控制，yaw/pitch 会随追踪实时变化（**这是验证真实控制的关键指标**）
+
+**⑦ 感知通道（Perception）**
+- DOA 角度（度）：ReSpeaker 实时方向，0=正前方，90=右，270=左
+- 人体数量（pose.count）：当前帧检测到的人
+- 声音（has_speech）：当前 speech hold 状态
+- 视觉丢帧数（vision_lost_frames）：连续丢失目标帧数（>30 触发 LOST）
+
+**⑧ 单人分析**
+- 专注度（attention.score）：0–100，EMA 平滑
+- 情绪（emotieff.emotion + confidence）：8 类
+- 眼部：EAR / 眨眼率 / PERCLOS
+
+**⑨ 系统健康**
+- video_fps：SSCMA 视频帧率（正常 10–30 fps）
+- ws_clients：当前连接的 WebSocket 客户端数
+- doa_age：上次有效 DOA 包的时间（秒，>1s 则声音跟随暂停）
+- gimbal_latency_ms：上次 get_status() 的 RTT
+
+---
+
+### 9.3 PAGE 1 端到端验证清单
+
+运行 **模式 M3**（FastAPI + main_phase3.py）后，在 PAGE 1 逐项确认：
+
+```
+[ ] 视频显示正常（无黑屏，FPS > 5）
+[ ] 进入画面 → FSM 节点从 IDLE 变为 VISION_TRACK（3 帧 debounce，约 0.3s）
+[ ] Decision Trace 出现 "IDLE → VISION_TRACK" 条目
+[ ] Last Command 显示 yaw/pitch 数值和 reason=vision_track
+[ ] 说话 → FSM 变为 FUSED_TRACK（需要 DOA speech_detected + vision 同时）
+[ ] DOA 角度显示实时数值（ReSpeaker 有音频输入时）
+[ ] 云台遥测 yaw/pitch 随人脸位置变化（main_phase3.py 驱动，readback 确认）
+[ ] 人离开画面 → 30 帧 debounce 后进入 LOST → 延迟后回到 IDLE
+[ ] 系统健康面板：doa_age < 1.0，video_fps > 10
+```
+
+---
+
+### 9.4 PAGE 2 Demo 界面说明（`/home`）
+
+> 访问路径：`http://localhost:8001/home`（FastAPI 运行与否均可直接打开）  
+> 定位：**产品演示**，无任何硬件依赖。
+
+- `isFilePreview = true`：所有 `fetch` / POST 调用被强制短路，不发出网络请求
+- `mockState()` 动画：情绪每 6 秒轮换、专注度正弦波动（0–100）、DOA 角度缓慢扫描
+- 功能展示：情绪监测、专注度、多人场景、情绪日记、LLM 对话、护眼/久坐/呼吸提醒
+- **不显示任何真实硬件状态**；所有数字均为 mock 演示值
+- 无需 reCamera 在线、无需 ReSpeaker、无需 FastAPI 运行
+
+---
 
 ## 10. API 速查
 
 ### 10.1 状态与视频
-
 ```bash
 curl http://localhost:8001/api/health
 curl http://localhost:8001/api/state
 curl http://localhost:8001/api/snapshot --output snapshot.jpg
 ```
 
-### 10.2 模式
-
+### 10.2 云台状态（只读 readback）
 ```bash
-curl -X POST http://localhost:8001/api/single_track/start \
-  -H 'Content-Type: application/json' \
-  -d '{"speed":360}'
-
-curl -X POST http://localhost:8001/api/multi_track/start \
-  -H 'Content-Type: application/json' \
-  -d '{"save_audio":false}'
-
-curl -X POST http://localhost:8001/api/multi_track/stop \
-  -H 'Content-Type: application/json' \
-  -d '{"finalize":true}'
+curl http://localhost:8001/api/gimbal/state
 ```
+返回：`{"connected": bool, "yaw": float|null, "pitch": float|null, "speed": int|null, "mode": str|null}`
 
-通用切换：
+**注意**：FastAPI 侧已删除所有云台控制路由（yaw/pitch/speed/stop/standby/sleep/calibrate）。控制只能通过 `main_phase3.py`。
 
-```bash
-curl -X POST http://localhost:8001/api/tracking_mode \
-  -H 'Content-Type: application/json' \
-  -d '{"mode":"single"}'
-```
-
-### 10.3 云台
-
-```bash
-curl -X POST http://localhost:8001/api/gimbal/yaw \
-  -H 'Content-Type: application/json' \
-  -d '{"angle":180}'
-
-curl -X POST http://localhost:8001/api/gimbal/pitch \
-  -H 'Content-Type: application/json' \
-  -d '{"angle":90}'
-
-curl -X POST http://localhost:8001/api/gimbal/speed \
-  -H 'Content-Type: application/json' \
-  -d '{"speed":360}'
-
-curl -X POST http://localhost:8001/api/gimbal/standby
-curl -X POST http://localhost:8001/api/gimbal/sleep
-curl -X POST http://localhost:8001/api/gimbal/stop
-curl -X POST http://localhost:8001/api/gimbal/calibrate
-```
-
-### 10.4 DOA
-
-```bash
-curl http://localhost:8001/api/sound_track/state
-curl -X POST http://localhost:8001/api/sound_track/start
-curl -X POST http://localhost:8001/api/sound_track/stop
-```
-
-### 10.5 聊天与日记
-
+### 10.3 LLM 对话
 ```bash
 curl http://localhost:8001/api/chat/status
 curl -X POST http://localhost:8001/api/chat \
@@ -799,181 +705,168 @@ curl -X POST http://localhost:8001/api/chat \
   -d '{"message":"今天状态不错"}'
 ```
 
-## 11. Debug 与验收方法
-
-### 11.1 Python 及模型
-
+### 10.4 对话会话
 ```bash
-python3 recamera_fastapi.py --help
-python3 tools/send_doa_tcp.py --help
-python3 tools/debug_home_pipelines.py --help
-python3 tools/check_emotion_model.py
+curl -X POST http://localhost:8001/api/conversation/start \
+  -H 'Content-Type: application/json' \
+  -d '{"save_audio":false}'
+curl http://localhost:8001/api/conversation/state
+curl -X POST http://localhost:8001/api/conversation/stop \
+  -H 'Content-Type: application/json' \
+  -d '{"finalize":true}'
 ```
 
-### 11.2 页面/API 冒烟测试
+### 10.5 视频调试
+```bash
+curl http://localhost:8001/api/debug/video
+```
 
-服务启动后确认：
+---
 
+## 11. Debug 方法
+
+### 11.1 页面/API 冒烟
+```bash
+curl -o /dev/null -w "%{http_code}" http://localhost:8001/control      # 200
+curl -o /dev/null -w "%{http_code}" http://localhost:8001/home         # 200
+curl -o /dev/null -w "%{http_code}" http://localhost:8001/api/state    # 200
+curl -o /dev/null -w "%{http_code}" http://localhost:8001/api/health   # 200
+```
+
+### 11.2 视觉 Debug
+
+检查 `/api/state`：
 ```text
-/                 200
-/home             200
-/v2               200
-/device.html      200
-/api/state        200
-/api/health       200
-/manifest.webmanifest 200
-/sw.js            200
+video.connected        # SSCMA 是否连接
+video.fps              # 帧率（正常 10–30）
+pose.count             # 检测到的人数
+control.fsm_state      # FSM 当前状态
+control.authority      # 当前控制权（idle/audio/vision/fusion）
+control.safety.ok      # 安全门是否通过
+trace                  # 最近决策链
 ```
 
-### 11.3 视觉 Debug
-
-重点查看 `/api/state`：
-
-```text
-video.connected
-video.fps
-video.detections
-pose.persons
-face_tracking
-face_lock
-face_capture.state
-tracking_debug.startup_phase
-tracking_debug.track_source
-gimbal.yaw_target
-gimbal.pitch_target
-```
-
-常见判断：
-
-- 有人体无脸：应进入 Phase 2；
-- 有完整脸：应进入 Phase 3；
-- 短暂丢脸：应进入 `LOST_GRACE`；
-- 长时间丢失：应回到扫描；
-- dry-run 下目标角度应变化，但真实设备不动作。
-
-### 11.4 DOA Debug
-
+### 11.3 DOA Debug
 ```bash
 ss -lntp | grep 9999
 python3 tools/send_doa_tcp.py --host 127.0.0.1 --mock-angle 35
 curl http://localhost:8001/api/state | python3 -m json.tool
 ```
 
-重点查看：
-
+重点检查：
 ```text
 doa.available = true
-doa.source = tcp
 doa.packet_count > 0
 doa.doa_deg = 35
 doa.has_speech = true
 doa.age < 1
-sound_follow.active = true
-sound_follow.target_yaw
+control.fsm_state = "AUDIO_SEARCH"   # DOA + speech → 触发
 ```
 
-## 12. 排障
-
-### 12.1 reCamera 不可达
-
+### 11.4 云台 Debug
 ```bash
-ping 192.168.201.84
+curl http://localhost:8001/api/gimbal/state
+```
+```text
+connected: true    # RecameraClient 已连接
+yaw/pitch          # 硬件 readback（dry-run 下为 null）
 ```
 
-失败时通过 USB SSH 重新查询 `wlan0`。
-
-### 12.2 视频未连接
-
-检查：
-
+dry-run 确认：
 ```bash
-nc -zv 192.168.201.84 8090
-curl http://localhost:8001/api/health
+python3 recamera_fastapi.py --no-dry-run   # 启用真实 readback
 ```
 
-设备 IP 会自动加入 `NO_PROXY/no_proxy`，避免局域网流量误走代理。
-
-### 12.3 云台不动作
-
-先确认是否处于 dry-run：
-
-```text
-gimbal.dry_run = true
-```
-
-真实控制需要 `--no-dry-run`，且：
-
-```text
-gimbal.sio_connected = true
-```
-
-### 12.4 `packet_count = 0`
-
-- DOA 发送端未启动；
-- 主机地址错误；
-- TCP 端口不一致；
-- 防火墙阻止 `9999`；
-- 发送内容无法解析。
-
-查看：
-
-```text
-doa.sender_connected
-doa.last_line
-```
-
-### 12.5 `stale_doa`
-
-发送端停止持续发送，或命令没有持续输出有效角度。`send_doa_tcp.py` 会自动重连，但不会制造不存在的真实数据。
-
-### 12.6 多人模式显示未录音
-
-`save_audio=false` 时属于预期行为：
-
-```text
-conversation.mode = doa_only
-conversation.active = false
-```
-
-### 12.7 情绪模型不可用
-
-运行：
-
+### 11.5 情绪模型
 ```bash
 python3 tools/check_emotion_model.py
 ```
 
-模型失败不应阻塞基础视频与云台控制。
+### 11.6 FSM 观测
+
+PAGE 1（`/control`）提供实时 FSM 可视化：
+- 5 状态节点高亮当前态
+- 决策 trace 滚动显示 `event → from → state → cmd`
+- safety 安全门 PASS/BLOCK 状态
+
+`control.observe_only = true` 表示这是只读镜像，不驱动云台。
+
+---
+
+## 12. 排障
+
+### 12.1 reCamera 不可达
+```bash
+ping 192.168.106.85
+```
+失败时通过 USB SSH 重新查询 `wlan0`。
+
+### 12.2 视频未连接
+```bash
+nc -zv 192.168.106.85 8090
+curl http://localhost:8001/api/health
+```
+设备 IP 自动加入 `NO_PROXY`，避免代理干扰。
+
+### 12.3 云台不动（main_phase3.py 侧）
+```bash
+python3 main_phase3.py --enable-control --fps 5 --max-cycles 10
+```
+查看日志是否有 `CONNECTED via Socket.IO`。
+
+FastAPI 侧云台 readback 为 null 属正常（dry-run 模式下 `get_status()` 返回 `{"mode":"dry_run","connected":false}`）。
+
+### 12.4 `packet_count = 0`（DOA）
+- DOA 发送端未启动
+- 主机地址/端口不一致
+- Windows 防火墙阻止 TCP 9999
+- 发送内容格式无法解析
+
+### 12.5 情绪模型不可用
+模型失败不阻塞视频和感知基础功能；`emotieff.emotion` 会为 null。
+
+### 12.6 PAGE 1 safety 显示 `BLOCK·rate_limit`
+正常现象：observe-only SafetyLayer 以 5Hz 限速，与真实控制行为一致，用于展示安全门工作状态。
+
+---
 
 ## 13. 安全原则
 
-1. 默认使用 dry-run。
-2. 真实控制前先做网络、视频、DOA 和 API 验收。
-3. 首次真实控制只测试小角度。
-4. 急停模式优先级最高。
-5. 不在设备附近有障碍物时运行自动追踪。
-6. 不把“目标角度已更新”误认为“真实指令已发送”；同时检查 `dry_run` 和 `sio_connected`。
-7. DOA 数据过期或 speech 不活跃时不得驱动云台。
+1. 默认 dry-run：FastAPI 和 main_phase3.py 默认不发真实控制指令。
+2. 单控制平面：`apply_command` 唯一调用点为 `main_phase3.py`；FastAPI 永远不调用。
+3. 观测 ≠ 控制：FastAPI 内 `_observer` 是只读 FSM 镜像，不等于第二控制平面。
+4. 遥测来源唯一：FastAPI 云台遥测仅来自 `RecameraClient.get_status()`（硬件 readback），不使用任何控制 state mirror。
+5. 首次真实控制前先做视频、DOA、API 验收。
+6. 不把"FSM 状态已更新"误认为"云台已动作"——控制进程（main_phase3.py）需独立运行才驱动硬件。
+7. 急停：`main_phase3.py` 在 atexit / SIGINT / SIGTERM 时自动发送 stop 指令。
 
-## 14. 当前边界与后续方向
+---
 
-已经稳定打通：
+## 14. 当前边界
 
-- reCamera Wi-Fi 视频；
-- FastAPI/MJPEG/WebSocket 页面；
-- Node-RED Socket.IO 云台控制；
-- 单人搜索、对准和追踪；
-- 情绪与专注状态；
-- TCP DOA-only 多人声源跟随；
-- 自动诊断和 Mock 输入。
+已稳定打通：
+- reCamera Wi-Fi 视频（SSCMA）
+- FastAPI MJPEG / WebSocket
+- 单人脸追踪（FaceTrackerV2）+ 人体检测（YOLO11 pose）
+- 情绪与专注状态
+- TCP DOA 接收 + FSM observe 镜像
+- LLM 对话与日记
+- 单 FSM 控制平面（main_phase3.py）
+- 两页前端：控制台（只读）+ Demo（mock）
 
 尚未纳入标准链路：
+- 远程音频流传输
+- ASR / 说话人分离 / 会议摘要
+- DOA 安装偏移校准配置
+- 多人录音（save_audio 实验入口，非默认）
 
-- 远程音频流传输；
-- 稳定的多人录音；
-- ASR；
-- 声纹/说话人分离；
-- 自动会议摘要；
-- DOA 安装偏移和方向反转的可配置校准。
+---
 
-新增能力时，应先更新本文档，再删除被替代的旧说明，避免重新出现多份相互冲突的流程文档。
+## 15. 变更记录
+
+| 版本 | 日期 | 变更 |
+|---|---|---|
+| 4.2 | 2026-06-26 | 重写 §6 启动流程（三模式 M1/M2/M3）；新增 §9 前端页面说明与验证手册（PAGE 1 面板详解 + 端到端验证清单 + PAGE 2 说明）；章节重编号 §9→§15 |
+| 4.1 | 2026-06-26 | 更新设备 IP → 192.168.106.85；密码更新为 recamera0526_；新增 §7 ReSpeaker XVF3800 完整连接方案（方式 A usbipd WSL 直连 + 方式 B Windows TCP 转发），含验证命令、持久化 attach、环境变量、格式说明 |
+| 4.0 | 2026-06-26 | 重写：对齐清理后架构；删除 GimbalController/影子控制链路相关说明；更新模块表、API 表、端口表；新增 FSM observe-only 说明；删除已不存在的页面/路由/API |
+| 3.0 | 2026-06-19 | 旧版（已过期） |
