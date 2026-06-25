@@ -1,0 +1,27 @@
+# reCamera Multimodal System — Dependencies
+
+# Core
+numpy
+PyYAML
+
+# Gimbal hardware control (real device over WiFi)
+python-socketio[client]
+websocket-client
+pyusb
+
+# Web Dashboard
+fastapi
+uvicorn[standard]
+aiohttp>=3.9
+
+# Vision / Model inference
+opencv-python
+onnx
+onnxruntime
+mediapipe
+
+# Face detection & tracking (optional but recommended)
+# Install: pip install insightface --break-system-packages
+# insightface
+
+sounddevice

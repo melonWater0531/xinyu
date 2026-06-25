@@ -1,0 +1,876 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+  <meta name="theme-color" content="#b8752e">
+  <title>心屿 XINYU</title>
+  <style>
+    :root{
+      --cream:#fff9f1;--paper:#fffdf8;--sand:#ead8bd;--wheat:#d8b98b;
+      --amber:#b8752e;--gold:#c9963e;--bronze:#8d7258;--bark:#6d5541;
+      --deep:#30251c;--leaf:#4d8b65;--rose:#bd6f70;--blue:#6f8fa8;
+      --line:rgba(141,114,88,.24);--shadow:0 16px 44px rgba(84,58,32,.14);
+      --app-height:100vh;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;overscroll-behavior:none}
+    body{
+      margin:0;min-height:100vh;min-height:var(--app-height);overflow:hidden;color:var(--deep);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC","PingFang SC",sans-serif;
+      background:
+        radial-gradient(circle at 20% 8%,rgba(255,236,194,.9),transparent 34%),
+        radial-gradient(circle at 92% 18%,rgba(189,111,112,.16),transparent 30%),
+        linear-gradient(180deg,#fff7ea 0%,#f3e2ca 58%,#dbc098 100%);
+    }
+    button,input,textarea{font:inherit}
+    button{touch-action:manipulation}
+    .app{height:var(--app-height);display:grid;grid-template-rows:auto minmax(0,1fr) auto;max-width:1180px;margin:0 auto;padding:18px 18px calc(14px + env(safe-area-inset-bottom));gap:14px}
+    .topbar{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .brand{display:flex;align-items:center;gap:12px;min-width:0}
+    .mark{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#dca955,#ad7130);color:#fff;box-shadow:0 10px 24px rgba(184,117,46,.24);font-size:20px}
+    .brand h1{font-size:22px;line-height:1;margin:0;font-weight:650;letter-spacing:.04em}
+    .brand p{margin:4px 0 0;color:var(--bronze);font-size:12px}
+    .top-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+    .chip{height:34px;display:inline-flex;align-items:center;gap:7px;padding:0 12px;border-radius:999px;background:rgba(255,253,248,.72);border:1px solid var(--line);color:var(--bark);font-size:12px}
+    .dot{width:8px;height:8px;border-radius:50%;background:#b94a48}.dot.ok{background:var(--leaf)}.dot.warn{background:var(--gold)}
+    .page{display:none;min-height:0;overflow:hidden}.page.active{display:grid;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:thin;padding:0 2px 14px}
+    .home-grid{grid-template-columns:1fr;gap:14px;align-items:stretch}
+    .stack{display:grid;gap:14px;min-height:0}
+    .hero{
+      position:relative;overflow:hidden;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);
+      background:linear-gradient(180deg,rgba(255,253,248,.76),rgba(255,249,241,.58));
+      min-height:430px;padding:22px;display:grid;grid-template-rows:auto 1fr auto;
+    }
+    .hero:before{content:"";position:absolute;inset:auto -10% -32% -10%;height:52%;background:radial-gradient(ellipse at center,rgba(116,151,124,.2),transparent 68%);pointer-events:none}
+    .hero-title{position:relative;z-index:1;max-width:410px}
+    .eyebrow{font-size:11px;color:var(--bronze);letter-spacing:.18em;text-transform:uppercase}
+    h2{margin:6px 0 0;font-size:26px;line-height:1.24;font-weight:520;letter-spacing:0}
+    .hero-copy{margin:10px 0 0;color:var(--bark);line-height:1.8;font-size:14px}
+    .island-wrap{position:relative;z-index:0;display:grid;place-items:center;min-height:210px}
+    .island{width:min(82%,420px);filter:drop-shadow(0 28px 36px rgba(79,52,24,.24));animation:float 5.5s ease-in-out infinite}
+    @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+    .hero-metrics{position:relative;z-index:1;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+    .metric,.card{border:1px solid var(--line);border-radius:10px;background:rgba(255,253,248,.74);box-shadow:0 8px 24px rgba(84,58,32,.08)}
+    .metric{padding:12px}
+    .metric .k{font-size:11px;color:var(--bronze);margin-bottom:5px}.metric .v{font-size:18px;font-weight:650}.metric .n{font-size:11px;color:var(--bark);margin-top:4px;line-height:1.45}
+    .card{padding:14px;min-width:0}
+    .card h3{margin:0 0 10px;font-size:15px;font-weight:650}
+    .home-product{grid-template-columns:minmax(0,1.05fr) minmax(320px,.95fr);gap:14px;align-items:start}
+    .product-hero{
+      position:relative;overflow:hidden;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);
+      background:linear-gradient(135deg,rgba(255,253,248,.86),rgba(255,244,226,.7));padding:18px;display:grid;gap:14px;
+    }
+    .product-hero:after{content:"";position:absolute;right:-70px;bottom:-80px;width:250px;height:250px;border-radius:50%;background:radial-gradient(circle,rgba(184,117,46,.16),transparent 68%);pointer-events:none}
+    .hero-head{position:relative;z-index:1;display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+    .hero-head h2{font-size:25px;margin-top:5px}
+    .status-badge{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.7);padding:6px 10px;font-size:12px;color:var(--bark);white-space:nowrap}
+    .status-badge.ok{color:var(--leaf);border-color:rgba(77,139,101,.32);background:rgba(77,139,101,.08)}
+    .status-badge.warn{color:#9b6515;border-color:rgba(201,150,62,.38);background:rgba(201,150,62,.12)}
+    .primary-actions{position:relative;z-index:1;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+    .primary-actions .btn{height:auto;min-height:54px;text-align:left;padding:10px 12px;line-height:1.35}
+    .primary-actions small{display:block;font-weight:500;opacity:.8;margin-top:2px}
+    .summary-grid{position:relative;z-index:1;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+    .feature-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+    .feature-card{display:grid;gap:10px;border:1px solid var(--line);border-radius:16px;background:rgba(255,253,248,.78);box-shadow:0 8px 24px rgba(84,58,32,.08);padding:14px;min-width:0}
+    .feature-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+    .feature-title{display:flex;gap:9px;align-items:center;font-weight:700}.feature-title i{font-style:normal;font-size:20px}
+    .feature-copy{font-size:12px;color:var(--bark);line-height:1.55;margin:0}
+    .feature-state{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .state-cell{border:1px solid rgba(141,114,88,.18);border-radius:10px;background:rgba(255,255,255,.5);padding:9px}
+    .state-cell span{display:block;font-size:11px;color:var(--bronze);margin-bottom:3px}.state-cell b{font-size:14px}
+    .feature-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .side-stack{display:grid;gap:14px;min-width:0}
+    .chat-thread{height:190px;overflow:auto;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.52);padding:10px;font-size:13px;line-height:1.6;color:var(--bark)}
+    .bubble{padding:8px 10px;border-radius:12px;margin:0 0 8px;background:#fffaf3;border:1px solid rgba(141,114,88,.16)}
+    .bubble.user{margin-left:28px;background:rgba(184,117,46,.1);color:var(--deep)}
+    .bubble small{display:block;color:var(--bronze);font-size:11px;margin-bottom:2px}
+    .quick-diary{display:grid;gap:8px}
+    .quick-diary textarea{min-height:104px}
+    .help-list{font-size:12px;line-height:1.8;color:var(--bark);padding-left:18px;margin:8px 0 0}
+    .mode-tabs{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+    .tab{min-height:72px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.66);color:var(--bark);font-weight:650;font-size:18px}
+    .tab.active{background:var(--amber);border-color:var(--amber);color:#fff}
+    .video{width:100%;aspect-ratio:16/9;border:1px solid var(--line);border-radius:10px;object-fit:contain;background:#1f1a16;display:block}
+    .control-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
+    .btn{height:44px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--deep);font-weight:650}
+    .btn.primary{background:var(--amber);border-color:var(--amber);color:#fff}.btn.warn{background:#fff2eb;color:#944027}.btn.ghost{background:rgba(255,255,255,.55)}
+    .readout{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+    .readout div{border:1px solid var(--line);border-radius:8px;padding:9px 10px;background:rgba(255,255,255,.55)}
+    .readout span{display:block;font-size:11px;color:var(--bronze);margin-bottom:3px}.readout b{font-size:14px}
+    .timeline{min-height:120px;border:1px dashed rgba(141,114,88,.32);border-radius:10px;background:rgba(255,255,255,.46);padding:12px;color:var(--bark);font-size:13px;line-height:1.8}
+    .diary-grid,.week-grid,.health-grid,.profile-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+    textarea{width:100%;min-height:170px;resize:none;border:1px solid var(--line);border-radius:10px;background:rgba(255,253,248,.72);padding:13px;color:var(--deep);line-height:1.8;outline:none}
+    .list{display:grid;gap:8px}.row{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid rgba(141,114,88,.14);padding:9px 0;color:var(--bark);font-size:13px}.row b{color:var(--deep)}
+    .calendar-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+    .calendar-title{font-size:15px;font-weight:650;color:var(--deep)}
+    .calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+    .dow,.day{min-height:42px;border-radius:8px;display:grid;place-items:center;text-align:center}
+    .dow{min-height:24px;font-size:11px;color:var(--bronze)}
+    .day{border:1px solid var(--line);background:rgba(255,255,255,.52);color:var(--bark);font-size:12px;position:relative}
+    .day.has{background:rgba(255,253,248,.86);color:var(--deep);font-weight:650}
+    .day.selected{outline:2px solid rgba(184,117,46,.58);background:#fff8ed}
+    .emo-dot{position:absolute;right:6px;bottom:5px;font-size:13px}
+    .chat-box{display:grid;gap:8px;margin-top:10px}
+    .chat-row{display:flex;gap:8px}
+    .chat-row input{flex:1;border:1px solid var(--line);border-radius:8px;background:rgba(255,253,248,.8);padding:0 12px;min-height:42px;color:var(--deep);outline:none}
+    .week-bars{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;align-items:end;height:150px;margin:12px 0}
+    .bar-wrap{display:grid;gap:6px;align-items:end;text-align:center;color:var(--bronze);font-size:11px}
+    .bar{width:100%;border-radius:8px 8px 3px 3px;background:linear-gradient(180deg,#dca955,#8fba78);min-height:18px}
+    .insight{font-family:"Noto Serif SC",serif;font-style:italic;color:var(--bark)}
+    .breath-circle{width:160px;height:160px;border-radius:50%;margin:16px auto;background:radial-gradient(circle,#f7d99c,#c99038);display:grid;place-items:center;color:#fff;font-size:24px;box-shadow:0 16px 40px rgba(184,117,46,.28);transition:all 1s ease}
+    .mini-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+    .health-timer{font-size:28px;font-weight:650;color:var(--amber);margin:8px 0}
+    .progress{height:8px;border-radius:999px;background:rgba(141,114,88,.14);overflow:hidden}
+    .progress span{display:block;height:100%;width:65%;background:linear-gradient(90deg,#8fba78,#dca955);border-radius:inherit}
+    .nav{height:64px;display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:8px;border:1px solid var(--line);border-radius:18px;background:rgba(255,253,248,.7);box-shadow:var(--shadow)}
+    .nav button{border:0;border-radius:12px;background:transparent;color:var(--bark);display:grid;place-items:center;font-size:12px;gap:2px}
+    .nav button.active{background:rgba(184,117,46,.14);color:var(--amber);font-weight:700}
+    .nav i{font-style:normal;font-size:19px}
+    .toast{position:fixed;left:50%;bottom:92px;transform:translateX(-50%) translateY(20px);opacity:0;transition:.22s ease;background:rgba(48,37,28,.88);color:white;border-radius:999px;padding:10px 16px;font-size:13px;pointer-events:none;z-index:10}.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+    @media(max-width:860px){.app{padding:12px 12px calc(12px + env(safe-area-inset-bottom));gap:10px}.home-grid,.home-product,.diary-grid,.week-grid,.health-grid,.profile-grid{grid-template-columns:1fr}.hero{min-height:360px}.hero-metrics,.summary-grid{grid-template-columns:1fr 1fr}.feature-grid{grid-template-columns:1fr}.primary-actions{grid-template-columns:1fr}.control-grid,.mini-grid{grid-template-columns:1fr 1fr}.brand h1{font-size:19px}.chip{height:30px;padding:0 9px}.top-actions{max-width:52%}.top-actions .chip:nth-child(2){display:none}}
+    @media(min-width:861px) and (orientation:portrait){.home-product{grid-template-columns:1fr}.feature-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.primary-actions{grid-template-columns:repeat(3,1fr)}}
+    @media(orientation:landscape){
+      .app{height:100dvh;max-width:1280px}
+      .page.active{padding-bottom:24px}
+      .hero{min-height:520px}
+      .island-wrap{min-height:230px}
+      .diary-grid,.week-grid,.health-grid,.profile-grid{align-content:start}
+    }
+    @media(orientation:portrait){
+      .app{height:100dvh}
+      .page.active{padding-bottom:18px}
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">屿</div>
+        <div><h1>心屿 XINYU</h1><p>情绪、专注、多人场景与日记对话</p></div>
+      </div>
+      <div class="top-actions">
+        <span class="chip"><span class="dot warn" id="camDot"></span>设备 <b id="camText">同步中</b></span>
+        <span class="chip"><span class="dot warn" id="gimDot"></span>云台 <b id="gimText">同步中</b></span>
+      </div>
+    </header>
+
+    <section class="page home-product active" id="page-home">
+      <div class="stack">
+        <div class="product-hero">
+          <div class="hero-head">
+            <div>
+              <div class="eyebrow">xinyu product home</div>
+              <h2>今天想让心屿陪你记录什么？</h2>
+              <p class="hero-copy" id="heroCopy">这里是心屿的真实产品首页：监测情绪与专注、开启多人场景跟踪、写日记，并让小屿基于你的记录继续对话。</p>
+            </div>
+            <span class="status-badge warn" id="homeDeviceBadge">设备同步中</span>
+          </div>
+          <div class="primary-actions">
+            <button class="btn primary" id="emotionPrimaryBtn" onclick="toggleEmotionMonitor()">开始情绪监测<small id="emotionPrimaryHint">接入单人视觉分析</small></button>
+            <button class="btn" id="focusPrimaryBtn" onclick="toggleFocusMonitor()">开始专注记录<small id="focusPrimaryHint">统计专注时长和状态</small></button>
+            <button class="btn" id="multiPrimaryBtn" onclick="toggleMultiScene()">开始多人场景<small id="multiPrimaryHint">声源 DOA 跟随</small></button>
+          </div>
+          <div class="summary-grid">
+            <div class="metric"><div class="k">今日情绪</div><div class="v" id="emotionLabel">平静</div><div class="n" id="emotionNote">像岛上刚刚停下来的风。</div></div>
+            <div class="metric"><div class="k">专注状态</div><div class="v" id="attentionLabel">稳定专注</div><div class="n" id="attentionNote">很棒，效率很高，继续保持这股稳劲。</div></div>
+            <div class="metric"><div class="k">当前场景</div><div class="v" id="trackingLabel">单人追踪</div><div class="n" id="trackingNote">默认演示数据已加载，连接后自动切换实时状态。</div></div>
+          </div>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature-card">
+            <div class="feature-top">
+              <div class="feature-title"><i>😊</i><span>情绪监测</span></div>
+              <span class="status-badge" id="emotionStatusBadge">未开始</span>
+            </div>
+            <p class="feature-copy">通过单人视觉分析读取当前情绪，并把结果沉淀到今天的日记上下文里。</p>
+            <div class="feature-state">
+              <div class="state-cell"><span>结果</span><b id="emotionStateValue">平静</b></div>
+              <div class="state-cell"><span>可信度</span><b id="emotionConfidenceValue">default</b></div>
+            </div>
+            <div class="feature-actions">
+              <button class="btn primary" onclick="toggleEmotionMonitor()" id="emotionToggleBtn">开始监测</button>
+              <button class="btn" onclick="generateTodaySummary()">生成总结</button>
+            </div>
+          </article>
+
+          <article class="feature-card">
+            <div class="feature-top">
+              <div class="feature-title"><i>🎯</i><span>专注度监测</span></div>
+              <span class="status-badge" id="focusStatusBadge">未开始</span>
+            </div>
+            <p class="feature-copy">记录你在镜头前的专注状态，形成今日专注时长、趋势和轻量提醒。</p>
+            <div class="feature-state">
+              <div class="state-cell"><span>专注分</span><b id="focusScoreValue">82</b></div>
+              <div class="state-cell"><span>记录时长</span><b id="focusDurationValue">00:00</b></div>
+            </div>
+            <div class="feature-actions">
+              <button class="btn primary" onclick="toggleFocusMonitor()" id="focusToggleBtn">开始记录</button>
+              <button class="btn" onclick="showPage('week', document.querySelector('[data-nav=week]'))">查看趋势</button>
+            </div>
+          </article>
+
+          <article class="feature-card">
+            <div class="feature-top">
+              <div class="feature-title"><i>🗣️</i><span>多人场景跟踪</span></div>
+              <span class="status-badge" id="multiStatusBadge">未开始</span>
+            </div>
+            <p class="feature-copy">多人场景下使用 ReSpeaker/DOA 方向辅助跟随，只做声源方向理解，不默认保存音频。</p>
+            <div class="feature-state">
+              <div class="state-cell"><span>声源方向</span><b id="doaValue">--</b></div>
+              <div class="state-cell"><span>DOA 状态</span><b id="doaFreshValue">待接入</b></div>
+            </div>
+            <div class="feature-actions">
+              <button class="btn primary" onclick="toggleMultiScene()" id="multiToggleBtn">开始多人跟踪</button>
+              <button class="btn" onclick="openDebugConsole()">开发控制台</button>
+            </div>
+          </article>
+
+          <article class="feature-card">
+            <div class="feature-top">
+              <div class="feature-title"><i>📔</i><span>情绪日记</span></div>
+              <span class="status-badge ok" id="diaryStatusBadge">本地记录</span>
+            </div>
+            <p class="feature-copy">把今天的情绪、专注和手写补充整理成日记，再交给小屿生成回应。</p>
+            <div class="quick-diary">
+              <textarea id="todayQuickDiary" placeholder="今天发生了什么？写一点，或直接让小屿基于监测状态总结。"></textarea>
+              <div class="feature-actions">
+                <button class="btn primary" onclick="saveTodayQuickDiary()">写入今日</button>
+                <button class="btn" onclick="showPage('diary', document.querySelector('[data-nav=diary]'))">打开日记</button>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <aside class="side-stack">
+        <div class="card">
+          <h3>和小屿聊聊</h3>
+          <div class="chat-thread" id="homeChatThread">
+            <div class="bubble"><small>小屿</small>我会结合今天的情绪、专注和日记内容来回应你。你可以问：“我今天为什么有点累？”或者“帮我整理今天的日记”。</div>
+          </div>
+          <div class="chat-box">
+            <div class="chat-row">
+              <input id="homeChatInput" placeholder="和小屿聊聊今天的状态..." onkeydown="if(event.key==='Enter')askHomeLLM()">
+              <button class="btn primary" onclick="askHomeLLM()">发送</button>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>健康与陪伴建议</h3>
+          <div class="timeline insight" id="homeAdvice">先开始情绪或专注监测，小屿会根据今日状态给出更贴近的建议。当前未接入的数据会明确显示 default / 待接入。</div>
+          <div class="control-grid">
+            <button class="btn" onclick="showPage('health', document.querySelector('[data-nav=health]'))">健康工具</button>
+            <button class="btn" onclick="generateHealthAdvice()">生成建议</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>官方 demo 打开方式</h3>
+          <ol class="help-list">
+            <li>接 USB 初始化，在 Ubuntu 中 `ssh recamera@192.168.42.1`。</li>
+            <li>进入后输入 `ip addr`，查看 `wlan0` 无线 IP。</li>
+            <li>拔掉 USB，在浏览器输入最新 IP 访问官方 demo。</li>
+            <li>如需密码：`IntelligentHardware0526_`。</li>
+          </ol>
+        </div>
+      </aside>
+    </section>
+
+    <section class="page diary-grid" id="page-diary">
+      <div class="card">
+        <div class="calendar-head">
+          <button class="btn ghost" onclick="changeMonth(-1)">上月</button>
+          <div class="calendar-title" id="calendarTitle">--</div>
+          <button class="btn ghost" onclick="changeMonth(1)">下月</button>
+        </div>
+        <div class="calendar-grid" id="calendarGrid"></div>
+      </div>
+      <div class="card">
+        <h3>情绪日历</h3>
+        <div class="timeline" id="dayDetail">选择一天查看默认情绪记录。</div>
+        <div class="chat-box">
+          <textarea id="diaryText" placeholder="补充这一天发生了什么，或问问小屿。"></textarea>
+          <div class="chat-row">
+            <input id="dayChatInput" placeholder="让小屿回应这一天..." onkeydown="if(event.key==='Enter')askDayLLM()">
+            <button class="btn" onclick="saveDiary()">保存</button>
+            <button class="btn primary" onclick="askDayLLM()">智能回复</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="page week-grid" id="page-week">
+      <div class="card">
+        <h3>本周情绪周记</h3>
+        <div class="week-bars" id="weekBars"></div>
+        <div class="readout">
+          <div><span>平均专注</span><b id="weekAvg">82</b></div>
+          <div><span>主要情绪</span><b id="weekTopEmotion">平静</b></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>小屿周记</h3>
+        <div class="timeline insight" id="weekInsight">这一周整体是平稳的。专注度保持在较高水平，情绪有轻微起伏，但没有明显失衡。适合继续保持现在的节奏，在周中给自己留一点恢复时间。</div>
+        <div class="chat-box">
+          <div class="chat-row">
+            <input id="weekChatInput" placeholder="让小屿生成本周总结..." onkeydown="if(event.key==='Enter')askWeekLLM()">
+            <button class="btn primary" onclick="askWeekLLM()">生成周记</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="page health-grid" id="page-health">
+      <div class="card">
+        <h3>护眼与久坐提醒</h3>
+        <div class="mini-grid">
+          <div class="metric">
+            <div class="k">护眼 20-20-20</div>
+            <div class="health-timer" id="eyeTimer">20:00</div>
+            <button class="btn primary" id="eyeBtn" onclick="toggleEyeCare()">开启提醒</button>
+          </div>
+          <div class="metric">
+            <div class="k">久坐活动</div>
+            <div class="health-timer" id="sitTimer">45:00</div>
+            <button class="btn primary" id="sitBtn" onclick="toggleSitReminder()">开启提醒</button>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>呼吸与拉伸</h3>
+        <div class="breath-circle" id="breathCircle">准备</div>
+        <div class="control-grid">
+          <button class="btn primary" onclick="toggleBreath()">开始 4-7-8</button>
+          <button class="btn" onclick="stopBreath()">停止</button>
+          <button class="btn" onclick="startStretchGuide()">快速拉伸</button>
+          <button class="btn ghost" onclick="completeStretch()">完成</button>
+        </div>
+        <div class="timeline" id="stretchGuide">拉伸提示会显示在这里。</div>
+      </div>
+      <div class="card">
+        <h3>今日活动</h3>
+        <div class="list">
+          <div class="row"><span>屏幕时间</span><b id="screenTime">0 分钟</b></div>
+          <div class="row"><span>步数目标</span><b><span id="stepsNow">4260</span> / <span id="stepsGoal" contenteditable="true" onblur="saveStepGoal()">6000</span></b></div>
+          <div class="row"><span>喝水提醒</span><b id="waterCount">3 / 8 杯</b></div>
+        </div>
+        <div class="progress" style="margin-top:12px"><span id="stepsProgress"></span></div>
+        <div class="control-grid"><button class="btn" onclick="addWater()">喝了一杯水</button><button class="btn" onclick="addSteps()">记录 500 步</button></div>
+      </div>
+      <div class="card">
+        <h3>健康建议</h3>
+        <div class="timeline insight" id="healthInsight">今天已经保持了一段稳定专注。记得每 20 分钟看远处，肩颈也需要一点轻轻的活动。</div>
+      </div>
+    </section>
+
+    <section class="page profile-grid" id="page-profile">
+      <div class="card">
+        <h3>偏好设置</h3>
+        <div class="list">
+          <div class="row"><span>昵称</span><b contenteditable="true" id="profileName">心屿用户</b></div>
+          <div class="row"><span>默认模式</span><b>单人追踪</b></div>
+          <div class="row"><span>提醒节奏</span><b>温和</b></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>关于心屿</h3>
+        <div class="timeline">心屿会结合情绪、专注和日历记录，生成温柔的日记回应。你只需要关注自己的状态和当天想留下的内容。</div>
+      </div>
+    </section>
+
+    <nav class="nav">
+      <button class="active" data-nav="home" onclick="showPage('home',this)"><i>🏝️</i><span>首页</span></button>
+      <button data-nav="diary" onclick="showPage('diary',this)"><i>📔</i><span>日记</span></button>
+      <button data-nav="week" onclick="showPage('week',this)"><i>📈</i><span>趋势</span></button>
+      <button data-nav="health" onclick="showPage('health',this)"><i>🌿</i><span>建议</span></button>
+      <button data-nav="profile" onclick="showPage('profile',this)"><i>⚙️</i><span>我的</span></button>
+    </nav>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    let trackingMode = localStorage.getItem("xinyu_tracking_mode") || "single";
+    let emotionMonitoring = localStorage.getItem("xinyu_emotion_monitoring") === "true";
+    let focusMonitoring = localStorage.getItem("xinyu_focus_monitoring") === "true";
+    let multiSceneRunning = localStorage.getItem("xinyu_multi_scene_running") === "true";
+    let focusStartedAt = Number(localStorage.getItem("xinyu_focus_started_at") || 0);
+    let lastProductState = null;
+    let toastTimer = null;
+    let breathTimer = null;
+    let breathRunning = false;
+    let screenStart = Date.now();
+    let eyeCareOn = false, eyeTimer = null, eyeSecLeft = 1200;
+    let sitOn = false, sitTimerId = null, sitSecLeft = 2700;
+    let waterCount = Number(localStorage.getItem("xinyu_water_count") || 3);
+    let stepsNow = Number(localStorage.getItem("xinyu_steps_now") || 4260);
+    let calDate = new Date();
+    let selectedDayKey = "";
+    const isFilePreview = location.protocol === "file:";
+    const defaultState = {
+      video:{connected:true},
+      gimbal:{connected:true,dry_run:true},
+      emotion:{emotion:"Neutral"},
+      attention:{has_face:true,score:82},
+      face_lock:{locked:false},
+      pose:{count:1},
+      tracking_mode:"single"
+    };
+    const emotionMap = {
+      Anger:["愤怒","先别急着压住它，慢慢看清楚。"],
+      Contempt:["轻蔑","保持距离，有时候也是边界。"],
+      Disgust:["不适","不舒服的感觉值得被认真听见。"],
+      Fear:["不安","我陪你一步一步来。"],
+      Happiness:["快乐","这份轻快很好，替你悄悄开心。"],
+      Neutral:["平静","像岛上刚刚停下来的风。"],
+      Sadness:["低落","不用一个人扛，我在这里。"],
+      Surprise:["惊讶","生活突然眨了一下眼。"]
+    };
+    const emotionIcon = {Anger:"😠",Contempt:"😏",Disgust:"🤢",Fear:"😟",Happiness:"😊",Neutral:"😌",Sadness:"😢",Surprise:"😮"};
+    const defaultDiary = {
+      "2026-06-01": {weather:"☀️", emotion:"Neutral", score:82, text:"周一泡了杯绿茶坐在窗边看了会儿树叶晃动。待办清单有点长，但一件一件来吧。", reply:"绿茶的清香和周一的宁静是很好的搭配。慢慢来，不着急。"},
+      "2026-06-02": {weather:"⛅", emotion:"Happiness", score:88, text:"阳光特别好，冲了杯热咖啡翻开想看的书。今天开了个好头。", reply:"早晨的阳光和咖啡，还有什么比这更好的开始呢。"},
+      "2026-06-03": {weather:"🌧️", emotion:"Happiness", score:86, text:"方案初稿终于写完了！虽然还要修改，但最难的部分过去了。奖励自己一杯奶茶。", reply:"攻克难关的感觉比奶茶还甜。这是这周最大的成就。"},
+      "2026-06-04": {weather:"☀️", emotion:"Surprise", score:78, text:"收到朋友寄来的手写明信片，在这个全是电子消息的时代太珍贵了。下午老同学突然来电说出差要来，好几年没见了。", reply:"手写的温度和意外的重逢，都是生活给的礼物。"},
+      "2026-06-05": {weather:"⛅", emotion:"Anger", score:52, text:"开会时同事把我的方案说成是别人的。当下没说什么但心里很不舒服。后来决定明天找机会澄清。", reply:"那种感觉确实不好受。但你没有当场发作，而是选择冷静处理，这很成熟。"},
+      "2026-06-06": {weather:"☀️", emotion:"Happiness", score:84, text:"睡到自然醒，去菜市场买了新鲜水果，回家做了早午餐。慢下来的时光真好。", reply:"周六的早午餐是世界上最好的东西之一。"},
+      "2026-06-07": {weather:"⛅", emotion:"Sadness", score:60, text:"周日总是有点惆怅。想到明天又要开始新的一周，整理了一下房间，把下周的衣服准备好了。", reply:"周日的惆怅是很多人都有的。整理房间和准备衣服，其实已经是温柔地在迎接新一周了。"},
+      "2026-06-08": {weather:"☀️", emotion:"Happiness", score:87, text:"项目推进顺利，团队配合越来越默契了。中午大家一起点了外卖，边吃边聊很开心。", reply:"好的团队和好的午餐，让工作日也变得值得期待。"},
+      "2026-06-09": {weather:"⛅", emotion:"Neutral", score:80, text:"今天没有什么特别的事，按部就班地推进工作。有时候平稳也是一种幸运。", reply:"平静的日子是生活的根基。不是每一天都需要轰轰烈烈。"},
+      "2026-06-10": {weather:"🌧️", emotion:"Sadness", score:58, text:"下午身体有点不舒服，可能是最近加班太多了。提前下班回家躺了一会儿。", reply:"身体在提醒你该休息了。周末好好补觉，别对自己太苛刻。"},
+      "2026-06-11": {weather:"☀️", emotion:"Happiness", score:86, text:"和朋友去公园散步，天气特别好。坐在草地上聊了很多，感觉很久没有这么放松了。", reply:"草地、阳光、好朋友，这是什么神仙周六。"},
+      "2026-06-12": {weather:"☀️", emotion:"Neutral", score:82, text:"在家整理了一下房间，把最近看了一半的书读完了。做了一顿简单的晚餐。", reply:"把书读完的感觉真好。简单而充实的周日。"}
+    };
+    const weekDefault = [
+      {day:"一", emotion:"Neutral", score:82},
+      {day:"二", emotion:"Happiness", score:88},
+      {day:"三", emotion:"Neutral", score:80},
+      {day:"四", emotion:"Sadness", score:58},
+      {day:"五", emotion:"Surprise", score:76},
+      {day:"六", emotion:"Neutral", score:82},
+      {day:"日", emotion:"Happiness", score:86}
+    ];
+
+    function setAppHeight(){document.documentElement.style.setProperty("--app-height", window.innerHeight + "px")}
+    setAppHeight(); addEventListener("resize", setAppHeight); addEventListener("orientationchange", () => setTimeout(setAppHeight, 220));
+
+    function showToast(text){
+      const el = $("toast"); el.textContent = text; el.classList.add("show");
+      clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("show"), 1800);
+    }
+    function log(text){ console.debug("[xinyu]", text); }
+    function setText(id, text){ const el=$(id); if(el) el.textContent=text; }
+    function setHTML(id, html){ const el=$(id); if(el) el.innerHTML=html; }
+    function showPage(name, btn){
+      document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+      $("page-" + name).classList.add("active");
+      document.querySelectorAll(".nav button").forEach(b => b.classList.remove("active"));
+      if(btn) btn.classList.add("active");
+      else document.querySelector(`[data-nav="${name}"]`)?.classList.add("active");
+      if(name === "diary") renderCalendar();
+      if(name === "week") renderWeekReport();
+      if(name === "health") renderHealth();
+    }
+    function setMode(mode, send=true){
+      trackingMode = mode === "multi" ? "multi" : "single";
+      localStorage.setItem("xinyu_tracking_mode", trackingMode);
+      $("trackingLabel").textContent = trackingMode === "multi" ? "多人场景" : "单人监测";
+      $("trackingNote").textContent = trackingMode === "multi"
+        ? "声源方向跟随已切到多人场景。"
+        : "单人视觉分析用于情绪和专注。";
+      if(!send) return;
+      if (trackingMode === "multi") post("/api/tracking_mode", {mode:"multi"}, true);
+      else post("/api/single_track/start", {speed:360}, true);
+    }
+
+    async function post(url, payload, soft=false){
+      if(isFilePreview){
+        log(`${url}\nfile preview: default 数据模式，不发送真实控制请求。`);
+        showToast("当前是本地预览，HTTP 打开后可同步状态");
+        renderState(defaultState, true);
+        return {success:true, mode:trackingMode, preview:true};
+      }
+      try{
+        const res = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:payload ? JSON.stringify(payload) : undefined});
+        const data = await res.json().catch(() => ({}));
+        log(`${url}\n${JSON.stringify(data, null, 2)}`);
+        if(!soft && (!res.ok || data.success === false)) showToast(data.message || data.error || "操作失败");
+        await refreshState();
+        return data;
+      }catch(e){log("请求失败: " + e.message); showToast("请求失败");}
+    }
+
+    function setBadge(id, text, kind=""){
+      const el = $(id); if(!el) return;
+      el.textContent = text;
+      el.className = "status-badge " + kind;
+    }
+    function setButton(id, text, primary=true){
+      const el = $(id); if(!el) return;
+      el.textContent = text;
+      el.classList.toggle("primary", !!primary);
+    }
+    function todayKey(){ return dateKey(new Date()); }
+    function productContext(){
+      const s = lastProductState || defaultState;
+      const emo = (s.emotion && (s.emotion.emotion || s.emotion.label)) || "Neutral";
+      const att = s.attention || {};
+      const diary = $("todayQuickDiary")?.value?.trim() || mergedDiary()[todayKey()]?.text || "";
+      return `今日状态：情绪=${emo}，专注=${att.score ?? "未知"}，has_face=${!!att.has_face}，模式=${trackingMode}，情绪监测=${emotionMonitoring}，专注记录=${focusMonitoring}，多人场景=${multiSceneRunning}。今日日记：${diary || "暂无补充"}`;
+    }
+    async function toggleEmotionMonitor(){
+      emotionMonitoring = !emotionMonitoring;
+      localStorage.setItem("xinyu_emotion_monitoring", emotionMonitoring);
+      setMode("single", false);
+      updateProductRuntime();
+      if(emotionMonitoring) await post("/api/single_track/start", {speed:360}, true);
+      else if(!focusMonitoring) await post("/api/single_track/stop", {}, true);
+      showToast(emotionMonitoring ? "情绪监测已开始" : "情绪监测已暂停");
+      refreshState();
+    }
+    async function toggleFocusMonitor(){
+      focusMonitoring = !focusMonitoring;
+      localStorage.setItem("xinyu_focus_monitoring", focusMonitoring);
+      if(focusMonitoring && !focusStartedAt){
+        focusStartedAt = Date.now();
+        localStorage.setItem("xinyu_focus_started_at", String(focusStartedAt));
+      }
+      if(!focusMonitoring){
+        focusStartedAt = 0;
+        localStorage.removeItem("xinyu_focus_started_at");
+      }
+      setMode("single", false);
+      updateProductRuntime();
+      if(focusMonitoring) await post("/api/single_track/start", {speed:360}, true);
+      else if(!emotionMonitoring) await post("/api/single_track/stop", {}, true);
+      showToast(focusMonitoring ? "专注记录已开始" : "专注记录已暂停");
+      refreshState();
+    }
+    async function toggleMultiScene(){
+      multiSceneRunning = !multiSceneRunning;
+      localStorage.setItem("xinyu_multi_scene_running", multiSceneRunning);
+      setMode("multi", false);
+      updateProductRuntime();
+      if(multiSceneRunning){
+        await post("/api/tracking_mode", {mode:"multi"}, true);
+        await post("/api/multi_track/start", {save_audio:false}, true);
+        showToast("多人场景跟踪已开始");
+      }else{
+        await post("/api/multi_track/stop", {finalize:true}, true);
+        showToast("多人场景跟踪已停止");
+      }
+      refreshState();
+    }
+    function openDebugConsole(){ location.href = "/v2"; }
+    function saveTodayQuickDiary(){
+      const text = $("todayQuickDiary").value.trim();
+      if(!text){ showToast("先写一点今天的内容"); return; }
+      const key = todayKey();
+      const saved = JSON.parse(localStorage.getItem("xinyu_emotion_calendar") || "{}");
+      const s = lastProductState || defaultState;
+      const emoKey = (s.emotion && (s.emotion.emotion || s.emotion.label)) || "Neutral";
+      const score = Number(s.attention?.score || 82);
+      saved[key] = {weather:"🌤️", emotion:emoKey, score, text};
+      localStorage.setItem("xinyu_emotion_calendar", JSON.stringify(saved));
+      selectedDayKey = key;
+      showToast("已写入今日情绪日记");
+      renderCalendar();
+    }
+    function generateTodaySummary(){
+      const key = todayKey();
+      const text = $("todayQuickDiary").value.trim() || mergedDiary()[key]?.text || "今天还没有手写记录。";
+      $("todayQuickDiary").value = `今日小结：${text}\n\n情绪：${$("emotionLabel").textContent}；专注：${$("attentionLabel").textContent}；场景：${$("trackingLabel").textContent}。`;
+      showToast("已生成今日摘要草稿");
+    }
+    function generateHealthAdvice(){
+      const advice = `基于当前状态：${$("emotionLabel").textContent}、${$("attentionLabel").textContent}。建议先保持 25 分钟轻专注，然后做一次 20 秒远眺；如果多人讨论正在进行，可以在结束后让小屿整理一段情绪日记。`;
+      $("homeAdvice").textContent = advice;
+      $("homeAdvice").dataset.manual = "true";
+      showToast("已生成健康建议");
+    }
+    function addChatBubble(role, text){
+      const el = $("homeChatThread"); if(!el) return;
+      const cls = role === "user" ? "bubble user" : "bubble";
+      const label = role === "user" ? "你" : "小屿";
+      el.insertAdjacentHTML("beforeend", `<div class="${cls}"><small>${label}</small>${escapeHTML(text)}</div>`);
+      el.scrollTop = el.scrollHeight;
+    }
+    async function askHomeLLM(){
+      const input = $("homeChatInput");
+      const msg = input.value.trim() || "请结合我今天的情绪、专注、日记状态，给我一个温柔但具体的建议。";
+      input.value = "";
+      addChatBubble("user", msg);
+      if(isFilePreview){
+        addChatBubble("assistant", "我先基于 default 状态回应你：今天整体偏平静，适合把任务切成小块。先完成一个最轻的动作，再决定要不要继续。");
+        return;
+      }
+      try{
+        addChatBubble("assistant", "我正在看今天的状态和日记...");
+        const bubbles = $("homeChatThread").querySelectorAll(".bubble");
+        const pending = bubbles[bubbles.length - 1];
+        const res = await fetch("/api/chat", {
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            message:msg,
+            emotion:$("emotionStateValue").textContent || "Neutral",
+            user_name:localStorage.getItem("xinyu_user_name") || "心屿用户",
+            context:productContext(),
+            daily_state:{source:"/home product dashboard", tracking_mode:trackingMode}
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        pending.innerHTML = `<small>小屿</small>${escapeHTML(data.reply || "我暂时没有拿到 LLM 回复，但已经把你的问题留在今天的记录里。")}`;
+      }catch(e){
+        addChatBubble("assistant", "LLM 接口暂时不可用。我先给你一个本地建议：降低一点节奏，保留一件最重要的小事，把其余内容放到日记里慢慢整理。");
+      }
+    }
+    async function askLLM(message, emotion, context, targetId){
+      if(isFilePreview){
+        $(targetId).textContent = "小屿：我先用 default 数据陪你回看这一段。整体状态是平稳的，偶尔有疲惫和惊喜交替出现。你不需要急着把所有事都做好，先把今天最重要的一小步稳稳落下就好。";
+        showToast("file 预览使用本地 default 回复");
+        return;
+      }
+      try{
+        $(targetId).textContent = "小屿正在思考...";
+        const res = await fetch("/api/chat", {
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            message,
+            emotion: emotion || "Neutral",
+            user_name:"心屿用户",
+            context,
+            daily_state:{default_data:true, source:"home emotion calendar / weekly report"}
+          })
+        });
+        const data = await res.json();
+        $(targetId).textContent = data.reply || "小屿暂时没有生成回复，但我会继续陪你把这一段记录下来。";
+      }catch(e){
+        $(targetId).textContent = "小屿：连接 LLM 接口失败，先显示 default 回复。整体状态平稳，建议保留一点恢复时间。";
+      }
+    }
+
+    function focusLevel(score, hasFace){
+      if(!hasFace) return ["等待识别","我在等你回到镜头里。"];
+      const n = Number(score);
+      if(Number.isNaN(n)) return ["等待识别","数据还在靠近。"];
+      if(n >= 72) return ["高度专注","很棒，效率很高。"];
+      if(n >= 45) return ["稳定专注","慢慢把注意力牵回来就好。"];
+      return ["需要休息","先歇一口气，再重新开始。"];
+    }
+    function renderState(s, isDefault=false){
+      lastProductState = s || defaultState;
+      const camOk = !!(s.video && s.video.connected);
+      const gimOk = !!(s.gimbal && s.gimbal.connected);
+      const dry = !!(s.gimbal && s.gimbal.dry_run);
+      setText("camText", camOk ? "在线" : "离线");
+      const camDot=$("camDot"); if(camDot) camDot.className = "dot " + (camOk ? "ok" : "");
+      setText("gimText", isDefault ? "default" : (gimOk ? (dry ? "dry-run" : "已连") : "未连"));
+      const gimDot=$("gimDot"); if(gimDot) gimDot.className = "dot " + (gimOk && !dry ? "ok" : dry ? "warn" : "");
+      setBadge("homeDeviceBadge", isDefault ? "default / 模拟状态" : (camOk ? "设备在线" : "设备离线"), camOk ? "ok" : "warn");
+      const emoKey = (s.emotion && (s.emotion.emotion || s.emotion.label)) || "Neutral";
+      const emo = emotionMap[emoKey] || emotionMap.Neutral;
+      $("emotionLabel").textContent = emo[0]; $("emotionNote").textContent = emo[1];
+      setText("emotionStateValue", emo[0]);
+      const emoConf = Number((s.emotion && (s.emotion.confidence || s.emotion.score)) || 0);
+      setText("emotionConfidenceValue", emoConf ? Math.round(emoConf * 100) + "%" : (isDefault ? "default" : "待稳定"));
+      const attn = s.attention || {};
+      const fl = focusLevel(attn.score, !!attn.has_face);
+      $("attentionLabel").textContent = fl[0]; $("attentionNote").textContent = fl[1];
+      setText("focusScoreValue", attn.score != null ? Math.round(Number(attn.score)) : "--");
+      const locked = !!(s.face_lock && s.face_lock.locked);
+      const hasPerson = !!(s.pose && s.pose.count > 0);
+      const doa = s.doa || {}, follow = s.sound_follow || {};
+      const doaDeg = follow.doa_deg != null ? follow.doa_deg : doa.doa_deg;
+      const doaReady = !!(doa.available || follow.active || doaDeg != null);
+      $("trackingLabel").textContent = multiSceneRunning ? "多人场景" : (locked ? "已锁定" : hasPerson ? (isDefault ? "单人监测" : "靠近中") : "等待识别");
+      $("trackingNote").textContent = isDefault ? "default 数据已加载，连接后会自动切换实时状态。" : (dry ? "当前是 dry-run，不会真的移动云台。" : (gimOk ? "云台控制链路已连接。" : "等待云台控制链路。"));
+      setText("doaValue", doaDeg != null ? Math.round(Number(doaDeg)) + "°" : "--");
+      setText("doaFreshValue", doaReady ? (follow.has_speech || doa.has_speech ? "有人声" : "已连接") : "待接入");
+      updateProductRuntime();
+    }
+    async function refreshState(){
+      if(isFilePreview){
+        renderState(defaultState, true);
+        return;
+      }
+      try{
+        const res = await fetch("/api/state", {cache:"no-store"});
+        const body = await res.json();
+        renderState(body.data || body, false);
+      }catch(e){renderState(defaultState, true); log("状态同步失败，已显示 default 数据: " + e.message);}
+    }
+
+    function updateProductRuntime(){
+      setBadge("emotionStatusBadge", emotionMonitoring ? "监测中" : "已暂停", emotionMonitoring ? "ok" : "");
+      setBadge("focusStatusBadge", focusMonitoring ? "记录中" : "已暂停", focusMonitoring ? "ok" : "");
+      setBadge("multiStatusBadge", multiSceneRunning ? "跟踪中" : "未开始", multiSceneRunning ? "ok" : "");
+      setButton("emotionToggleBtn", emotionMonitoring ? "暂停监测" : "开始监测", !emotionMonitoring);
+      setButton("focusToggleBtn", focusMonitoring ? "暂停记录" : "开始记录", !focusMonitoring);
+      setButton("multiToggleBtn", multiSceneRunning ? "停止多人跟踪" : "开始多人跟踪", !multiSceneRunning);
+      setButton("emotionPrimaryBtn", emotionMonitoring ? "暂停情绪监测" : "开始情绪监测", !emotionMonitoring);
+      setButton("focusPrimaryBtn", focusMonitoring ? "暂停专注记录" : "开始专注记录", !focusMonitoring);
+      setButton("multiPrimaryBtn", multiSceneRunning ? "停止多人场景" : "开始多人场景", !multiSceneRunning);
+      const modeText = multiSceneRunning ? "多人 DOA 跟随" : (emotionMonitoring || focusMonitoring ? "单人视觉监测" : "待开始");
+      const adviceEl = $("homeAdvice");
+      if(adviceEl && adviceEl.dataset.manual !== "true"){
+        adviceEl.textContent = (emotionMonitoring || focusMonitoring || multiSceneRunning)
+          ? `当前处于 ${modeText}。你可以把观察结果写入日记，或直接让小屿基于状态继续对话。`
+          : "先开始情绪或专注监测，小屿会根据今日状态给出更贴近的建议。当前未接入的数据会明确显示 default / 待接入。";
+      }
+      updateFocusDuration();
+    }
+
+    function updateFocusDuration(){
+      if(!focusMonitoring || !focusStartedAt){ setText("focusDurationValue", "00:00"); return; }
+      const sec = Math.max(0, Math.floor((Date.now() - focusStartedAt) / 1000));
+      setText("focusDurationValue", fmt(sec));
+    }
+
+    function dateKey(d){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;}
+    function mergedDiary(){
+      const saved = JSON.parse(localStorage.getItem("xinyu_emotion_calendar") || "{}");
+      return {...defaultDiary, ...saved};
+    }
+    function renderCalendar(){
+      const data = mergedDiary();
+      const y = calDate.getFullYear(), m = calDate.getMonth();
+      $("calendarTitle").textContent = `${y} 年 ${m + 1} 月`;
+      const first = new Date(y, m, 1);
+      const days = new Date(y, m + 1, 0).getDate();
+      const grid = ["日","一","二","三","四","五","六"].map(d => `<div class="dow">${d}</div>`);
+      for(let i=0;i<first.getDay();i++) grid.push("<div></div>");
+      for(let d=1;d<=days;d++){
+        const key = dateKey(new Date(y, m, d));
+        const item = data[key];
+        const selected = key === selectedDayKey ? " selected" : "";
+        grid.push(`<button class="day ${item ? "has" : ""}${selected}" onclick="selectDay('${key}')"><span>${d}</span>${item ? `<span class="emo-dot">${emotionIcon[item.emotion] || "😌"}</span>` : ""}</button>`);
+      }
+      $("calendarGrid").innerHTML = grid.join("");
+      if(!selectedDayKey) selectDay("2026-06-01", false);
+    }
+    function changeMonth(delta){calDate = new Date(calDate.getFullYear(), calDate.getMonth() + delta, 1); renderCalendar();}
+    function selectDay(key, rerender=true){
+      selectedDayKey = key;
+      const item = mergedDiary()[key] || {emotion:"Neutral", score:76, text:"这一天还没有记录，先用 default 平静状态占位。"};
+      const emo = emotionMap[item.emotion] || emotionMap.Neutral;
+      $("dayDetail").innerHTML = `<b>${key}</b><br>${emotionIcon[item.emotion] || "😌"} ${emo[0]} · 专注度 ${item.score}<br>${escapeHTML(item.text)}<br><br><span class="insight">小屿：${emo[1]}</span>`;
+      $("diaryText").value = item.text || "";
+      if(rerender) renderCalendar();
+    }
+    function saveDiary(){
+      const text = $("diaryText").value.trim(); if(!text){showToast("先写一点内容"); return;}
+      const saved = JSON.parse(localStorage.getItem("xinyu_emotion_calendar") || "{}");
+      const key = selectedDayKey || dateKey(new Date());
+      saved[key] = {emotion:"Neutral", score:82, text};
+      localStorage.setItem("xinyu_emotion_calendar", JSON.stringify(saved));
+      selectDay(key); showToast("日历记录已保存");
+    }
+    function clearDiary(){ $("diaryText").value = ""; }
+    function askDayLLM(){
+      const item = mergedDiary()[selectedDayKey] || defaultDiary["2026-06-01"];
+      const msg = $("dayChatInput").value.trim() || `请回应我 ${selectedDayKey} 这一天的情绪记录`;
+      askLLM(msg, item.emotion, `情绪日历：${selectedDayKey}，专注度${item.score}，记录：${item.text}`, "dayDetail");
+    }
+    function renderWeekReport(){
+      const avg = Math.round(weekDefault.reduce((s,d)=>s+d.score,0)/weekDefault.length);
+      $("weekAvg").textContent = avg;
+      $("weekTopEmotion").textContent = "平静";
+      $("weekBars").innerHTML = weekDefault.map(d => `<div class="bar-wrap"><div class="bar" style="height:${Math.max(18,d.score*1.35)}px"></div><span>${d.day}<br>${emotionIcon[d.emotion]}</span></div>`).join("");
+    }
+    function askWeekLLM(){
+      const msg = $("weekChatInput").value.trim() || "请根据本周 default 情绪和专注数据生成一段温柔的周记总结";
+      askLLM(msg, "Neutral", `本周数据：${JSON.stringify(weekDefault)}`, "weekInsight");
+    }
+    function escapeHTML(s){return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+
+    function fmt(sec){return `${String(Math.floor(sec/60)).padStart(2,"0")}:${String(sec%60).padStart(2,"0")}`;}
+    function toggleEyeCare(){
+      eyeCareOn = !eyeCareOn;
+      $("eyeBtn").textContent = eyeCareOn ? "提醒中" : "开启提醒";
+      clearInterval(eyeTimer);
+      if(eyeCareOn){ eyeSecLeft = 1200; eyeTimer = setInterval(tickEye, 1000); tickEye(); }
+      else $("eyeTimer").textContent = "20:00";
+    }
+    function tickEye(){
+      $("eyeTimer").textContent = fmt(eyeSecLeft);
+      eyeSecLeft--;
+      if(eyeSecLeft < 0){
+        showToast("护眼时间：看向远处 20 秒");
+        $("healthInsight").textContent = "四处看看，让眼睛放松一下。尽量看向远处，让眼睛休息 20 秒。";
+        eyeSecLeft = 1200;
+      }
+    }
+    function toggleSitReminder(){
+      sitOn = !sitOn;
+      $("sitBtn").textContent = sitOn ? "提醒中" : "开启提醒";
+      clearInterval(sitTimerId);
+      if(sitOn){ sitSecLeft = 2700; sitTimerId = setInterval(tickSit, 1000); tickSit(); }
+      else $("sitTimer").textContent = "45:00";
+    }
+    function tickSit(){
+      $("sitTimer").textContent = fmt(sitSecLeft);
+      sitSecLeft--;
+      if(sitSecLeft < 0){
+        showToast("该站起来活动一下了");
+        startStretchGuide();
+        sitSecLeft = 2700;
+      }
+    }
+    function startStretchGuide(){
+      const steps = ["颈部慢慢向左、向右侧弯", "双肩向后环绕，放松肩颈", "手腕交叉，轻轻转动", "身体向两侧缓慢拉伸", "站直，做三次慢慢的深呼吸"];
+      let i = 0;
+      $("stretchGuide").innerHTML = `<b>快速拉伸</b><br>${steps[i]}`;
+      clearInterval(window._stretchTimer);
+      window._stretchTimer = setInterval(() => {
+        i++;
+        if(i >= steps.length){ completeStretch(); return; }
+        $("stretchGuide").innerHTML = `<b>快速拉伸</b><br>${steps[i]}`;
+      }, 4000);
+      showToast("快速拉伸开始");
+    }
+    function completeStretch(){
+      clearInterval(window._stretchTimer);
+      $("stretchGuide").textContent = "拉伸完成。喝一口水，再慢慢回到任务里。";
+      $("healthInsight").textContent = "身体已经重新动起来了。接下来保持轻一点的节奏，会更容易稳定专注。";
+    }
+    function saveStepGoal(){ localStorage.setItem("xinyu_steps_goal", $("stepsGoal").textContent.trim() || "6000"); renderHealth(); }
+    function addWater(){ waterCount = Math.min(8, waterCount + 1); localStorage.setItem("xinyu_water_count", waterCount); renderHealth(); showToast("已记录一杯水"); }
+    function addSteps(){ stepsNow += 500; localStorage.setItem("xinyu_steps_now", stepsNow); renderHealth(); showToast("已记录 500 步"); }
+    function renderHealth(){
+      const goal = Number(localStorage.getItem("xinyu_steps_goal") || $("stepsGoal")?.textContent || 6000);
+      $("stepsGoal").textContent = String(goal);
+      $("stepsNow").textContent = String(stepsNow);
+      $("waterCount").textContent = `${waterCount} / 8 杯`;
+      $("stepsProgress").style.width = `${Math.min(100, Math.round(stepsNow / goal * 100))}%`;
+    }
+
+    function toggleBreath(){ breathRunning ? stopBreath() : startBreath(); }
+    function startBreath(){ breathRunning = true; breathStep(0); }
+    function stopBreath(){ breathRunning = false; clearTimeout(breathTimer); $("breathCircle").textContent = "准备"; $("breathCircle").style.width = "160px"; $("breathCircle").style.height = "160px"; }
+    function breathStep(i){
+      if(!breathRunning) return;
+      const phases = [["吸气",4,190],["屏息",7,210],["呼气",8,135]];
+      const p = phases[i % phases.length]; $("breathCircle").textContent = p[0]; $("breathCircle").style.width = p[2] + "px"; $("breathCircle").style.height = p[2] + "px";
+      breathTimer = setTimeout(() => breathStep(i + 1), p[1] * 1000);
+    }
+    setInterval(() => {$("screenTime").textContent = Math.max(0, Math.floor((Date.now() - screenStart) / 60000)) + " 分钟";}, 1000);
+    setInterval(updateFocusDuration, 1000);
+
+    renderState(defaultState, true);
+    setMode(trackingMode, false);
+    updateProductRuntime();
+    renderCalendar();
+    renderWeekReport();
+    renderHealth();
+    refreshState();
+    setInterval(refreshState, 1000);
+    if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js", {scope:"/"}).catch(() => {});}
+  </script>
+</body>
+</html>

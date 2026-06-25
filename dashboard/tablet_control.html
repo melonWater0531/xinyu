@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#b8752e">
+  <title>reCamera 平板控制</title>
+  <style>
+    :root{color-scheme:light;--bg:#f7efe4;--ink:#30251c;--muted:#7b6654;--line:#dec8ab;--accent:#b8752e;--ok:#2f8f5b;--bad:#b94a48}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif}
+    main{max-width:980px;margin:0 auto;padding:18px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+    h1{font-size:22px;margin:0;font-weight:650}
+    .status{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:14px}
+    .panel{border:1px solid var(--line);background:rgba(255,255,255,.58);border-radius:8px;padding:12px}
+    .label{font-size:12px;color:var(--muted);margin-bottom:4px}
+    .value{font-size:18px;font-weight:650}
+    .ok{color:var(--ok)} .bad{color:var(--bad)}
+    .video{width:100%;aspect-ratio:16/9;border:1px solid var(--line);border-radius:8px;object-fit:contain;background:#1f1a16}
+    .controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:14px}
+    button{min-height:48px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);font-size:16px;font-weight:650}
+    button.primary{background:var(--accent);border-color:var(--accent);color:white}
+    button.warn{background:#fff6ef;color:#8a3d23}
+    .log{margin-top:14px;min-height:44px;font-size:13px;line-height:1.6;color:var(--muted);white-space:pre-wrap}
+    @media(max-width:720px){.status,.controls{grid-template-columns:1fr 1fr}h1{font-size:19px}}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>reCamera 平板控制</h1>
+      <button onclick="refreshState()">刷新</button>
+    </header>
+
+    <section class="status">
+      <div class="panel"><div class="label">摄像头</div><div class="value" id="cam">--</div></div>
+      <div class="panel"><div class="label">云台</div><div class="value" id="gimbal">--</div></div>
+      <div class="panel"><div class="label">追踪</div><div class="value" id="track">--</div></div>
+    </section>
+
+    <img class="video" src="/video_feed" alt="reCamera video stream">
+
+    <section class="controls">
+      <button class="primary" onclick="startTrack()">启动单人追踪</button>
+      <button onclick="stopTrack()">停止追踪</button>
+      <button onclick="standby()">回中待机</button>
+      <button class="warn" onclick="stopGimbal()">急停</button>
+    </section>
+
+    <section class="controls">
+      <button onclick="yaw(150)">左转</button>
+      <button onclick="yaw(180)">中间</button>
+      <button onclick="yaw(210)">右转</button>
+      <button onclick="pitch(90)">俯仰居中</button>
+    </section>
+
+    <div class="log" id="log">等待状态...</div>
+  </main>
+
+  <script>
+    const $ = id => document.getElementById(id);
+
+    async function post(url, payload) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: payload ? JSON.stringify(payload) : undefined
+      });
+      const data = await res.json().catch(() => ({}));
+      $("log").textContent = `${url}\n${JSON.stringify(data, null, 2)}`;
+      await refreshState();
+      return data;
+    }
+
+    async function refreshState() {
+      try {
+        const res = await fetch("/api/state", {cache: "no-store"});
+        const body = await res.json();
+        const s = body.data || body;
+        const camOk = !!(s.video && s.video.connected);
+        const gimOk = !!(s.gimbal && s.gimbal.connected);
+        const dry = !!(s.gimbal && s.gimbal.dry_run);
+        $("cam").textContent = camOk ? "在线" : "离线";
+        $("cam").className = `value ${camOk ? "ok" : "bad"}`;
+        $("gimbal").textContent = gimOk ? (dry ? "dry-run" : "已连接") : "未连接";
+        $("gimbal").className = `value ${gimOk && !dry ? "ok" : "bad"}`;
+        $("track").textContent = s.tracking_mode || (s.face_lock && s.face_lock.locked ? "locked" : "single");
+      } catch (e) {
+        $("log").textContent = "读取状态失败: " + e.message;
+      }
+    }
+
+    function startTrack(){ return post("/api/single_track/start", {speed: 360}); }
+    function stopTrack(){ return post("/api/single_track/stop"); }
+    function standby(){ return post("/api/gimbal/standby"); }
+    function stopGimbal(){ return post("/api/gimbal/stop"); }
+    function yaw(angle){ return post("/api/gimbal/yaw", {angle}); }
+    function pitch(angle){ return post("/api/gimbal/pitch", {angle}); }
+
+    refreshState();
+    setInterval(refreshState, 1000);
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js", {scope: "/"}).catch(() => {});
+    }
+  </script>
+</body>
+</html>

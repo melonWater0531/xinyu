@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+<title>reCamera Dashboard</title>
+<style>
+:root{--bg:#f0f4f8;--panel:#ffffff;--border:#e2e8f0;--text:#1e293b;--muted:#64748b;--blue:#3b82f6;--green:#16a34a;--red:#dc2626;--amber:#d97706;--purple:#7c3aed;--cyan:#0891b2;--shadow:0 1px 3px rgba(0,0,0,.08);--radius:10px}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);height:100vh;overflow:hidden}
+.l{display:flex;height:100vh;gap:12px;padding:12px}
+.l-l{flex:1;display:flex;flex-direction:column;gap:12px;min-width:0}
+.l-r{width:360px;display:flex;flex-direction:column;gap:12px;flex-shrink:0;overflow-y:auto}
+.p{background:var(--panel);border-radius:var(--radius);padding:14px 16px;border:1px solid var(--border);box-shadow:var(--shadow)}
+.p h3{font-size:13px;font-weight:600;color:var(--muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px}
+.top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:12px;font-weight:600;font-size:12px}
+.badge.on{background:#dcfce7;color:#15803d}.badge.off{background:#fef2f2;color:#dc2626}.badge.warn{background:#fef9c3;color:#a16207}
+.dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.dot.g{background:#16a34a}.dot.r{background:#dc2626}.dot.y{background:#d97706}.dot.b{background:#3b82f6}
+.btn-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+.btn{padding:7px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;color:#fff}
+.btn:active{opacity:.7}.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-sleep{background:#94a3b8;color:#fff}.btn-standby{background:#93c5fd;color:#1e40af}
+.btn-stop{background:#fca5a5;color:#991b1b;font-size:13px;padding:9px 20px}
+.btn-cal{background:#a5f3fc;color:#155e75}
+.btn-cam{background:#86efac;color:#166534}.btn-cam.off{background:#fecaca;color:#991b1b}
+.btn-face{background:#c4b5fd;color:#5b21b6}.btn-face.on{background:#a78bfa;color:#fff;animation:pulse 1s infinite}
+@keyframes pulse{50%{box-shadow:0 0 16px rgba(139,92,246,.5)}}
+
+.slider-group{margin-bottom:6px}
+.slider-label{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted);margin-bottom:2px}
+.slider-label .val{color:var(--text);font-weight:600;font-size:14px}
+input[type=range]{width:100%;-webkit-appearance:none;height:6px;border-radius:3px;background:#e2e8f0;outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--blue);cursor:pointer}
+.presets{display:flex;gap:4px;margin-top:4px}
+.preset{padding:2px 8px;border-radius:4px;font-size:10px;background:#f1f5f9;color:var(--muted);border:1px solid var(--border);cursor:pointer}
+.preset.sel{background:var(--blue);color:#fff;border-color:var(--blue)}
+
+.camera{flex:1;min-height:0;position:relative;overflow:hidden;padding:0;background:#000;border-radius:var(--radius)}
+.camera img{width:100%;height:100%;object-fit:cover}
+.camera .ph{display:flex;align-items:center;just-content:center;height:100%;color:var(--muted);font-size:14px}
+.camera canvas{position:absolute;pointer-events:none}
+
+.info-row{display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid #f1f5f9}
+.info-row .l{color:var(--muted)}.info-row .v{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums}
+
+@media(max-width:768px){.l{flex-direction:column}.l-r{width:100%}}
+
+#loadOverlay{position:fixed;top:0;left:0;width:100%;height:100%;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:999;transition:opacity .3s}
+#loadOverlay.done{opacity:0;pointer-events:none}
+.spinner{width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head><body>
+
+<div id="loadOverlay"><div class="spinner"></div><div style="color:#fff;margin-top:10px;font-size:12px" id="loadMsg">连接服务器中...</div></div>
+
+<div class="l">
+<div class="l-l">
+  <!-- Compact toolbar -->
+  <div class="p" style="padding:8px 12px">
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-sleep" onclick="cmd('sleep')">💤 睡眠</button>
+      <button class="btn btn-standby" onclick="cmd('standby')">->待机</button>
+      <button class="btn btn-cal" onclick="cmd('calibrate')">🔧 校准</button>
+      <button class="btn btn-cam" id="camBtn" onclick="toggleCam()">📷 启动摄像->/button>
+      <button class="btn btn-face" id="faceBtn" onclick="toggleFace()">👤 人脸追踪</button>
+      <button class="btn btn-cal" onclick="autoAlign()">🎯 自动对准</button>
+      <button class="btn btn-stop" onclick="cmd('stop')">🛑 紧急停->/button>
+      <span style="flex:1"></span>
+      <span class="badge off" id="connB" style="font-size:11px"><span class="dot r"></span> 等待连接</span>
+    </div>
+    <div style="display:flex;gap:16px;margin-top:6px;align-items:center;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)">
+        <span>Yaw</span><input type="range" id="yawS" min="0" max="360" value="180" oninput="onSlide('yaw')" onchange="onSlideEnd('yaw')" style="width:100px">
+        <span class="val" id="yawV" style="font-size:11px;min-width:32px">180°</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)">
+        <span>Pitch</span><input type="range" id="pitchS" min="0" max="180" value="90" oninput="onSlide('pitch')" onchange="onSlideEnd('pitch')" style="width:100px">
+        <span class="val" id="pitchV" style="font-size:11px;min-width:32px">90°</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)">
+        <span>Spd</span><input type="range" id="speedS" min="0" max="720" step="10" value="360" oninput="onSlide('speed')" onchange="onSlideEnd('speed')" style="width:80px">
+        <span class="val" id="speedV" style="font-size:11px;min-width:40px">360°/s</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Camera ->takes remaining space -->
+  <div class="camera" id="camPanel">
+    <div class="ph" id="camPH">点击「启动摄像头」查看实时画->/div>
+    <img id="camImg" src="" style="display:none" alt="Camera">
+    <canvas id="camCv"></canvas>
+  </div>
+</div>
+
+<div class="l-r">
+  <div class="p">
+    <h3>🎯 云台状->/h3>
+    <div class="info-row"><span class="l">偏航 Yaw</span><span class="v" id="gYaw">180.0°</span></div>
+    <div class="info-row"><span class="l">目标</span><span class="v" id="gYawT">180.0°</span></div>
+    <div class="info-row"><span class="l">俯仰 Pitch</span><span class="v" id="gPitch">90.0°</span></div>
+    <div class="info-row"><span class="l">目标</span><span class="v" id="gPitchT">90.0°</span></div>
+    <div class="info-row"><span class="l">速度</span><span class="v" id="gSpeed">360°/s</span></div>
+    <div class="info-row"><span class="l">连接</span><span class="v" id="gConn">--</span></div>
+    <div class="info-row"><span class="l">追踪</span><span class="v" id="gTrack">--</span></div>
+  </div>
+
+  <div class="p">
+    <h3>🧠 专注->Attention</h3>
+    <div id="attnPanel">
+      <div style="text-align:center;padding:8px 0" id="attnScore">
+        <span style="font-size:42px;font-weight:700;color:var(--muted)" id="attnVal">--</span>
+        <span style="font-size:14px;color:var(--muted)">/100</span>
+      </div>
+      <div style="text-align:center;margin-bottom:8px">
+        <span class="badge off" id="attnState" style="font-size:13px">无用->/span>
+      </div>
+      <div id="attnEvidence" style="font-size:11px;color:var(--muted)">
+        <div style="padding:2px 0"></div>
+      </div>
+      <div id="attnWarnings" style="font-size:11px;margin-top:4px">
+      </div>
+    </div>
+  </div>
+
+  <div class="p">
+    <h3>🤖 AI 检->/h3>
+    <div id="aiList"><span style="color:var(--muted);font-size:12px">等待数据...</span></div>
+  </div>
+</div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+let camOn=false,faceOn=false,fetching=false;
+let camImg=$('camImg'),camCv=$('camCv'),ctx=camCv.getContext('2d');
+ctx.imageSmoothingEnabled=true;
+
+// ── API helper ──
+async function api(method,path,body){
+  try{
+    const opts={method,headers:{'Content-Type':'application/json'}};
+    if(body)opts.body=JSON.stringify(body);
+    const r=await fetch(path,opts);
+    return r.ok?await r.json():null;
+  }catch(e){return null}
+}
+
+// ── Commands ──
+async function cmd(action){
+  switch(action){
+    case'sleep':await api('POST','/api/gimbal/sleep');break;
+    case'standby':await api('POST','/api/gimbal/standby');break;
+    case'stop':await api('POST','/api/gimbal/stop');break;
+    case'calibrate':
+      $('connB').innerHTML='<span class="dot y"></span> 校准->60s)...';
+      $('connB').className='badge warn';
+      // Calibrate: emit Socket.IO event to Node-RED calibrate button
+      await api('POST','/api/gimbal/calibrate');
+      break;
+  }
+}
+
+// ── Sliders ──
+let slideTimers={};
+function onSlide(t){
+  const s=$(`${t}S`),v=$(`${t}V`),val=+s.value;
+  v.textContent=t==='speed'?val+'°/s':val+'°';
+  clearTimeout(slideTimers[t]);
+  slideTimers[t]=setTimeout(()=>onSlideEnd(t),60);
+}
+async function onSlideEnd(t){
+  const val=+$(`${t}S`).value;
+  if(t==='yaw')await api('POST','/api/gimbal/yaw',{angle:val});
+  else if(t==='pitch')await api('POST','/api/gimbal/pitch',{angle:val});
+  else if(t==='speed')await api('POST','/api/gimbal/speed',{speed:val});
+}
+function setSlide(t,val){
+  $(`${t}S`).value=val;$(`${t}V`).textContent=t==='speed'?val+'°/s':val+'°';
+  onSlideEnd(t);
+  document.querySelectorAll(`#${t}S ~ .presets .preset`).forEach(b=>b.className='preset'+(Math.abs(+b.textContent-val)<3?' sel':''));
+}
+
+// ── Toggle functions ──
+function toggleCam(){
+  camOn=!camOn;const b=$('camBtn');
+  if(camOn){
+    b.textContent='📷 停止摄像->;b.className='btn btn-cam';
+    $('camPH').style.display='none';camImg.style.display='block';
+  }else{
+    b.textContent='📷 启动摄像->;b.className='btn btn-cam off';
+    camImg.style.display='none';$('camPH').style.display='flex';
+    ctx.clearRect(0,0,camCv.width,camCv.height);
+  }
+}
+function toggleFace(){faceOn=!faceOn;api('POST',faceOn?'/api/face_track/start':'/api/face_track/stop')}
+async function autoAlign(){
+  $('connB').innerHTML='<span class="dot y"></span> 自动对准->..';
+  $('connB').className='badge warn';
+  const r=await api('POST','/api/auto_align');
+  if(r?.success){$('connB').innerHTML='<span class="dot g"></span> 已对->;$('connB').className='badge on'}
+  else{$('connB').innerHTML='<span class="dot r"></span> 未检测到人脸';$('connB').className='badge off'}
+}
+
+// ── Buttons sync ──
+function syncBtn(id,on,onT,offT,onC,offC){
+  const b=$(id);b.textContent=on?onT:offT;b.className=on?onC:offC;
+}
+
+// ── Main poll ──
+async function poll(){
+  try{
+    const r=await fetch('/api/state');
+    if(!r.ok){fetching=false;return}
+    const d=await r.json();
+    if(d.type!=='state_snapshot'){fetching=false;return}
+    const s=d.data;
+
+    // Connection
+    if(s.video?.connected){
+      $('connB').innerHTML='<span class="dot g"></span> 已连->;
+      $('connB').className='badge on';
+    }
+
+    // Gimbal
+    const g=s.gimbal;
+    $('gYaw').textContent=(g.yaw_angle||0).toFixed(1)+'°';
+    $('gYawT').textContent=(g.yaw_target||0).toFixed(1)+'°';
+    $('gPitch').textContent=(g.pitch_angle||0).toFixed(1)+'°';
+    $('gPitchT').textContent=(g.pitch_target||0).toFixed(1)+'°';
+    $('gSpeed').textContent=(g.speed||360)+'°/s';
+    $('gConn').textContent=g.connected?'已连->:'dry-run';
+    $('gTrack').textContent=[];
+    if(s.face_tracking)$('gTrack').textContent='👤人脸追踪';
+
+    // Sync sliders (only if not being dragged)
+    if(Math.abs((g.yaw_target||180)-+$('yawS').value)>5&&!slideTimers['yaw']){$('yawS').value=Math.round(g.yaw_target||180);$('yawV').textContent=Math.round(g.yaw_target||180)+'°'}
+    if(Math.abs((g.pitch_target||90)-+$('pitchS').value)>5&&!slideTimers['pitch']){$('pitchS').value=Math.round(g.pitch_target||90);$('pitchV').textContent=Math.round(g.pitch_target||90)+'°'}
+    if(Math.abs((g.speed||360)-+$('speedS').value)>10&&!slideTimers['speed']){$('speedS').value=g.speed||360;$('speedV').textContent=(g.speed||360)+'°/s'}
+
+    // Sync buttons
+    if(s.face_tracking!==faceOn){faceOn=s.face_tracking;syncBtn('faceBtn',faceOn,'👤 停止人脸追踪','👤 人脸追踪','btn btn-face on','btn btn-face')}
+
+    // Video
+    if(s.video?.connected){
+      if(!camOn)toggleCam();
+      if(!camImg.src||camImg.src===location.href){
+        camImg.src='/video_feed?t='+Date.now();
+        $('camPH').style.display='none';camImg.style.display='block';
+      }
+    }
+
+    // AI detections + keypoints on canvas
+    const dets=s.video?.detections||[];
+    const persons=s.pose?.persons||[];
+    $('aiList').innerHTML=dets.length?dets.map(d=>`<div class="info-row"><span class="l">${d.class_name}</span><span class="v">${(d.confidence*100).toFixed(0)}%</span></div>`).join(''):'<span style="color:var(--muted);font-size:12px">无检测目->/span>';
+
+    if(camImg.clientWidth&&(dets.length||persons.length)){
+      const pw=camImg.clientWidth,ph=camImg.clientHeight;
+      const FW=Number(s.video?.width||camImg.naturalWidth||1920);
+      const FH=Number(s.video?.height||camImg.naturalHeight||1080);
+      // Compute actual image render rect with object-fit:cover
+      const scale=Math.max(pw/FW,ph/FH);
+      const rw=FW*scale,rh=FH*scale;
+      const ox=(pw-rw)/2,oy=(ph-rh)/2;
+      camCv.width=pw;camCv.height=ph;
+      camCv.style.left=0;camCv.style.top=0;
+      camCv.style.width=pw+'px';camCv.style.height=ph+'px';
+      ctx.clearRect(0,0,pw,ph);
+
+      // Helper: map image coords ->canvas coords
+      const mx=x=>ox+x/FW*rw;
+      const my=y=>oy+y/FH*rh;
+
+      // Detection boxes
+      dets.forEach(d=>{
+        const x=mx(d.x),y=my(d.y),w=mx(d.x+d.w)-x,h=my(d.y+d.h)-y;
+        ctx.strokeStyle='#22c55e';ctx.lineWidth=2;ctx.strokeRect(x,y,w,h);
+        ctx.fillStyle='#fff';ctx.font='11px sans-serif';ctx.fillText(`${d.class_name} ${(d.confidence*100).toFixed(0)}%`,x+2,y-4);
+      });
+
+      // Pose skeleton + keypoints
+      persons.forEach((p,i)=>{
+        const kps=p.keypoints||[];
+        const colors=['#22c55e','#3b82f6','#f59e0b','#ef4444','#8b5cf6'];
+        const color=colors[i%colors.length];
+
+        // 只画肩膀骨架->        const shoulderKps=kps.filter(k=>k.name.includes('shoulder'));
+        if(shoulderKps.length>=1){
+          shoulderKps.forEach(kp=>{
+            ctx.beginPath();ctx.arc(mx(kp.x),my(kp.y),4,0,Math.PI*2);
+            ctx.fillStyle=color;ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=.5;ctx.stroke();
+          });
+        }
+
+        // 人脸五点和圆心只->YuNet 真实检测到时绘->        const faceKps=kps.filter(k=>['nose','left_eye','right_eye','left_mouth','right_mouth'].includes(k.name));
+        if(faceKps.length>=3){
+          const hasFace=faceKps.some(k=>k.name==='nose')&&faceKps.some(k=>k.name.includes('eye'));
+          if(hasFace){
+            faceKps.forEach(kp=>{
+              const r=kp.name==='nose'?5:3;
+              ctx.beginPath();ctx.arc(mx(kp.x),my(kp.y),r,0,Math.PI*2);
+              ctx.fillStyle=color;ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=.5;ctx.stroke();
+            });
+            if(p.face_center){
+              ctx.beginPath();ctx.arc(mx(p.face_center[0]),my(p.face_center[1]),8,0,Math.PI*2);
+              ctx.strokeStyle=color;ctx.lineWidth=3;ctx.setLineDash([4,2]);ctx.stroke();ctx.setLineDash([]);
+            }
+          }
+        }
+      });
+    }else if(camImg.clientWidth){
+      const pw=camImg.clientWidth,ph=camImg.clientHeight;
+      if(camCv.width!==pw||camCv.height!==ph){camCv.width=pw;camCv.height=ph}
+      ctx.clearRect(0,0,pw,ph);
+    }
+
+
+    // ── Attention ──
+    if(s.attention){
+      const a=s.attention;
+      if(a.has_face){
+        $('attnVal').textContent=a.score!=null?a.score:'--';
+        $('attnVal').style.color=a.score>=90?'#16a34a':a.score>=70?'#3b82f6':a.score>=50?'#d97706':a.score>=30?'#dc2626':'#991b1b';
+        $('attnState').textContent=a.state||'--';
+        const cls=a.score>=90?'on':a.score>=50?'warn':'off';
+        $('attnState').className='badge '+cls;
+
+        // Evidence
+        const ev=(a.evidence||[]).map(e=>`<div style="padding:2px 0">->${e}</div>`).join('');
+        $('attnEvidence').innerHTML=ev||'';
+
+        // Warnings
+        const wrn=(a.warnings||[]).map(w=>`<div style="padding:2px 0;color:#d97706">->${w}</div>`).join('');
+        $('attnWarnings').innerHTML=wrn||'';
+      }else{
+        $('attnVal').textContent='--';$('attnVal').style.color='var(--muted)';
+        $('attnState').textContent='无用->;$('attnState').className='badge off';
+        $('attnEvidence').innerHTML='';$('attnWarnings').innerHTML='';
+      }
+    }
+
+    // Hide loading overlay after first successful poll
+    $('loadOverlay').classList.add('done');
+
+  }catch(e){console.error('poll:',e)}
+  fetching=false;
+}
+
+// ── Start ──
+poll();
+setInterval(poll,400);
+setTimeout(()=>$('loadOverlay').classList.add('done'),4000);
+</script>
+</body></html>

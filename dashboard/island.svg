@@ -1,0 +1,280 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 540" id="xinyuIsland">
+  <defs>
+    <!-- Sky gradient -->
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d4e8f8"/><stop offset="45%" stop-color="#fef9f0"/><stop offset="100%" stop-color="#f5e6d3"/>
+    </linearGradient>
+    <!-- Water gradient -->
+    <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="rgba(140,195,210,.3)"/><stop offset="60%" stop-color="rgba(120,175,195,.12)"/><stop offset="100%" stop-color="rgba(100,160,180,.04)"/>
+    </linearGradient>
+    <!-- Earth gradients by layer -->
+    <linearGradient id="earthTop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#c8d8a0"/><stop offset="30%" stop-color="#b8c890"/><stop offset="100%" stop-color="#a0b878"/>
+    </linearGradient>
+    <linearGradient id="earthMid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#c4b090"/><stop offset="50%" stop-color="#b8a080"/><stop offset="100%" stop-color="#a89070"/>
+    </linearGradient>
+    <linearGradient id="earthDeep" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#a09078"/><stop offset="100%" stop-color="#887060"/>
+    </linearGradient>
+    <!-- Waterfall -->
+    <linearGradient id="falls" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="rgba(180,220,240,.7)"/><stop offset="50%" stop-color="rgba(160,210,235,.5)"/><stop offset="100%" stop-color="rgba(140,200,225,.2)"/>
+    </linearGradient>
+    <!-- Sun glow -->
+    <radialGradient id="sunGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="rgba(255,230,160,.6)"/><stop offset="30%" stop-color="rgba(240,210,130,.25)"/><stop offset="70%" stop-color="rgba(220,190,110,.06)"/><stop offset="100%" stop-color="rgba(200,170,90,0)"/>
+    </radialGradient>
+    <!-- Lake -->
+    <radialGradient id="lakeGrad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="rgba(140,200,220,.5)"/><stop offset="60%" stop-color="rgba(120,185,210,.35)"/><stop offset="100%" stop-color="rgba(110,175,200,.15)"/>
+    </radialGradient>
+    <!-- Shrine glow -->
+    <radialGradient id="shrineGlow" cx="50%" cy="40%" r="50%">
+      <stop offset="0%" stop-color="rgba(255,220,140,.35)"/><stop offset="100%" stop-color="rgba(255,200,100,0)"/>
+    </radialGradient>
+    <!-- Shadows -->
+    <filter id="softShadow"><feDropShadow dx="1" dy="2" stdDeviation="2" flood-color="rgba(60,40,20,.12)"/></filter>
+    <filter id="zoneShadow"><feDropShadow dx="0" dy="1" stdDeviation="1.5" flood-color="rgba(50,30,15,.1)"/></filter>
+    <!-- Hover scale -->
+    <style>
+      .zone-group { cursor: pointer; transition: transform .3s ease, filter .3s ease; }
+      .zone-group:hover { transform: translateY(-2px); filter: brightness(1.05); }
+      .tree-el { transition: transform .4s cubic-bezier(.34,1.56,.64,1); }
+      .tree-el:hover { transform: scale(1.15); }
+      .water-flow { animation: flowDown 3s ease-in-out infinite; }
+      @keyframes flowDown { 0%,100% { opacity: .6 } 50% { opacity: .9 } }
+      .clouds { animation: driftCloud 25s linear infinite; }
+      @keyframes driftCloud { 0% { transform: translateX(520px) } 100% { transform: translateX(-150px) } }
+    </style>
+  </defs>
+
+  <!-- ═══════════ SKY ═══════════ -->
+  <rect width="500" height="540" fill="url(#sky)" id="skyBg"/>
+  <circle cx="380" cy="60" r="65" fill="url(#sunGlow)" id="sunGlowEl"/>
+  <circle cx="380" cy="60" r="18" fill="#fff8e0" id="sunCore"/>
+  <!-- Clouds -->
+  <g class="clouds" opacity=".35">
+    <ellipse cx="60" cy="42" rx="30" ry="9" fill="#fff"/><ellipse cx="80" cy="38" rx="22" ry="8" fill="#fefefe"/><ellipse cx="42" cy="40" rx="16" ry="6" fill="#faf8f2"/>
+  </g>
+  <g class="clouds" opacity=".28" style="animation-delay:-10s">
+    <ellipse cx="200" cy="30" rx="26" ry="7" fill="#fff"/><ellipse cx="218" cy="27" rx="18" ry="6" fill="#fdfdfd"/>
+  </g>
+
+  <!-- ═══════════ WATER (base) ═══════════ -->
+  <rect y="385" width="500" height="155" fill="url(#water)" id="waterBase"/>
+  <!-- Water ripples -->
+  <path d="M0 395 Q80 390 160 395 Q240 400 320 395 Q400 390 500 395 L500 540 L0 540Z" fill="rgba(160,200,215,.1)"/>
+  <path d="M0 410 Q100 404 200 410 Q300 416 400 410 Q450 407 500 410 L500 540 L0 540Z" fill="rgba(140,185,200,.06)"/>
+
+  <!-- ═══════════ ZONE: DEEP EARTH (shadow underwater) ═══════════ -->
+  <g id="zone-deepEarth" class="zone-group">
+    <ellipse cx="250" cy="388" rx="175" ry="52" fill="rgba(120,140,130,.15)"/>
+    <path d="M85 385 Q80 365 100 348 Q125 330 155 325 Q190 320 250 318 Q310 318 345 325 Q375 332 395 348 Q415 365 412 385Z" fill="rgba(140,110,85,.35)"/>
+  </g>
+
+  <!-- ═══════════ ZONE: LOWER CLIFFS ═══════════ -->
+  <g id="zone-cliffs" class="zone-group" filter="url(#zoneShadow)">
+    <!-- Left cliffs -->
+    <path d="M90 380 Q85 355 100 335 Q115 318 140 312 Q160 308 175 310 L175 380Z" fill="url(#earthDeep)"/>
+    <path d="M95 375 Q92 355 105 338 Q118 324 140 318 L140 375Z" fill="rgba(180,155,130,.4)"/>
+    <!-- Right cliffs -->
+    <path d="M410 380 Q415 358 400 340 Q385 322 360 315 Q340 310 325 312 L325 380Z" fill="url(#earthDeep)"/>
+    <!-- Cliff face details -->
+    <line x1="110" y1="340" x2="110" y2="370" stroke="rgba(160,140,120,.3)" stroke-width="1"/>
+    <line x1="130" y1="330" x2="130" y2="365" stroke="rgba(160,140,120,.25)" stroke-width=".8"/>
+    <line x1="390" y1="335" x2="390" y2="368" stroke="rgba(160,140,120,.3)" stroke-width="1"/>
+    <line x1="370" y1="342" x2="370" y2="372" stroke="rgba(160,140,120,.25)" stroke-width=".8"/>
+  </g>
+
+  <!-- ═══════════ ZONE: MIDDLE EARTH LAYER ═══════════ -->
+  <g id="zone-midEarth" class="zone-group">
+    <path d="M80 375 Q75 348 95 328 Q120 306 155 296 Q190 288 250 285 Q310 288 345 296 Q380 308 402 328 Q420 348 418 375 Q400 360 370 350 Q330 338 250 335 Q170 338 130 350 Q100 360 80 375Z" fill="url(#earthMid)"/>
+    <!-- Texture dots -->
+    <circle cx="160" cy="340" r="1.5" fill="rgba(180,160,140,.3)"/><circle cx="200" cy="310" r="1" fill="rgba(180,160,140,.25)"/>
+    <circle cx="280" cy="305" r="1.5" fill="rgba(180,160,140,.3)"/><circle cx="340" cy="330" r="1" fill="rgba(180,160,140,.25)"/>
+    <circle cx="230" cy="330" r="1.2" fill="rgba(180,160,140,.2)"/><circle cx="310" cy="325" r="1.2" fill="rgba(180,160,140,.25)"/>
+  </g>
+
+  <!-- ═══════════ ZONE: TOP EARTH (grass) ═══════════ -->
+  <g id="zone-island" class="zone-group">
+    <path d="M75 372 Q72 340 92 318 Q118 294 155 282 Q190 272 250 270 Q310 272 345 282 Q382 296 405 320 Q425 342 425 372 Q410 358 380 345 Q340 330 250 326 Q160 330 120 345 Q90 358 75 372Z" fill="url(#earthTop)"/>
+    <!-- Grass patches -->
+    <ellipse cx="150" cy="325" rx="50" ry="18" fill="rgba(185,215,150,.3)"/>
+    <ellipse cx="250" cy="310" rx="65" ry="20" fill="rgba(190,220,155,.25)"/>
+    <ellipse cx="350" cy="320" rx="45" ry="16" fill="rgba(180,210,145,.3)"/>
+    <ellipse cx="200" cy="340" rx="55" ry="14" fill="rgba(195,225,160,.2)"/>
+    <ellipse cx="300" cy="338" rx="48" ry="15" fill="rgba(185,215,150,.25)"/>
+  </g>
+
+  <!-- ═══════════ ZONE: LAKE + WATERFALL ═══════════ -->
+  <g id="zone-lake" class="zone-group">
+    <!-- Lake basin -->
+    <ellipse cx="255" cy="308" rx="38" ry="22" fill="rgba(140,180,160,.3)"/>
+    <!-- Lake water -->
+    <ellipse cx="255" cy="310" rx="32" ry="18" fill="url(#lakeGrad)"/>
+    <!-- Lake shore pebbles -->
+    <circle cx="230" cy="305" r="2" fill="rgba(180,200,190,.4)"/><circle cx="270" cy="302" r="1.5" fill="rgba(180,200,190,.35)"/>
+    <circle cx="245" cy="320" r="1.8" fill="rgba(180,200,190,.4)"/><circle cx="265" cy="318" r="1.3" fill="rgba(180,200,190,.3)"/>
+    <!-- Waterfall stream -->
+    <path d="M260 322 Q262 340 258 360 Q256 370 255 382" stroke="url(#falls)" stroke-width="5" stroke-linecap="round" fill="none" class="water-flow"/>
+    <path d="M255 325 Q257 345 253 365 Q251 372 250 380" stroke="rgba(180,220,240,.3)" stroke-width="3" stroke-linecap="round" fill="none" class="water-flow" style="animation-delay:-1.5s"/>
+    <!-- Splash at bottom -->
+    <ellipse cx="256" cy="380" rx="10" ry="3" fill="rgba(180,220,240,.25)"/>
+  </g>
+
+  <!-- ═══════════ ZONE: MOOD SHRINE ═══════════ -->
+  <g id="zone-shrine" class="zone-group" filter="url(#zoneShadow)">
+    <!-- Elevated platform -->
+    <ellipse cx="180" cy="282" rx="18" ry="10" fill="rgba(180,160,140,.35)"/>
+    <!-- Glow behind shrine -->
+    <circle cx="180" cy="265" r="22" fill="url(#shrineGlow)"/>
+    <!-- Shrine base -->
+    <rect x="172" y="268" width="16" height="8" rx="1" fill="#d4c8b0"/>
+    <!-- Shrine body -->
+    <rect x="174" y="255" width="12" height="14" rx="2" fill="#e8dcc8"/>
+    <!-- Shrine roof -->
+    <polygon points="170,255 180,245 190,255" fill="#c4956a"/>
+    <polygon points="172,253 180,247 188,253" fill="#d4a878" opacity=".6"/>
+    <!-- Door -->
+    <rect x="178" y="262" width="4" height="6" rx="1.5" fill="rgba(100,70,40,.35)"/>
+    <!-- Shrine sparkle -->
+    <circle cx="180" cy="248" r="1.5" fill="rgba(255,220,140,.7)"/>
+    <circle cx="177" cy="250" r="1" fill="rgba(255,220,140,.4)"/>
+    <circle cx="183" cy="251" r=".8" fill="rgba(255,220,140,.35)"/>
+    <!-- Steps -->
+    <rect x="172" y="276" width="16" height="3" rx="1" fill="rgba(200,180,160,.5)"/>
+    <rect x="170" y="279" width="20" height="3" rx="1" fill="rgba(190,170,150,.4)"/>
+  </g>
+
+  <!-- ═══════════ ZONE: GARDEN ═══════════ -->
+  <g id="zone-garden" class="zone-group" filter="url(#zoneShadow)">
+    <!-- Garden bed -->
+    <ellipse cx="130" cy="310" rx="22" ry="14" fill="rgba(160,130,90,.25)"/>
+    <ellipse cx="130" cy="308" rx="20" ry="12" fill="rgba(140,180,120,.3)"/>
+    <!-- Flowers -->
+    <circle cx="120" cy="305" r="3" fill="#f8c8d8"/><circle cx="120" cy="303" r="1.5" fill="#fad8e8"/>
+    <circle cx="128" cy="302" r="3" fill="#f8d0a0"/><circle cx="128" cy="300" r="1.5" fill="#fae0c0"/>
+    <circle cx="136" cy="305" r="3" fill="#f8c8d8"/><circle cx="136" cy="303" r="1.5" fill="#fad8e8"/>
+    <circle cx="132" cy="310" r="2.5" fill="#f0d080"/><circle cx="132" cy="308" r="1.2" fill="#f8e0a0"/>
+    <circle cx="124" cy="312" r="2" fill="#f8c8e0"/><circle cx="124" cy="310" r="1" fill="#fad8f0"/>
+    <!-- Stems -->
+    <line x1="120" y1="308" x2="120" y2="315" stroke="#8ab878" stroke-width=".8"/>
+    <line x1="128" y1="305" x2="128" y2="314" stroke="#8ab878" stroke-width=".8"/>
+    <line x1="136" y1="308" x2="136" y2="315" stroke="#8ab878" stroke-width=".8"/>
+    <!-- Small fence -->
+    <line x1="110" y1="312" x2="110" y2="322" stroke="rgba(180,160,130,.4)" stroke-width="1.5"/>
+    <line x1="115" y1="310" x2="115" y2="320" stroke="rgba(180,160,130,.4)" stroke-width="1.5"/>
+    <line x1="145" y1="312" x2="145" y2="322" stroke="rgba(180,160,130,.4)" stroke-width="1.5"/>
+    <line x1="150" y1="310" x2="150" y2="320" stroke="rgba(180,160,130,.4)" stroke-width="1.5"/>
+    <line x1="108" y1="312" x2="152" y2="312" stroke="rgba(180,160,130,.3)" stroke-width="1"/>
+  </g>
+
+  <!-- ═══════════ ZONE: FARM ═══════════ -->
+  <g id="zone-farm" class="zone-group" filter="url(#zoneShadow)">
+    <!-- Farm field -->
+    <rect x="285" y="295" width="50" height="32" rx="4" fill="rgba(160,130,90,.15)" transform="rotate(-5,310,311)"/>
+    <!-- Crop rows -->
+    <g transform="rotate(-5,310,311)">
+      <rect x="290" y="300" width="40" height="3" rx="1" fill="rgba(150,190,120,.4)"/>
+      <rect x="290" y="306" width="40" height="3" rx="1" fill="rgba(150,190,120,.4)"/>
+      <rect x="290" y="312" width="40" height="3" rx="1" fill="rgba(150,190,120,.4)"/>
+      <rect x="290" y="318" width="40" height="3" rx="1" fill="rgba(150,190,120,.4)"/>
+      <!-- Crops on rows -->
+      <circle cx="298" cy="300" r="2.5" fill="#8cc870"/><circle cx="308" cy="300" r="2.5" fill="#8cc870"/>
+      <circle cx="318" cy="300" r="2.5" fill="#8cc870"/><circle cx="328" cy="300" r="2.5" fill="#8cc870"/>
+      <circle cx="303" cy="306" r="2.5" fill="#e89850"/><circle cx="313" cy="306" r="2.5" fill="#e89850"/><circle cx="323" cy="306" r="2.5" fill="#e89850"/>
+      <circle cx="298" cy="312" r="2.5" fill="#8cc870"/><circle cx="308" cy="312" r="2.5" fill="#8cc870"/><circle cx="318" cy="312" r="2.5" fill="#8cc870"/>
+      <circle cx="305" cy="318" r="2.5" fill="#e8b060"/><circle cx="315" cy="318" r="2.5" fill="#e8b060"/>
+    </g>
+    <!-- Scarecrow -->
+    <line x1="340" y1="290" x2="340" y2="302" stroke="rgba(160,130,100,.5)" stroke-width="1.5"/>
+    <line x1="335" y1="294" x2="345" y2="294" stroke="rgba(160,130,100,.4)" stroke-width="1"/>
+    <circle cx="340" cy="288" r="2" fill="rgba(200,180,150,.6)"/>
+  </g>
+
+  <!-- ═══════════ ZONE: SHOP ═══════════ -->
+  <g id="zone-shop" class="zone-group" filter="url(#zoneShadow)">
+    <!-- Shop platform -->
+    <ellipse cx="360" cy="338" rx="20" ry="10" fill="rgba(180,160,140,.3)"/>
+    <!-- Shop building -->
+    <rect x="350" y="318" width="20" height="18" rx="2" fill="#e8d8c0"/>
+    <!-- Roof -->
+    <polygon points="347,318 360,306 373,318" fill="#c4956a"/>
+    <polygon points="349,316 360,308 371,316" fill="#d4a878" opacity=".5"/>
+    <!-- Door -->
+    <rect x="357" y="328" width="6" height="8" rx="2" fill="rgba(100,70,40,.3)"/>
+    <!-- Window -->
+    <rect x="352" y="323" width="5" height="5" rx="1" fill="rgba(180,210,230,.5)"/>
+    <!-- Sign -->
+    <line x1="360" y1="314" x2="360" y2="308" stroke="rgba(160,130,100,.5)" stroke-width="1.2"/>
+    <rect x="350" y="305" width="20" height="6" rx="2" fill="rgba(220,200,170,.7)"/>
+    <text x="360" y="310" text-anchor="middle" font-size="3.5" fill="rgba(100,70,40,.5)">SHOP</text>
+  </g>
+
+  <!-- ═══════════ ZONE: DOCK ═══════════ -->
+  <g id="zone-dock" class="zone-group" filter="url(#zoneShadow)">
+    <!-- Dock planks -->
+    <rect x="400" y="350" width="35" height="4" rx="1" fill="rgba(180,150,120,.5)"/>
+    <rect x="405" y="354" width="28" height="4" rx="1" fill="rgba(170,140,110,.45)"/>
+    <!-- Dock posts -->
+    <rect x="402" y="352" width="2.5" height="12" rx=".5" fill="rgba(150,120,90,.4)"/>
+    <rect x="430" y="352" width="2.5" height="12" rx=".5" fill="rgba(150,120,90,.4)"/>
+    <!-- Small boat -->
+    <path d="M408 365 Q415 370 425 365 L425 370 Q415 375 408 370Z" fill="rgba(200,180,160,.35)"/>
+    <line x1="415" y1="363" x2="415" y2="360" stroke="rgba(180,160,140,.3)" stroke-width="1"/>
+  </g>
+
+  <!-- ═══════════ ZONE: EXPLORATION (forest/maze) ═══════════ -->
+  <g id="zone-explore" class="zone-group" filter="url(#zoneShadow)">
+    <!-- Forest base -->
+    <ellipse cx="105" cy="340" rx="28" ry="16" fill="rgba(130,170,110,.2)"/>
+    <!-- Dense trees -->
+    <g class="tree-el"><rect x="88" y="328" width="2" height="12" fill="rgba(140,100,60,.5)"/><circle cx="89" cy="325" r="5" fill="rgba(120,170,100,.5)"/></g>
+    <g class="tree-el"><rect x="98" y="325" width="2.5" height="14" fill="rgba(130,90,55,.55)"/><circle cx="99" cy="321" r="6" fill="rgba(130,175,105,.55)"/></g>
+    <g class="tree-el"><rect x="108" y="330" width="2" height="10" fill="rgba(140,100,60,.45)"/><circle cx="109" cy="327" r="4.5" fill="rgba(115,165,95,.45)"/></g>
+    <g class="tree-el"><rect x="93" y="335" width="1.8" height="9" fill="rgba(145,105,65,.4)"/><circle cx="94" cy="332" r="4" fill="rgba(135,180,110,.5)"/></g>
+    <!-- Path into forest -->
+    <path d="M110 345 Q115 350 120 355" stroke="rgba(180,160,130,.25)" stroke-width="2" fill="none" stroke-linecap="round"/>
+  </g>
+
+  <!-- ═══════════ ZONE: STONE PATHS ═══════════ -->
+  <g id="zone-paths">
+    <!-- Main path: Shrine → Lake -->
+    <ellipse cx="195" cy="292" rx="6" ry="3" fill="rgba(200,180,160,.25)"/><ellipse cx="205" cy="296" rx="5" ry="2.5" fill="rgba(200,180,160,.2)"/>
+    <ellipse cx="215" cy="299" rx="6" ry="3" fill="rgba(200,180,160,.25)"/><ellipse cx="228" cy="302" rx="5" ry="2.5" fill="rgba(200,180,160,.2)"/>
+    <ellipse cx="240" cy="305" rx="6" ry="3" fill="rgba(200,180,160,.25)"/>
+    <!-- Lake → Shop -->
+    <ellipse cx="270" cy="310" rx="5" ry="2.5" fill="rgba(200,180,160,.2)"/><ellipse cx="285" cy="313" rx="6" ry="3" fill="rgba(200,180,160,.25)"/>
+    <ellipse cx="305" cy="318" rx="5" ry="2.5" fill="rgba(200,180,160,.2)"/><ellipse cx="322" cy="322" rx="6" ry="3" fill="rgba(200,180,160,.25)"/>
+    <ellipse cx="340" cy="328" rx="5" ry="2.5" fill="rgba(200,180,160,.2)"/>
+    <!-- Shop → Dock -->
+    <ellipse cx="358" cy="335" rx="5" ry="2.5" fill="rgba(200,180,160,.2)"/><ellipse cx="376" cy="340" rx="6" ry="3" fill="rgba(200,180,160,.25)"/>
+    <ellipse cx="394" cy="346" rx="5" ry="2.5" fill="rgba(200,180,160,.2)"/>
+    <!-- Shrine → Garden -->
+    <ellipse cx="170" cy="290" rx="5" ry="2.5" fill="rgba(200,180,160,.2)"/><ellipse cx="158" cy="296" rx="5" ry="2.5" fill="rgba(200,180,160,.25)"/>
+    <ellipse cx="148" cy="302" rx="6" ry="3" fill="rgba(200,180,160,.2)"/>
+    <!-- Garden → Explore -->
+    <ellipse cx="138" cy="310" rx="5" ry="2.5" fill="rgba(200,180,160,.25)"/><ellipse cx="130" cy="318" rx="5" ry="2.5" fill="rgba(200,180,160,.2)"/>
+    <ellipse cx="120" cy="328" rx="6" ry="3" fill="rgba(200,180,160,.25)"/>
+    <!-- Lake → Farm -->
+    <ellipse cx="265" cy="302" rx="5" ry="2.5" fill="rgba(200,180,160,.2)"/><ellipse cx="278" cy="298" rx="5" ry="2.5" fill="rgba(200,180,160,.25)"/>
+    <ellipse cx="292" cy="296" rx="6" ry="3" fill="rgba(200,180,160,.2)"/>
+  </g>
+
+  <!-- ═══════════ ZONE: TREES ═══════════ -->
+  <g id="zone-trees">
+    <!-- Scattered decorative trees -->
+    <g class="tree-el"><rect x="155" y="275" width="2.2" height="10" fill="rgba(130,90,55,.5)"/><circle cx="156" cy="272" r="7" fill="rgba(145,195,120,.6)"/><circle cx="153" cy="274" r="5" fill="rgba(155,200,125,.5)"/></g>
+    <g class="tree-el"><rect x="320" y="278" width="2" height="9" fill="rgba(135,95,60,.5)"/><circle cx="321" cy="275" r="6" fill="rgba(140,190,115,.55)"/><circle cx="318" cy="277" r="4.5" fill="rgba(150,195,120,.5)"/></g>
+    <g class="tree-el"><rect x="205" y="270" width="2.5" height="11" fill="rgba(125,85,50,.55)"/><circle cx="206" cy="266" r="8" fill="rgba(150,200,125,.6)"/><circle cx="203" cy="268" r="6" fill="rgba(160,205,130,.5)"/></g>
+    <g class="tree-el"><rect x="70" y="352" width="1.8" height="8" fill="rgba(140,100,65,.4)"/><circle cx="71" cy="349" r="4.5" fill="rgba(130,180,110,.5)"/></g>
+    <g class="tree-el"><rect x="380" y="348" width="2" height="9" fill="rgba(135,95,58,.45)"/><circle cx="381" cy="345" r="5" fill="rgba(135,185,112,.5)"/></g>
+    <!-- Tree stumps -->
+    <ellipse cx="95" cy="360" rx="4" ry="2.5" fill="rgba(160,130,100,.35)"/><circle cx="95" cy="358" r="3" fill="rgba(170,140,110,.3)"/>
+  </g>
+
+  <!-- ═══════════ TREES: player-grown (dynamic) ═══════════ -->
+  <g id="treesGroup"></g>
+</svg>

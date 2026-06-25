@@ -1,0 +1,35 @@
+{
+  "id": "/home",
+  "name": "心屿 XINYU",
+  "short_name": "心屿",
+  "description": "reCamera 情绪、专注度与多人记录平板控制台",
+  "lang": "zh-CN",
+  "start_url": "/home?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "browser"],
+  "orientation": "portrait",
+  "background_color": "#fdf6ed",
+  "theme_color": "#b8752e",
+  "categories": ["productivity", "health", "utilities"],
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

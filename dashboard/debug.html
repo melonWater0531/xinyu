@@ -1,0 +1,21 @@
+<h1>API Test</h1>
+<div id="out" style="font-size:18px;padding:20px"></div>
+<script>
+async function test(){
+  try{
+    const r=await fetch('/api/state');
+    const d=await r.json();
+    const a=d.data.attention;
+    const e=d.data.emotieff;
+    document.getElementById('out').innerHTML=
+      '✅ API OK<br>'+
+      'attention: score='+a.score+' state='+a.state+'<br>'+
+      'emotion: '+e.emotion+' ('+(e.confidence*100).toFixed(0)+'%)<br>'+
+      'video: '+d.data.video.connected+' gimbal: '+d.data.gimbal.connected;
+  }catch(err){
+    document.getElementById('out').innerHTML='❌ ERROR: '+err.message;
+  }
+}
+test();
+setInterval(test,3000);
+</script>

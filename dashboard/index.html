@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+<title>reCamera Control</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#c9d1d9;font:13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+/* top */
+#topbar{display:flex;align-items:center;gap:10px;padding:6px 14px;background:#161b22;border-bottom:1px solid #21262d;flex-shrink:0;font-size:12px}
+.st{font-weight:700;font-size:13px;padding:4px 10px;border-radius:4px;letter-spacing:.5px}
+.st-INIT{background:#30363d;color:#8b949e}
+.st-SEARCH{background:#3d2e00;color:#e3b341}
+.st-TRACK{background:#033a16;color:#3fb950;box-shadow:0 0 8px rgba(63,185,80,.35)}
+.st-LOST{background:#490202;color:#f85149;animation:pulse .8s infinite}
+@keyframes pulse{50%{box-shadow:0 0 18px rgba(248,81,73,.7)}}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.dot-on{background:#3fb950;box-shadow:0 0 6px #3fb950}
+.dot-off{background:#f85149}
+.spacer{flex:1}
+.num{font-weight:600;color:#e6edf3;font-variant-numeric:tabular-nums}
+
+/* main layout */
+#main{flex:1;display:grid;grid-template-columns:1fr 340px;gap:0;min-height:0;overflow:hidden}
+#left{position:relative;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden;min-height:0}
+#left img{position:absolute;width:100%;height:100%;object-fit:contain}
+#left canvas{position:absolute;width:100%;height:100%;object-fit:contain;pointer-events:none}
+
+#right{background:#0d1117;border-left:1px solid #21262d;display:flex;flex-direction:column;overflow-y:auto;padding:10px;gap:8px}
+
+.panel{background:#161b22;border:1px solid #21262d;border-radius:6px;padding:10px 12px}
+.panel-title{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:#8b949e;margin-bottom:8px}
+
+/* mode buttons */
+.mode-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.mode-btn{padding:7px 4px;border-radius:5px;border:1px solid #30363d;background:#0d1117;color:#8b949e;cursor:pointer;font-size:11px;font-weight:600;transition:.1s;text-align:center}
+.mode-btn:hover{border-color:#58a6ff;color:#e6edf3}
+.mode-btn.act{border-color:#e6edf3;color:#e6edf3}
+.mode-btn.act.ai{background:#033a16;border-color:#3fb950;color:#3fb950;box-shadow:0 0 8px rgba(63,185,80,.3)}
+.mode-btn.act.man{background:#3d2e00;border-color:#e3b341;color:#e3b341;box-shadow:0 0 8px rgba(227,179,65,.3)}
+.mode-btn.act.slp{background:#0d1a3d;border-color:#79c0ff;color:#79c0ff;box-shadow:0 0 8px rgba(121,192,255,.3)}
+.mode-btn.act.stb{background:#2e2400;border-color:#e3b341;color:#e3b341;box-shadow:0 0 8px rgba(227,179,65,.3)}
+.mode-btn.act.est{background:#490202;border-color:#f85149;color:#f85149;box-shadow:0 0 12px rgba(248,81,73,.5);animation:pulse .6s infinite}
+.mode-btn.full{grid-column:span 2}
+
+/* sliders */
+.slider-row{display:flex;align-items:center;gap:8px;margin:4px 0}
+.slider-row .sl{font-size:10px;color:#8b949e;width:28px;font-weight:600}
+.slider-row input{flex:1;height:5px;-webkit-appearance:none;appearance:none;background:#21262d;border-radius:3px;outline:none}
+.slider-row input::-webkit-slider-thumb{width:16px;height:16px;border-radius:50%;cursor:pointer;-webkit-appearance:none;border:2px solid #30363d}
+.slider-row .val{font-size:12px;font-weight:600;width:45px;text-align:right;font-variant-numeric:tabular-nums}
+#ps::-webkit-slider-thumb{background:#e3b341}#ts::-webkit-slider-thumb{background:#58a6ff}
+
+.btn-sm{width:100%;padding:7px;border-radius:5px;border:1px solid #30363d;background:#0d1117;color:#c9d1d9;cursor:pointer;font-size:11px;font-weight:600;transition:.1s}
+.btn-sm:hover{border-color:#58a6ff}
+.btn-sm.danger{color:#f85149;border-color:#490202}
+.btn-sm.danger:hover{background:#490202}
+
+/* info rows */
+.info-row{display:flex;justify-content:space-between;padding:3px 0;font-size:11px;border-bottom:1px solid #21262d}
+.info-row .lbl{color:#8b949e}
+.info-row .val{font-weight:600;color:#e6edf3}
+
+@media(max-width:700px){#main{grid-template-columns:1fr;grid-template-rows:1fr auto}
+  #right{flex-direction:row;flex-wrap:wrap;overflow-x:auto;max-height:200px}}
+</style>
+</head><body>
+
+<div id="topbar">
+  <span id="state-badge" class="st st-INIT">INIT</span>
+  <span class="dot dot-off" id="ws-dot" title="Control WS"></span>
+  <span style="font-size:10px;color:#8b949e">FPS</span><span class="num" id="fps-v">0</span>
+  <span style="font-size:10px;color:#8b949e">video</span><span class="num" id="vfps-v" style="color:#79c0ff">--</span>
+  <span style="font-size:10px;color:#8b949e">lost</span><span class="num" id="lost-v" style="color:#f85149">0</span>
+  <span class="spacer"></span>
+  <span style="font-size:10px;color:#8b949e">SAFE</span><span class="num" id="safe-v" style="color:#e3b341">ON</span>
+  <span style="font-size:10px;color:#8b949e">mode</span><span class="num" id="mode-v" style="color:#3fb950">AI</span>
+  <span style="font-size:10px;color:#8b949e">frame</span><span class="num" id="frm-v">0</span>
+  <span id="dbg" style="font-size:10px;color:#f85149"></span>
+</div>
+
+<div id="main">
+  <div id="left">
+    <img id="vim" src="" alt="video">
+    <canvas id="vcv"></canvas>
+  </div>
+
+  <div id="right">
+    <!-- MODE CONTROLS -->
+    <div class="panel">
+      <div class="panel-title">🎛️ Control Mode</div>
+      <div class="mode-grid">
+        <button class="mode-btn act ai" id="bm-ai" onclick="setMode('ai_track')">AI TRACK</button>
+        <button class="mode-btn man" id="bm-man" onclick="setMode('manual')">🕹 MANUAL</button>
+        <button class="mode-btn slp" id="bm-slp" onclick="setMode('sleep')">💤 SLEEP</button>
+        <button class="mode-btn stb" id="bm-stb" onclick="setMode('standby')">⏸ STANDBY</button>
+        <button class="mode-btn full est" id="bm-est" onclick="setMode('emergency_stop')">🛑 EMERGENCY STOP</button>
+      </div>
+    </div>
+
+    <!-- AXIS CONTROL -->
+    <div class="panel">
+      <div class="panel-title">🕹 Axis Control</div>
+      <div class="slider-row">
+        <span class="sl" style="color:#e3b341">PAN</span>
+        <input type="range" id="ps" min="-30" max="30" value="0" step="0.3" oninput="onSlider()">
+        <span class="val" id="pv" style="color:#e3b341">0.0°</span>
+      </div>
+      <div class="slider-row">
+        <span class="sl" style="color:#58a6ff">TILT</span>
+        <input type="range" id="ts" min="-20" max="20" value="0" step="0.3" oninput="onSlider()">
+        <span class="val" id="tv" style="color:#58a6ff">0.0°</span>
+      </div>
+      <button class="btn-sm" onclick="resetAxes()" style="margin-top:4px">↺ Center / Reset</button>
+      <button class="btn-sm danger" onclick="setMode('emergency_stop')" style="margin-top:2px">🛑 HALT</button>
+    </div>
+
+    <!-- STATUS -->
+    <div class="panel">
+      <div class="panel-title">📊 Status</div>
+      <div class="info-row"><span class="lbl">Error X/Y</span><span class="val" id="vi-e">--</span></div>
+      <div class="info-row"><span class="lbl">Normalized</span><span class="val" id="vi-n">--</span></div>
+      <div class="info-row"><span class="lbl">Filtered</span><span class="val" id="vi-f" style="color:#79c0ff">0.00°</span></div>
+      <div class="info-row" style="border-bottom:none"><span class="lbl">➤ Send</span><span class="val" id="vi-s" style="color:#3fb950">--</span></div>
+    </div>
+
+    <!-- AI INFO -->
+    <div class="panel">
+      <div class="panel-title">🤖 AI Detection</div>
+      <div class="info-row"><span class="lbl">Boxes</span><span class="val" id="vi-bb">--</span></div>
+      <div class="info-row"><span class="lbl">Confidence</span><span class="val" id="vi-cf">--</span></div>
+      <div class="info-row" style="border-bottom:none"><span class="lbl">Center</span><span class="val" id="vi-ct">--</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══ WebSocket ═══
+const WS_URL='ws://'+location.host+'/ws';
+let ws,rt;
+
+function connect(){
+  if(ws&&ws.readyState===WebSocket.OPEN)return;
+  console.log('Connecting to',WS_URL);
+  ws=new WebSocket(WS_URL);
+  ws.onopen=()=>{
+    console.log('WS connected');
+    document.getElementById('dbg').textContent='';
+    document.getElementById('ws-dot').className='dot dot-on';
+    if(rt){clearInterval(rt);rt=null}
+  };
+  ws.onmessage=e=>{try{render(JSON.parse(e.data))}catch(x){console.error('render error',x)}};
+  ws.onclose=()=>{
+    console.warn('WS closed');
+    document.getElementById('dbg').textContent='⚠️ WS disconnected';
+    document.getElementById('ws-dot').className='dot dot-off';
+    ws=null;if(!rt)rt=setInterval(connect,1000);
+  };
+  ws.onerror=e=>{
+    document.getElementById('dbg').textContent='❌ WS error - check console';
+    ws&&ws.close();
+  };
+}
+connect();
+console.log('Page loaded, waiting for WS...');
+
+// ═══ Video ═══
+const vimg=document.getElementById('vim');
+const cv=document.getElementById('vcv'),ctx=cv.getContext('2d');
+ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
+function rs(){cv.width=cv.parentElement.clientWidth;cv.height=cv.parentElement.clientHeight}
+rs();window.onresize=rs;
+let lastVid='';
+
+// ═══ Render ═══
+function render(d){
+  const w=cv.width,h=cv.height;
+  const sx=w/1920,sy=h/1080,cx0=w/2,cy0=h/2;
+
+  // Video — only update when frame changes
+  if(d.video_frame&&d.video_frame.length>500&&d.video_frame!==lastVid){
+    vimg.src='data:image/jpeg;base64,'+d.video_frame;
+    lastVid=d.video_frame;
+  }
+
+  // Overlay
+  ctx.clearRect(0,0,w,h);
+
+  // Crosshair
+  ctx.strokeStyle='rgba(255,255,255,0.08)';ctx.setLineDash([5,5]);ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(cx0,0);ctx.lineTo(cx0,h);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(0,cy0);ctx.lineTo(w,cy0);ctx.stroke();
+  ctx.setLineDash([]);
+
+  // AI boxes from reCamera
+  const boxes=d.video_boxes||[];
+  if(boxes.length){
+    const best=boxes[0];
+    const bx=best[0]*sx,by=best[1]*sy,bw=(best[2]-best[0])*sx,bh=(best[3]-best[1])*sy;
+    const conf=best[4],cls=best[5];
+    ctx.strokeStyle='#3fb950';ctx.lineWidth=2.5;ctx.shadowColor='#3fb950';ctx.shadowBlur=8;
+    ctx.strokeRect(bx,by,bw,bh);ctx.shadowBlur=0;
+    const bcx=(best[0]+best[2])/2*sx,bcy=(best[1]+best[3])/2*sy;
+    ctx.fillStyle='#3fb950';ctx.beginPath();ctx.arc(bcx,bcy,5,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.stroke();
+    ctx.fillStyle='#fff';ctx.font='bold 11px sans-serif';
+    ctx.fillText(`${d.state||'?'} ${(conf*100).toFixed(0)}%`,bx+2,by-4);
+    document.getElementById('vi-bb').textContent=boxes.length;
+    document.getElementById('vi-cf').textContent=(conf*100).toFixed(0)+'%';
+    document.getElementById('vi-ct').textContent=`${Math.round(bcx/sx)},${Math.round(bcy/sy)}`;
+  } else {
+    document.getElementById('vi-bb').textContent='0';
+    document.getElementById('vi-cf').textContent='--';
+    document.getElementById('vi-ct').textContent='--';
+  }
+
+  // PAN/TILT indicator on video
+  const sp=d.send?d.send[0]:0,st=d.send?(d.send[1]||0):0;
+  ctx.fillStyle='rgba(0,0,0,0.7)';ctx.fillRect(w-180,h-55,175,50);
+  ctx.fillStyle='#e3b341';ctx.font='bold 13px monospace';
+  ctx.fillText(`PAN ${sp>=0?'→':'←'} ${Math.abs(sp).toFixed(1)}°`,w-170,h-36);
+  ctx.fillStyle='#58a6ff';
+  ctx.fillText(`TILT ${st>=0?'↓':'↑'} ${Math.abs(st).toFixed(1)}°`,w-170,h-18);
+
+  // Top bar
+  const state=d.state||'INIT';
+  const sb=document.getElementById('state-badge');
+  sb.textContent=state;sb.className='st st-'+state;
+
+  document.getElementById('fps-v').textContent=(d.fps||0).toFixed(1);
+  document.getElementById('vfps-v').textContent=(d.video_fps||0).toFixed(1)+'fps';
+  document.getElementById('lost-v').textContent=d.lost_frames||0;
+  document.getElementById('safe-v').textContent=d.safe_mode?'🛡️ ON':'⚠️ OFF';
+  document.getElementById('frm-v').textContent=d.frame_id||0;
+
+  // Mode badge
+  const gm=d.gimbal_mode||'ai_track';
+  const mc={ai_track:['#033a16','#3fb950'],manual:['#3d2e00','#e3b341'],
+            sleep:['#0d1a3d','#79c0ff'],standby:['#2e2400','#e3b341'],
+            emergency_stop:['#490202','#f85149']};
+  const cm=mc[gm]||mc.ai_track;
+  const mv=document.getElementById('mode-v');
+  mv.textContent=gm.replace('_',' ').toUpperCase();mv.style.color=cm[1];
+
+  // Active mode button
+  document.querySelectorAll('.mode-btn').forEach(b=>b.classList.remove('act'));
+  const short={ai_track:'ai',manual:'man',sleep:'slp',standby:'stb',emergency_stop:'est'};
+  const ab=document.getElementById('bm-'+short[gm]);
+  if(ab)ab.classList.add('act');
+
+  // Info panel
+  const f=v=>v?v.map(x=>x.toFixed(2)).join(' / '):'--';
+  document.getElementById('vi-e').textContent=f(d.error);
+  document.getElementById('vi-n').textContent=f(d.norm);
+  const fp=d.filtered?d.filtered[0]:0,ft=d.filtered?(d.filtered[1]||0):0;
+  document.getElementById('vi-f').textContent=`PAN ${fp.toFixed(2)}°  TILT ${ft.toFixed(2)}°`;
+  document.getElementById('vi-s').textContent=d.send?`PAN ${d.send[0].toFixed(2)}°  TILT ${(d.send[1]||0).toFixed(2)}°`:'--';
+}
+
+// ═══ Controls ═══
+function send(o){if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(o))}
+
+function setMode(m){
+  send({type:'gimbal_mode',mode:m});
+  if(m!=='manual'){document.getElementById('ps').value=0;document.getElementById('ts').value=0;document.getElementById('pv').textContent='0.0°';document.getElementById('tv').textContent='0.0°'}
+}
+
+function onSlider(){
+  const p=parseFloat(document.getElementById('ps').value),t=parseFloat(document.getElementById('ts').value);
+  document.getElementById('pv').textContent=p.toFixed(1)+'°';
+  document.getElementById('tv').textContent=t.toFixed(1)+'°';
+  send({type:'gimbal_control',pan:p,tilt:t});
+}
+
+function resetAxes(){
+  document.getElementById('ps').value=0;document.getElementById('ts').value=0;
+  document.getElementById('pv').textContent='0.0°';document.getElementById('tv').textContent='0.0°';
+  send({type:'gimbal_mode',mode:'standby'});
+}
+</script>
+</body></html>
