@@ -38,6 +38,10 @@
 .trace-row:last-child{border-bottom:none}
 .tg{color:var(--blue);font-weight:700}.tc{color:var(--accent)}
 @media(max-width:1040px){.app{grid-template-columns:1fr}.video-wrap{min-height:320px}.side{order:2}}
+.ctrl-btn{padding:8px 6px;font-size:13px;font-weight:600;border:1px solid var(--line);border-radius:8px;background:#fffdf8;color:var(--ink);cursor:pointer;transition:.15s ease;min-height:36px}
+.ctrl-btn:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.ctrl-btn:active{transform:scale(.96)}
+.ctrl-btn.active-mode{background:rgba(36,124,85,.14);border-color:var(--good);color:#185c3e}
 </style>
 </head>
 <body>
@@ -71,6 +75,40 @@
         <div class="a" data-a="idle">IDLE</div>
       </div>
       <div class="notice" style="margin-top:10px">本页只读：实际云台控制由 <span class="mono">core.orchestrator → RecameraClient</span> 在控制进程执行。此处 FSM/命令为观测镜像，不下发任何指令。</div>
+    </section>
+
+    <section class="panel card" id="ctrlCard">
+      <h2>功能控制 <span class="ro" id="dryRunBadge" style="display:none">DRY-RUN</span></h2>
+
+      <div class="label" style="margin-bottom:6px">追踪模式</div>
+      <div class="grid3" style="margin-bottom:8px">
+        <button class="ctrl-btn" id="btnSingle" onclick="setMode('single')">单人追踪</button>
+        <button class="ctrl-btn" id="btnMulti" onclick="setMode('multi')">多人 DOA</button>
+        <button class="ctrl-btn" id="btnStop" onclick="setMode('stop')">停止</button>
+      </div>
+      <div class="status" style="margin-bottom:12px"><span>当前模式</span><span id="modeLabel" class="pill">--</span></div>
+
+      <div class="label" style="margin-bottom:6px">麦克风录音</div>
+      <div class="grid" style="margin-bottom:8px">
+        <button class="ctrl-btn" id="btnRecStart" onclick="recCtrl('start')">开始录音</button>
+        <button class="ctrl-btn" id="btnRecStop" onclick="recCtrl('stop')">停止录音</button>
+      </div>
+      <div class="status" style="margin-bottom:12px"><span>录音状态</span><span id="recLabel" class="pill">--</span></div>
+
+      <div class="label" style="margin-bottom:6px">云台控制</div>
+      <div id="gimbalDryBanner" class="notice" style="display:none;margin-bottom:8px">DRY-RUN 模式 · 云台指令不会发送至硬件。需以 <span class="mono">--no-dry-run</span> 启动服务。</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;max-width:180px;margin-bottom:10px">
+        <div></div>
+        <button class="ctrl-btn" onclick="gMove(0,3)" title="上仰">↑</button>
+        <div></div>
+        <button class="ctrl-btn" onclick="gMove(-5,0)" title="左转">←</button>
+        <button class="ctrl-btn" onclick="gHome()" title="回中">◎</button>
+        <button class="ctrl-btn" onclick="gMove(5,0)" title="右转">→</button>
+        <div></div>
+        <button class="ctrl-btn" onclick="gMove(0,-3)" title="俯仰">↓</button>
+        <div></div>
+      </div>
+      <div class="status"><span>云台响应</span><span id="gimbalCmdResult" class="small">--</span></div>
     </section>
 
     <section class="panel card">
@@ -245,6 +283,95 @@ const videoEl=$('videoStream');
 videoEl.src=`${location.origin}/video_feed?t=${Date.now()}`;
 videoEl.onerror=()=>{log('video_feed failed; retrying');setTimeout(()=>{videoEl.src=`${location.origin}/video_feed?t=${Date.now()}`},1200)};
 connectWS();poll();setInterval(poll,350);addEventListener('resize',()=>state&&drawOverlay(state));
+
+// ── 功能控制 ──────────────────────────────────────────────
+let _curMode = 'stop'; // 'single' | 'multi' | 'stop'
+
+async function apiPost(path, body={}) {
+  try {
+    const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    return await r.json();
+  } catch(e) { log('API error: ' + path + ' ' + e.message); return null; }
+}
+
+async function setMode(mode) {
+  _curMode = mode;
+  if (mode === 'single') {
+    await apiPost('/api/multi_track/stop', {finalize: false});
+    await apiPost('/api/single_track/start');
+    await apiPost('/api/tracking_mode', {mode: 'single'});
+  } else if (mode === 'multi') {
+    await apiPost('/api/single_track/stop');
+    await apiPost('/api/multi_track/start');
+    await apiPost('/api/tracking_mode', {mode: 'multi'});
+  } else {
+    await apiPost('/api/single_track/stop');
+    await apiPost('/api/multi_track/stop', {finalize: true});
+  }
+  updateModeUI();
+  log('mode → ' + mode);
+}
+
+function updateModeUI() {
+  ['btnSingle','btnMulti','btnStop'].forEach(id => $('ctrl-btn') && null);
+  const map = {single:'btnSingle', multi:'btnMulti', stop:'btnStop'};
+  ['single','multi','stop'].forEach(m => {
+    const btn = $(map[m]);
+    if (btn) btn.classList.toggle('active-mode', m === _curMode);
+  });
+  const labels = {single:'单人追踪中', multi:'多人 DOA 中', stop:'已停止'};
+  $('modeLabel').textContent = labels[_curMode] || '--';
+}
+
+async function recCtrl(action) {
+  const path = action === 'start' ? '/api/conversation/start' : '/api/conversation/stop';
+  const r = await apiPost(path);
+  log('录音 ' + action + (r ? (r.ok ? ' ✓' : ' ✗') : ''));
+}
+
+function updateRecUI(s) {
+  const conv = s.conversation || {};
+  const active = conv.recording || conv.active;
+  const dur = (conv.stats && conv.stats.duration) ? Math.round(conv.stats.duration) : 0;
+  $('recLabel').textContent = active ? `录音中 · ${fmtTime(dur)}` : '已停止';
+  $('btnRecStart').disabled = !!active;
+  $('btnRecStop').disabled = !active;
+}
+
+async function gMove(pan, tilt) {
+  const r = await apiPost('/api/gimbal/move', {pan, tilt});
+  const msg = r ? (r.dry_run ? 'DRY-RUN (不动作)' : `pan:${pan} tilt:${tilt} → ${r.ok?'✓':'✗'}`) : '失败';
+  $('gimbalCmdResult').textContent = msg;
+  if (r && r.dry_run) showDryRunBanner();
+}
+
+async function gHome() {
+  const r = await apiPost('/api/gimbal/home');
+  const msg = r ? (r.dry_run ? 'DRY-RUN (不动作)' : (r.ok ? '回中 ✓' : '回中 ✗')) : '失败';
+  $('gimbalCmdResult').textContent = msg;
+  if (r && r.dry_run) showDryRunBanner();
+}
+
+function showDryRunBanner() {
+  $('gimbalDryBanner').style.display = 'block';
+  $('dryRunBadge').style.display = '';
+}
+
+// 在 renderState 末尾钩入控制状态更新
+const _origRenderState = renderState;
+renderState = function(s) {
+  _origRenderState(s);
+  // sync mode label from WS state
+  const st = s.single_track || {}, mt = s.multi_track || {};
+  if (st.active) _curMode = 'single';
+  else if (mt.active) _curMode = 'multi';
+  else _curMode = 'stop';
+  updateModeUI();
+  updateRecUI(s);
+  // show dry-run banner if gimbal in dry-run
+  const g = s.gimbal || {};
+  if (g.dry_run || (g.connected === false && g.mode == null)) showDryRunBanner();
+};
 </script>
 </body>
 </html>

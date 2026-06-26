@@ -1,5 +1,101 @@
 # reCamera Multimodal — 系统架构与已实现功能
 
+## 0. 功能场景架构概览
+
+> 系统支持两种独立场景，共用同一套感知基础设施。两个场景由前端 feature toggle 激活，后端通过 `_single_track_active` / `_multi_track_active` 两个全局标志区分。
+
+---
+
+### 场景 A：日常场景（单人学习/工作）
+
+```
+触发：/api/single_track/start → _single_track_active = True
+
+Vision 链路
+─────────────────────────────────────────────────────────────
+  SSCMA 摄像头 (ws://device:8090/)
+    → SSCMAVideoClient  (JPEG + YOLO boxes, 5Hz)
+    → FaceTrackerV2     (SCRFD 人脸检测 + ByteTrack 追踪)
+    → AttentionEngine   (head pose via solvePnP → 专注分 0-100)
+    → EmotiEffLib       (8类情绪 + valence + 置信度)
+    → MediaPipe FaceMesh (468点网格 → EAR / blink rate / PERCLOS)
+    → build_state_snapshot(): .emotion / .attention / .eye_metrics
+
+Audio 链路（文字输入，无麦克风采集）
+─────────────────────────────────────────────────────────────
+  用户文字 → POST /api/chat (DeepSeek)   → 情绪陪伴回复
+  日记写入 → POST /api/reflect (DeepSeek) → {diary, reply}
+
+输出（home.html page-home）
+─────────────────────────────────────────────────────────────
+  情绪监测卡 · 专注记录卡 · 情绪日记 · 周趋势 · LLM 对话
+```
+
+---
+
+### 场景 B：工作场景（多人会议/讨论）
+
+```
+触发：/api/multi_track/start → _multi_track_active = True
+
+Vision 链路
+─────────────────────────────────────────────────────────────
+  SSCMA 摄像头 (ws://device:8090/)
+    → SSCMAVideoClient  (JPEG + YOLO boxes)
+    → PoseEstimator     (YOLO11n-pose → 17 COCO 关键点)
+    → _latest_pose_persons (人数 + bbox + wrist/elbow/shoulder)
+    → build_state_snapshot(): .pose.count / .pose.persons
+
+Audio 链路（麦克风实时采集）
+─────────────────────────────────────────────────────────────
+  ReSpeaker XVF3800
+    → NetworkDOA (TCP 0.0.0.0:9999) → doa_deg + has_speech
+    → ConversationRecorder
+         _audio_callback()   ← sounddevice 16kHz mono float32
+         _segment_loop()     ← RMS VAD + DOA 触发分段
+         _finalize_segment() → WAV + ConversationTurn → timeline.jsonl
+    → POST /api/meeting/summarize
+         → audio/transcriber.py (faster-whisper tiny)
+         → DeepSeek LLM → {diary, summary}
+
+输出（home.html page-home 多人场景卡）
+─────────────────────────────────────────────────────────────
+  DOA 方向 · 人数统计 · 声源状态 · 会议记录写入
+```
+
+---
+
+### 共用感知基础设施
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  state_push_loop (5Hz)                   │
+│  SSCMAVideoClient ─→ Pose/Face/Attention/Emotion 推理    │
+│  NetworkDOA       ─→ DOA 状态更新                        │
+│  _observe_control_step ─→ FSM 决策链（只读镜像）          │
+│                   ↓                                      │
+│         build_state_snapshot()                          │
+│                   ↓                                      │
+│      /ws WebSocket broadcast (每帧)                      │
+│      /api/state  GET（按需轮询）                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 控制层（独立于 FastAPI）
+
+```
+main_phase3.py（唯一硬件出口）
+  → Orchestrator FSM (core/orchestrator.py)
+    → RecameraClient.apply_command() (hardware/recamera_client.py)
+      → Socket.IO / HTTP → reCamera 硬件
+
+FastAPI 内 _observer = Orchestrator(observe_only)
+  NEVER 调用 apply_command（设计不变量）
+  /api/gimbal/home|move 例外：仅在非 dry-run 且 main_phase3.py 未运行时使用
+```
+
+---
+
 > 版本：1.0  
 > 日期：2026-06-26  
 > 基于：深度控制路径审计（audit date 2026-06-26）

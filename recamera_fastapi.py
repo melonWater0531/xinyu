@@ -1434,6 +1434,28 @@ async def api_multi_track_stop(payload: dict = Body(default={})):
     return {"ok": True, "active": False}
 
 
+@app.post("/api/gimbal/home")
+async def api_gimbal_home():
+    """Return gimbal to center position (yaw=180, pitch=90). Only in non-dry-run mode."""
+    if recamera and app_config and not app_config.dry_run:
+        loop = asyncio.get_event_loop()
+        ok = await loop.run_in_executor(None, lambda: recamera.send_absolute(180.0, 90.0))
+        return {"ok": ok, "dry_run": False}
+    return {"ok": False, "dry_run": True}
+
+
+@app.post("/api/gimbal/move")
+async def api_gimbal_move(payload: dict = Body(default={})):
+    """Relative gimbal move. Body: {pan: float, tilt: float} degrees. Clamped to ±15/±10."""
+    pan = max(-15.0, min(15.0, float(payload.get("pan", 0.0))))
+    tilt = max(-10.0, min(10.0, float(payload.get("tilt", 0.0))))
+    if recamera and app_config and not app_config.dry_run:
+        loop = asyncio.get_event_loop()
+        ok = await loop.run_in_executor(None, lambda: recamera.send_delta(pan, tilt))
+        return {"ok": ok, "pan": pan, "tilt": tilt, "dry_run": False}
+    return {"ok": False, "dry_run": True, "pan": pan, "tilt": tilt}
+
+
 @app.get("/api/debug/video")
 async def debug_video():
     from fastapi.responses import Response
