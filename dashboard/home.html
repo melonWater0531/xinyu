@@ -227,7 +227,9 @@
             <div class="feature-actions">
               <button class="btn primary" onclick="toggleMultiScene()" id="multiToggleBtn">开始多人跟踪</button>
               <button class="btn" onclick="openDebugConsole()">开发控制台</button>
+              <button class="btn" id="meetingSumBtn" onclick="saveMeetingRecord()" style="display:none">整理会议记录</button>
             </div>
+            <div id="meetingNotesList" style="display:none;margin-top:10px;font-size:13px;"></div>
           </article>
 
           <article class="feature-card">
@@ -412,7 +414,7 @@
     let selectedDayKey = "";
     // DEMO / APP PAGE — mock data only. No real camera, no control path, no hardware.
     // All POST/fetch calls are short-circuited via isFilePreview below.
-    const isFilePreview = true;
+    const isFilePreview = false;
     const defaultState = {
       video:{connected:true},
       gimbal:{connected:true,dry_run:true},
@@ -576,7 +578,7 @@
       updateProductRuntime();
       if(multiSceneRunning){
         await post("/api/tracking_mode", {mode:"multi"}, true);
-        await post("/api/multi_track/start", {save_audio:false}, true);
+        await post("/api/multi_track/start", {save_audio:true}, true);
         showToast("多人场景跟踪已开始");
       }else{
         await post("/api/multi_track/stop", {finalize:true}, true);
@@ -585,19 +587,40 @@
       refreshState();
     }
     function openDebugConsole(){ location.href = "/v2"; }
-    function saveTodayQuickDiary(){
+    async function saveTodayQuickDiary(){
       const text = $("todayQuickDiary").value.trim();
       if(!text){ showToast("先写一点今天的内容"); return; }
       const key = todayKey();
       const saved = JSON.parse(localStorage.getItem("xinyu_emotion_calendar") || "{}");
       const s = lastProductState || defaultState;
-      const emoKey = (s.emotion && (s.emotion.emotion || s.emotion.label)) || "Neutral";
+      const emoKey = (s.emotieff?.emotion) || (s.emotion && (s.emotion.emotion || s.emotion.label)) || "Neutral";
       const score = Number(s.attention?.score || 82);
+      const focusSec = focusStartedAt ? Math.round((Date.now() - focusStartedAt) / 1000) : 0;
       saved[key] = {weather:"🌤️", emotion:emoKey, score, text};
       localStorage.setItem("xinyu_emotion_calendar", JSON.stringify(saved));
       selectedDayKey = key;
       showToast("已写入今日情绪日记");
       renderCalendar();
+      // Call /api/reflect to generate diary + reply from LLM
+      try{
+        const res = await post("/api/reflect", {
+          mode:"diary", emotion:emoKey, attention:score,
+          user_text:text, duration_min:Math.round(focusSec/60)
+        });
+        if(res.reply){
+          addChatBubble("assistant", res.reply);
+          const thread = $("homeChatThread");
+          if(thread) thread.scrollTop = thread.scrollHeight;
+        }
+        if(res.diary && !text){
+          saved[key].text = res.diary;
+          localStorage.setItem("xinyu_emotion_calendar", JSON.stringify(saved));
+        }
+        if(res.reply){
+          saved[key].reply = res.reply;
+          localStorage.setItem("xinyu_emotion_calendar", JSON.stringify(saved));
+        }
+      }catch(e){ /* LLM not available, diary still saved locally */ }
     }
     function generateTodaySummary(){
       const key = todayKey();
@@ -639,6 +662,7 @@
             emotion:$("emotionStateValue").textContent || "Neutral",
             user_name:localStorage.getItem("xinyu_user_name") || "心屿用户",
             context:productContext(),
+            diary_text: mergedDiary()[todayKey()]?.text || "",
             daily_state:{source:"/home product dashboard", tracking_mode:trackingMode}
           })
         });
@@ -711,6 +735,15 @@
       $("trackingNote").textContent = isDefault ? "default 数据已加载，连接后会自动切换实时状态。" : (dry ? "当前是 dry-run，不会真的移动云台。" : (gimOk ? "云台控制链路已连接。" : "等待云台控制链路。"));
       setText("doaValue", doaDeg != null ? Math.round(Number(doaDeg)) + "°" : "--");
       setText("doaFreshValue", doaReady ? (follow.has_speech || doa.has_speech ? "有人声" : "已连接") : "待接入");
+      // Persist today's real emotion+score to localStorage when monitoring is active
+      if(!isDefault && (emotionMonitoring || focusMonitoring) && s?.emotieff?.emotion) {
+        const today = new Date().toISOString().slice(0, 10);
+        const cal = JSON.parse(localStorage.getItem("xinyu_emotion_calendar") || "{}");
+        if(!cal[today]) cal[today] = {};
+        cal[today].emotion = s.emotieff.emotion;
+        if(s.attention?.score != null) cal[today].score = s.attention.score;
+        localStorage.setItem("xinyu_emotion_calendar", JSON.stringify(cal));
+      }
       updateProductRuntime();
     }
     async function refreshState(){
@@ -735,6 +768,8 @@
       setButton("emotionPrimaryBtn", emotionMonitoring ? "暂停情绪监测" : "开始情绪监测", !emotionMonitoring);
       setButton("focusPrimaryBtn", focusMonitoring ? "暂停专注记录" : "开始专注记录", !focusMonitoring);
       setButton("multiPrimaryBtn", multiSceneRunning ? "停止多人场景" : "开始多人场景", !multiSceneRunning);
+      const msBtn = $("meetingSumBtn");
+      if(msBtn) msBtn.style.display = multiSceneRunning ? "" : "none";
       const modeText = multiSceneRunning ? "多人 DOA 跟随" : (emotionMonitoring || focusMonitoring ? "单人视觉监测" : "待开始");
       const adviceEl = $("homeAdvice");
       if(adviceEl && adviceEl.dataset.manual !== "true"){
@@ -796,15 +831,60 @@
       const msg = $("dayChatInput").value.trim() || `请回应我 ${selectedDayKey} 这一天的情绪记录`;
       askLLM(msg, item.emotion, `情绪日历：${selectedDayKey}，专注度${item.score}，记录：${item.text}`, "dayDetail");
     }
+    function getWeekData(){
+      const cal  = JSON.parse(localStorage.getItem("xinyu_emotion_calendar") || "{}");
+      const days = ["日","一","二","三","四","五","六"];
+      return Array.from({length:7}, (_, i) => {
+        const d = new Date(); d.setDate(d.getDate() - (6 - i));
+        const key   = d.toISOString().slice(0, 10);
+        const entry = cal[key];
+        return entry
+          ? {day: days[d.getDay()], emotion: entry.emotion || "Neutral", score: entry.score ?? 60}
+          : weekDefault[i];
+      });
+    }
     function renderWeekReport(){
-      const avg = Math.round(weekDefault.reduce((s,d)=>s+d.score,0)/weekDefault.length);
+      const wd = getWeekData();
+      const avg = Math.round(wd.reduce((s,d)=>s+d.score,0)/wd.length);
       $("weekAvg").textContent = avg;
-      $("weekTopEmotion").textContent = "平静";
-      $("weekBars").innerHTML = weekDefault.map(d => `<div class="bar-wrap"><div class="bar" style="height:${Math.max(18,d.score*1.35)}px"></div><span>${d.day}<br>${emotionIcon[d.emotion]}</span></div>`).join("");
+      const topEmo = wd.reduce((acc, d) => { acc[d.emotion] = (acc[d.emotion]||0)+1; return acc; }, {});
+      const topKey = Object.entries(topEmo).sort((a,b)=>b[1]-a[1])[0]?.[0] || "Neutral";
+      $("weekTopEmotion").textContent = (emotionMap[topKey] || emotionMap.Neutral)[0];
+      $("weekBars").innerHTML = wd.map(d => `<div class="bar-wrap"><div class="bar" style="height:${Math.max(18,d.score*1.35)}px"></div><span>${d.day}<br>${emotionIcon[d.emotion]}</span></div>`).join("");
     }
     function askWeekLLM(){
-      const msg = $("weekChatInput").value.trim() || "请根据本周 default 情绪和专注数据生成一段温柔的周记总结";
-      askLLM(msg, "Neutral", `本周数据：${JSON.stringify(weekDefault)}`, "weekInsight");
+      const wd = getWeekData();
+      const msg = $("weekChatInput").value.trim() || "请根据本周情绪和专注数据生成一段温柔的周记总结";
+      askLLM(msg, "Neutral", `本周数据：${JSON.stringify(wd)}`, "weekInsight");
+    }
+    async function saveMeetingRecord(){
+      showToast("正在转写和整理会议记录...");
+      const data = await post("/api/meeting/summarize", {});
+      if(!data || !data.ok){ showToast(data?.error || "整理失败，请确认录音已开启"); return; }
+      const notes = JSON.parse(localStorage.getItem("xinyu_meeting_notes") || "[]");
+      const now = new Date();
+      notes.unshift({
+        id:`m_${now.getTime()}`,
+        date:now.toISOString().slice(0,10),
+        time:now.toTimeString().slice(0,5),
+        summary:data.summary, diary:data.diary,
+        turns:data.turns, duration_min:data.duration_min||0
+      });
+      localStorage.setItem("xinyu_meeting_notes", JSON.stringify(notes.slice(0,20)));
+      renderMeetingNotes();
+      addChatBubble("assistant", `会议记录整理好了：${data.summary}`);
+      showToast("会议记录已保存 ✓");
+    }
+    function renderMeetingNotes(){
+      const el = $("meetingNotesList");
+      if(!el) return;
+      const notes = JSON.parse(localStorage.getItem("xinyu_meeting_notes") || "[]");
+      if(!notes.length){ el.style.display = "none"; return; }
+      el.style.display = "block";
+      el.innerHTML = '<div style="color:#aaa;font-size:12px;margin-bottom:4px">历次会议记录</div>'
+        + notes.slice(0,5).map(n =>
+          `<div style="padding:5px 0;border-bottom:1px solid #f0f0f0"><span style="color:#bbb">${n.date} ${n.time} · ${n.turns}段对话</span><br>${escapeHTML(n.summary)}</div>`
+        ).join("");
     }
     function escapeHTML(s){return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 
@@ -886,6 +966,7 @@
     updateProductRuntime();
     renderCalendar();
     renderWeekReport();
+    renderMeetingNotes();
     renderHealth();
     refreshState();
     setInterval(refreshState, 1000);

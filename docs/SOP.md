@@ -721,6 +721,17 @@ curl -X POST http://localhost:8001/api/conversation/stop \
 curl http://localhost:8001/api/debug/video
 ```
 
+### 10.6 监测模式与会议记录（v4.3 新增）
+
+| 路由 | 方法 | 说明 |
+|------|------|------|
+| `/api/tracking_mode` | POST | 切换 `{"mode":"single"\|"multi"}` |
+| `/api/single_track/start` | POST | 开启情绪/专注监测 |
+| `/api/single_track/stop` | POST | 停止情绪/专注监测 |
+| `/api/multi_track/start` | POST | 开启多人场景；`{"save_audio":true}` 同时启动录音 |
+| `/api/multi_track/stop` | POST | 停止多人场景；`{"finalize":true}` 关闭录音并写入磁盘 |
+| `/api/meeting/summarize` | POST | 转写当前 session WAV 片段 + DeepSeek 摘要 → 返回 JSON |
+
 ---
 
 ## 11. Debug 方法
@@ -791,6 +802,23 @@ PAGE 1（`/control`）提供实时 FSM 可视化：
 
 `control.observe_only = true` 表示这是只读镜像，不驱动云台。
 
+### 11.7 会议记录 Debug
+
+1. **faster-whisper 未安装**：`/api/meeting/summarize` 返回 `{"ok":false,"error":"转写结果为空..."}`
+   ```bash
+   pip install faster-whisper   # tiny 模型首次运行自动下载 ~150MB
+   ```
+
+2. **sounddevice 无法识别 ReSpeaker**：
+   ```bash
+   python3 -c "import sounddevice; print(sounddevice.query_devices())"
+   ```
+   找到 ReSpeaker 的设备 index，在 `recamera_fastapi.py` 的 `_ensure_conversation_recorder()` 中传入 `device=<index>`。
+
+3. **"整理会议记录"按钮不显示**：按钮仅在多人场景激活时出现。检查 localStorage `xinyu_multi_scene_running` 是否为 `"true"`，并确认 `toggleMultiScene()` 已成功调用。
+
+4. **DeepSeek 未配置时摘要质量差**：摘要降级为前100字原文，设置 `DEEPSEEK_API_KEY` 环境变量后质量大幅提升。
+
 ---
 
 ## 12. 排障
@@ -856,9 +884,9 @@ FastAPI 侧云台 readback 为 null 属正常（dry-run 模式下 `get_status()`
 
 尚未纳入标准链路：
 - 远程音频流传输
-- ASR / 说话人分离 / 会议摘要
+- 说话人分离（diarization，DOA 方向区分已接入）
 - DOA 安装偏移校准配置
-- 多人录音（save_audio 实验入口，非默认）
+- Wake Word 唤醒词
 
 ---
 
@@ -866,6 +894,7 @@ FastAPI 侧云台 readback 为 null 属正常（dry-run 模式下 `get_status()`
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| 4.3 | 2026-06-26 | 情绪监测/专注计时/DOA 实时接通真实后端（`isFilePreview=false`）；新增 6 个 POST 路由（tracking_mode / single_track / multi_track / meeting/summarize）；修复 `/api/chat` 重复路由 bug，接入 DeepSeek + LLMReflect 降级；`/api/reflect` diary 模式增强（user_text / duration_min / valence）；日记写入后注入聊天回应；周趋势图读 localStorage 实际数据；会议记录功能（faster-whisper + DeepSeek 摘要 → 独立 `xinyu_meeting_notes`）；新增 `audio/transcriber.py` |
 | 4.2 | 2026-06-26 | 重写 §6 启动流程（三模式 M1/M2/M3）；新增 §9 前端页面说明与验证手册（PAGE 1 面板详解 + 端到端验证清单 + PAGE 2 说明）；章节重编号 §9→§15 |
 | 4.1 | 2026-06-26 | 更新设备 IP → 192.168.106.85；密码更新为 recamera0526_；新增 §7 ReSpeaker XVF3800 完整连接方案（方式 A usbipd WSL 直连 + 方式 B Windows TCP 转发），含验证命令、持久化 attach、环境变量、格式说明 |
 | 4.0 | 2026-06-26 | 重写：对齐清理后架构；删除 GimbalController/影子控制链路相关说明；更新模块表、API 表、端口表；新增 FSM observe-only 说明；删除已不存在的页面/路由/API |

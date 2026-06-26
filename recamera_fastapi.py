@@ -314,6 +314,10 @@ _doa_reader = None
 _conversation_recorder = None
 _conversation_recording_requested = False
 _last_conversation_start_attempt = 0.0
+# Single/multi tracking mode — UI state only (no hardware binding)
+_tracking_mode: str = "single"
+_single_track_active: bool = False
+_multi_track_active: bool = False
 
 
 def _audio_event(doa_deg: float, speech: bool, source: str = "doa") -> dict:
@@ -806,6 +810,9 @@ def build_state_snapshot() -> dict:
                 "gimbal_latency_ms": round(float(getattr(recamera, "last_latency_ms", 0.0)), 1) if recamera else None,
                 "gimbal_connected": bool(_gimbal_tlm.get("connected")),
             },
+            "tracking_mode": _tracking_mode,
+            "single_track": {"active": _single_track_active},
+            "multi_track": {"active": _multi_track_active},
             "timestamp": time.time(),
         },
     }
@@ -1388,6 +1395,45 @@ async def snapshot():
     return Response(status_code=204)
 
 
+@app.post("/api/tracking_mode")
+async def api_set_tracking_mode(payload: dict = Body(default={})):
+    global _tracking_mode
+    _tracking_mode = payload.get("mode", "single")
+    return {"ok": True, "mode": _tracking_mode}
+
+
+@app.post("/api/single_track/start")
+async def api_single_track_start(payload: dict = Body(default={})):
+    global _single_track_active
+    _single_track_active = True
+    return {"ok": True, "active": True}
+
+
+@app.post("/api/single_track/stop")
+async def api_single_track_stop(payload: dict = Body(default={})):
+    global _single_track_active
+    _single_track_active = False
+    return {"ok": True, "active": False}
+
+
+@app.post("/api/multi_track/start")
+async def api_multi_track_start(payload: dict = Body(default={})):
+    global _multi_track_active
+    _multi_track_active = True
+    if payload.get("save_audio", False):
+        _start_conversation_recording()
+    return {"ok": True, "active": True}
+
+
+@app.post("/api/multi_track/stop")
+async def api_multi_track_stop(payload: dict = Body(default={})):
+    global _multi_track_active
+    _multi_track_active = False
+    if payload.get("finalize", True):
+        _stop_conversation_recording(finalize=True)
+    return {"ok": True, "active": False}
+
+
 @app.get("/api/debug/video")
 async def debug_video():
     from fastapi.responses import Response
@@ -1404,33 +1450,70 @@ async def debug_video():
 
 
 @app.post("/api/reflect")
-async def api_llm_reflect(payload: dict = None):
-    """LLM reflection: diary or quote."""
+async def api_llm_reflect(payload: dict = Body(default={})):
+    """LLM reflection: diary | quote | report. diary mode supports DeepSeek with richer context."""
     global _llm_engine
     if _llm_engine is None:
         from vision.llm_reflect import get_llm
         _llm_engine = get_llm()
-    if not _llm_engine.loaded: _llm_engine._load()
-    if not _llm_engine.loaded:
-        return {"error": "LLM not loaded"}
 
-    if not payload: payload = {}
-    mode = payload.get("mode", "diary")
-    emotion = payload.get("emotion", "Neutral")
-    attn = payload.get("attention", 50)
-    prev = payload.get("prev_emotion", "")
+    mode         = payload.get("mode", "diary")
+    emotion      = payload.get("emotion", (_emotieff_result or {}).get("emotion", "Neutral"))
+    attn         = int(payload.get("attention", (_attn_result or {}).get("score", 50)))
+    prev         = payload.get("prev_emotion", "")
+    user_text    = str(payload.get("user_text", ""))
+    duration_min = int(payload.get("duration_min", 0))
+    conf         = float((_emotieff_result or {}).get("confidence", 0.0))
+    valence      = (_emotieff_result or {}).get("valence")
 
     if mode == "diary":
-        text = _llm_engine.diary(emotion, attn, prev)
+        val_desc = ("正向" if (valence or 0) > 0.1
+                    else "负向" if (valence or 0) < -0.1 else "中性") if valence is not None else ""
+        ds_sys = (
+            "你是心屿，请以用户视角（'我'）生成今日日记条目。"
+            "规则：不超过60字；不编造未提及的事件；时间词只用'今天'或'今日'；"
+            "输出严格JSON，两个字段：{\"diary\":\"...\",\"reply\":\"一句温柔回应，不超过40字\"}"
+        )
+        ds_user = (
+            f"情绪：{emotion}（置信度{conf:.0%}"
+            f"{f'，监测{duration_min}分钟' if duration_min else ''}）；"
+            f"专注分：{attn}/100{f'；情感效价：{val_desc}' if val_desc else ''}。"
+            f"\n{f'用户自写：{user_text}' if user_text else '用户未填写文字。'}"
+        )
+        ds_raw = await _deepseek_chat([
+            {"role": "system", "content": ds_sys},
+            {"role": "user",   "content": ds_user},
+        ], max_tokens=200)
+
+        diary_entry = reply_text = ""
+        source = "template"
+        try:
+            import json as _j
+            parsed = _j.loads(ds_raw)
+            diary_entry = parsed.get("diary", "")
+            reply_text  = parsed.get("reply", "")
+            if diary_entry:
+                source = "deepseek"
+        except Exception:
+            pass
+
+        if not diary_entry:
+            diary_entry = _llm_engine.diary(emotion, attn, prev)
+        if not reply_text:
+            reply_text = _llm_engine.quote(emotion, "mid")
+
+        return {"diary": diary_entry, "reply": reply_text, "text": diary_entry, "source": source,
+                "time": round(_llm_engine._last_time, 2)}
+
     elif mode == "report":
         text = _llm_engine.report(
             payload.get("total_min", 0), payload.get("focused_pct", 0),
             emotion, attn,
         )
+        return {"text": text, "time": round(_llm_engine._last_time, 2)}
     else:
-        text = _llm_engine.quote(emotion, "涓撴敞" if attn >= 70 else "寰緶" if attn >= 40 else "椋樿繙")
-
-    return {"text": text, "time": round(_llm_engine._last_time, 2)}
+        text = _llm_engine.quote(emotion, "专注" if attn >= 70 else "微弱" if attn >= 40 else "飘远")
+        return {"text": text, "time": round(_llm_engine._last_time, 2)}
 
 
 # 鈹€鈹€ DeepSeek API client 鈹€鈹€
@@ -1487,16 +1570,65 @@ def _reply_looks_incomplete(text: str) -> bool:
     return stripped[-1] in ",:;"
 
 
+_EMO_ZH_EN = {
+    "开心": "Happiness", "悲伤": "Sadness", "愤怒": "Anger", "恐惧": "Fear",
+    "惊讶": "Surprise", "厌恶": "Disgust", "轻蔑": "Contempt", "平静": "Neutral",
+}
+
+
 @app.post("/api/chat")
-async def api_chat(payload: dict = None):
-    """Chat endpoint: uses DeepSeek API with local template fallback."""
+async def api_chat(payload: dict = Body(default={})):
+    """Chat endpoint: DeepSeek with LLMReflect fallback. Accepts real emotion/attention/diary context."""
     global _llm_engine
-    if not payload: payload = {}
-@app.post("/api/chat")
-async def api_chat(payload: dict = None):
-    payload = payload or {}
-    msg = str(payload.get("message", ""))
-    return {"reply": msg[:120], "source": "ui_only"}
+    if _llm_engine is None:
+        from vision.llm_reflect import get_llm
+        _llm_engine = get_llm()
+
+    msg        = str(payload.get("message", "")).strip()
+    emotion_zh = str(payload.get("emotion", ""))
+    context_s  = str(payload.get("context", ""))
+    diary_text = str(payload.get("diary_text", ""))
+    user_name  = str(payload.get("user_name", ""))
+
+    emo_key = _EMO_ZH_EN.get(emotion_zh, (_emotieff_result or {}).get("emotion", "Neutral"))
+    attn    = (_attn_result or {}).get("score", 75)
+    conf    = (_emotieff_result or {}).get("confidence", 0.0)
+    valence = (_emotieff_result or {}).get("valence")
+
+    val_desc = ("正向" if (valence or 0) > 0.1
+                else "负向" if (valence or 0) < -0.1 else "中性") if valence is not None else ""
+
+    sys_prompt = (
+        "你是心屿（XINYU），一个温柔陪伴型AI。"
+        "风格：用第二人称；语气温柔、不过分热情，像熟悉的老朋友；"
+        "接受负面情绪而不是急于解决；"
+        "只引用给你的实测数字，绝不编造未提及的内容；"
+        "每次回复不超过80字，自然段落，不使用列表或标题。"
+    )
+    user_ctx = (
+        f"【实测状态】情绪：{emotion_zh or emo_key}（置信度{conf:.0%}）；"
+        f"专注分：{attn}/100。"
+    )
+    if val_desc:
+        user_ctx += f" 情感效价：{val_desc}。"
+    if diary_text:
+        user_ctx += f"\n【今日日记】{diary_text[:200]}"
+    if context_s:
+        user_ctx += f"\n【背景】{context_s[:300]}"
+    user_ctx += f"\n\n{msg or '请结合我今天的状态，给我一句有温度的话。'}"
+
+    reply = await _deepseek_chat([
+        {"role": "system", "content": sys_prompt},
+        {"role": "user",   "content": user_ctx},
+    ], max_tokens=150)
+
+    if not reply or _reply_looks_incomplete(reply):
+        reply  = _llm_engine.respond_to_user(msg, emo_key, user_name=user_name, context=context_s)
+        source = "template"
+    else:
+        source = "deepseek"
+
+    return {"reply": reply, "source": source, "emotion": emo_key}
 
 
 @app.get("/api/chat/status")
@@ -1505,6 +1637,69 @@ async def api_chat_status():
         "configured": bool(DEEPSEEK_API_KEY),
         "model": DEEPSEEK_MODEL,
         "api_url": DEEPSEEK_API_URL,
+    }
+
+
+@app.post("/api/meeting/summarize")
+async def api_meeting_summarize(payload: dict = Body(default={})):
+    """Transcribe WAV segments from ConversationRecorder, summarize with DeepSeek."""
+    from pathlib import Path as _Path
+    from audio.transcriber import transcribe_wav
+
+    recorder = _conversation_recorder
+    if recorder is None:
+        return {"ok": False, "error": "录音未启动，请先开启多人场景"}
+
+    session_state = recorder.state()
+    turns = session_state.get("timeline", [])
+    if not turns:
+        return {"ok": False, "error": "本次无录音片段"}
+
+    transcripts = []
+    for turn in turns:
+        wav = turn.get("wav_path", "")
+        doa = turn.get("doa_mean")
+        if wav and _Path(wav).exists():
+            text = await transcribe_wav(wav)
+            if text:
+                zone = "左侧" if (doa or 180) < 135 else "右侧" if (doa or 180) > 225 else "正前方"
+                transcripts.append(f"[{zone}] {text}")
+
+    if not transcripts:
+        return {"ok": False, "error": "转写结果为空（faster-whisper 未安装或语音过短）"}
+
+    full_transcript = "\n".join(transcripts)
+    duration_min = round(session_state.get("stats", {}).get("duration", 0) / 60, 1)
+
+    sys_p = (
+        "你是心屿，请将以下多人对话整理为一段今日会议摘要。"
+        "要求：用'我'的视角；描述对话的核心内容和氛围；不超过100字；"
+        "输出严格JSON：{\"diary\":\"...\",\"summary\":\"一句话摘要，不超过30字\"}"
+    )
+    usr_p = f"对话时长：{duration_min}分钟。\n逐句记录（方向标注）：\n{full_transcript[:1500]}"
+
+    raw = await _deepseek_chat([
+        {"role": "system", "content": sys_p},
+        {"role": "user",   "content": usr_p},
+    ], max_tokens=300)
+
+    diary_text = summary_text = ""
+    try:
+        import json as _j
+        parsed = _j.loads(raw)
+        diary_text   = parsed.get("diary", "")
+        summary_text = parsed.get("summary", "")
+    except Exception:
+        diary_text   = raw[:100] if raw else "本次会议记录整理完成。"
+        summary_text = diary_text[:30]
+
+    return {
+        "ok": True,
+        "diary": diary_text,
+        "summary": summary_text,
+        "transcript": full_transcript,
+        "turns": len(transcripts),
+        "duration_min": duration_min,
     }
 
 
