@@ -42,6 +42,8 @@
 .ctrl-btn:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
 .ctrl-btn:active{transform:scale(.96)}
 .ctrl-btn.active-mode{background:rgba(36,124,85,.14);border-color:var(--good);color:#185c3e}
+.ctrl-btn:disabled{opacity:.4;cursor:not-allowed;background:#f3efe6}
+.ctrl-btn:disabled:hover{background:#f3efe6;color:var(--ink);border-color:var(--line)}
 /* emotion probability bars */
 .prob-row{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:11px}
 .prob-label{width:48px;color:var(--muted);flex-shrink:0;text-align:right}
@@ -104,15 +106,16 @@
 
       <div class="label" style="margin-bottom:6px">云台控制</div>
       <div id="gimbalDryBanner" class="notice" style="display:none;margin-bottom:8px">DRY-RUN 模式 · 云台指令不会发送至硬件。需以 <span class="mono">--no-dry-run</span> 启动服务。</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;max-width:180px;margin-bottom:10px">
+      <div id="gimbalTrackBanner" class="notice" style="display:none;margin-bottom:8px">追踪进行中 · 停止追踪后可手动控制云台。</div>
+      <div id="gimbalDpad" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;max-width:180px;margin-bottom:10px">
         <div></div>
-        <button class="ctrl-btn" onclick="gMove(0,3)" title="上仰">↑</button>
+        <button class="ctrl-btn gpad-btn" onclick="gMove(0,3)" title="上仰">↑</button>
         <div></div>
-        <button class="ctrl-btn" onclick="gMove(-5,0)" title="左转">←</button>
-        <button class="ctrl-btn" onclick="gHome()" title="回中">◎</button>
-        <button class="ctrl-btn" onclick="gMove(5,0)" title="右转">→</button>
+        <button class="ctrl-btn gpad-btn" onclick="gMove(-5,0)" title="左转">←</button>
+        <button class="ctrl-btn gpad-btn" onclick="gHome()" title="回中">◎</button>
+        <button class="ctrl-btn gpad-btn" onclick="gMove(5,0)" title="右转">→</button>
         <div></div>
-        <button class="ctrl-btn" onclick="gMove(0,-3)" title="俯仰">↓</button>
+        <button class="ctrl-btn gpad-btn" onclick="gMove(0,-3)" title="俯仰">↓</button>
         <div></div>
       </div>
       <div class="status"><span>云台响应</span><span id="gimbalCmdResult" class="small">--</span></div>
@@ -243,8 +246,8 @@ function renderState(s){
   const mp=s.mp_face||{};
   const emoName=emo.emotion||'--', conf=Number(emo.confidence||0);
   smoothConf=ema(smoothConf,conf,.28);
-  const EMO_ZH={Happy:'快乐',Sad:'悲伤',Angry:'愤怒',Fear:'恐惧',Surprise:'惊讶',
-                Disgust:'厌恶',Contempt:'轻蔑',Neutral:'平静',Calm:'平静'};
+  const EMO_ZH={Happiness:'快乐',Sadness:'悲伤',Anger:'愤怒',Fear:'恐惧',Surprise:'惊讶',
+                Disgust:'厌恶',Contempt:'轻蔑',Neutral:'平静'};
   $('emoVal').textContent=(EMO_ZH[emoName]||emoName);
   $('emoConf').textContent=conf?Math.round(smoothConf*100)+'%':'--';
   // face confidence from first detected person
@@ -256,7 +259,7 @@ function renderState(s){
   // 8-class probability bars
   const probs=emo.probabilities||{};
   const topEmo=Object.entries(probs).sort((a,b)=>b[1]-a[1]);
-  const EMO_ORDER=['Happy','Sad','Angry','Fear','Surprise','Disgust','Contempt','Neutral','Calm'];
+  const EMO_ORDER=['Happiness','Sadness','Anger','Fear','Surprise','Disgust','Contempt','Neutral'];
   const ordered=EMO_ORDER.filter(k=>k in probs).map(k=>[k,probs[k]]);
   // fallback: use sorted if order not matched
   const rows=ordered.length?ordered:topEmo.slice(0,8);
@@ -293,7 +296,7 @@ function renderState(s){
   $('doaAge').textContent=health.doa_age!=null?num(health.doa_age,'s',2):'--';
   $('rttVal').textContent=health.gimbal_latency_ms!=null?num(health.gimbal_latency_ms,'ms',0):'--';
   $('wsClients').textContent=health.ws_clients!=null?health.ws_clients:'--';
-  $('convState').textContent=conv.recording?('录音中 '+(conv.current?.elapsed||0)+'s'):(conv.active_state||'未记录');
+  $('convState').textContent=conv.recording?('录音中 '+(conv.current?.elapsed||0)+'s'):(conv.mode||'未激活');
 
   drawOverlay(s);
 }
@@ -376,7 +379,6 @@ async function setMode(mode) {
 }
 
 function updateModeUI() {
-  ['btnSingle','btnMulti','btnStop'].forEach(id => $('ctrl-btn') && null);
   const map = {single:'btnSingle', multi:'btnMulti', stop:'btnStop'};
   ['single','multi','stop'].forEach(m => {
     const btn = $(map[m]);
@@ -384,6 +386,11 @@ function updateModeUI() {
   });
   const labels = {single:'单人追踪中', multi:'多人 DOA 中', stop:'已停止'};
   $('modeLabel').textContent = labels[_curMode] || '--';
+  // Disable manual gimbal D-pad while tracking is active to avoid dual control.
+  const tracking = (_curMode === 'single' || _curMode === 'multi');
+  document.querySelectorAll('.gpad-btn').forEach(b => { b.disabled = tracking; });
+  const tb = $('gimbalTrackBanner');
+  if (tb) tb.style.display = tracking ? 'block' : 'none';
 }
 
 async function recCtrl(action) {

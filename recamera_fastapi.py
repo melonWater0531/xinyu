@@ -1065,13 +1065,21 @@ async def state_push_loop():
     while True:
         try:
             pose_frame_count += 1
+            # -- Scene gating: daily (single) runs face/emotion/eye; work (multi) runs pose only.
+            #    When neither mode is active, both pipelines run (default observation mode). --
+            run_face = True
+            run_pose = True
+            if _single_track_active and not _multi_track_active:
+                run_pose = False   # 日常场景：人脸/情绪/专注，跳过 YOLO pose
+            elif _multi_track_active and not _single_track_active:
+                run_face = False   # 工作场景：仅 pose，跳过情绪/眼部
             # -- Face detection: FaceTrackerV2 (SCRFD + Kalman/ByteTrack), YOLO fallback --
             if video_client:
                 jpeg = video_client.jpeg_bytes
                 if jpeg:
                     loop = asyncio.get_event_loop()
                     tracked_faces = []
-                    if _face_tracker and _face_tracker.available:
+                    if _face_tracker and _face_tracker.available and run_face:
                         try:
                             from vision.pose_estimator import PersonPose, Keypoint
                             arr = np.frombuffer(jpeg, np.uint8)
@@ -1108,7 +1116,7 @@ async def state_push_loop():
                         except Exception as e:
                             if pose_frame_count % 30 == 0:
                                 logger.debug("FaceTrackerV2 error: %s", str(e)[:80])
-                    if not tracked_faces:
+                    if not tracked_faces and run_pose:
                         if pose_est is None:
                             from vision.pose_estimator import get_pose_estimator
                             pose_est = get_pose_estimator()
@@ -1122,7 +1130,7 @@ async def state_push_loop():
                                 logger.debug("YOLO fallback error: %s", str(e)[:80])
 
             # -- Attention engine --
-            if _attention_engine and _latest_pose_persons:
+            if _attention_engine and _latest_pose_persons and run_face:
                 for p in _latest_pose_persons:
                     face_kps = {kp.name: (kp.x, kp.y) for kp in p.keypoints
                                 if kp.name in ('left_eye', 'right_eye', 'nose', 'left_mouth', 'right_mouth')}
@@ -1145,7 +1153,7 @@ async def state_push_loop():
                 _attn_result = {"has_face": False}
 
             # -- MediaPipe face + eye metrics (throttled) --
-            if pose_frame_count % 2 == 0:
+            if pose_frame_count % 2 == 0 and run_face:
                 jpeg = video_client.jpeg_bytes if video_client else None
                 if jpeg:
                     if _mp_face is None:
@@ -1162,6 +1170,7 @@ async def state_push_loop():
                             _apply_mediapipe_landmarks5(_mp_landmarks5)
                             _mp_face_result = {"success": True, "ear_avg": round(float(mp_res.ear_avg), 3),
                                 "eye_open": bool(mp_res.eye_open),
+                                "landmarks_count": int(mp_res.landmarks.shape[0]) if mp_res.landmarks is not None else 468,
                                 "landmarks5": [[round(float(x), 1), round(float(y), 1)]
                                                for x, y in np.asarray(mp_res.landmarks5)[:, :2]]
                                                if mp_res.landmarks5 is not None else [],
@@ -1170,14 +1179,15 @@ async def state_push_loop():
                             em = _eye_tracker.update(landmarks=mp_res.landmarks)
                             _eye_metrics = {"ear_avg": round(float(em.ear_avg), 3),
                                 "blink_rate": float(em.blink_rate), "perclos": round(float(em.perclos), 3),
-                                "focus_score": int(em.focus_score), "blink_count": int(em.blink_count)}
+                                "focus_score": int(em.focus_score), "blink_count": int(em.blink_count),
+                                "eye_open": bool(em.eye_open)}
                     except Exception as e:
                         logger.warning(f"MediaPipe: {e}")
 
             # -- Emotion recognition (EmotiEffLib) --
-            jpeg = video_client.jpeg_bytes if video_client else None
+            jpeg = video_client.jpeg_bytes if (video_client and run_face) else None
             landmarks = None
-            if _latest_pose_persons:
+            if _latest_pose_persons and run_face:
                 for p in _latest_pose_persons:
                     face_kps = {kp.name: (kp.x, kp.y) for kp in p.keypoints
                                 if kp.name in ('left_eye', 'right_eye', 'nose', 'left_mouth', 'right_mouth')}
@@ -1404,7 +1414,11 @@ async def api_set_tracking_mode(payload: dict = Body(default={})):
 
 @app.post("/api/single_track/start")
 async def api_single_track_start(payload: dict = Body(default={})):
-    global _single_track_active
+    global _single_track_active, _multi_track_active
+    # Mutual exclusion: daily-scene and work-scene cannot run together.
+    if _multi_track_active:
+        _multi_track_active = False
+        _stop_conversation_recording(finalize=True)
     _single_track_active = True
     return {"ok": True, "active": True}
 
@@ -1418,7 +1432,10 @@ async def api_single_track_stop(payload: dict = Body(default={})):
 
 @app.post("/api/multi_track/start")
 async def api_multi_track_start(payload: dict = Body(default={})):
-    global _multi_track_active
+    global _multi_track_active, _single_track_active
+    # Mutual exclusion: work-scene and daily-scene cannot run together.
+    if _single_track_active:
+        _single_track_active = False
     _multi_track_active = True
     if payload.get("save_audio", False):
         _start_conversation_recording()

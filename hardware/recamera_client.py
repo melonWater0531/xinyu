@@ -75,6 +75,10 @@ class RecameraClient:
         self._sio = None  # Socket.IO client
         self._sio_widget_id: str = "1528e53340ceac14"
         self._sio_path: str = "/dashboard/socket.io"
+        # Node-RED Dashboard listens on port 1880, not the base HTTP port (80).
+        import urllib.parse as _up
+        _parsed = _up.urlparse(self._base_url)
+        self._sio_url: str = f"{_parsed.scheme}://{_parsed.hostname}:1880"
 
         # Known endpoints (tried in order)
         self._control_urls = [
@@ -106,7 +110,7 @@ class RecameraClient:
         try:
             import socketio
             sio = socketio.Client(logger=False)
-            sio_url = self._base_url
+            sio_url = self._sio_url
             sio_path = self._sio_path
             connected_event = threading.Event()
 
@@ -198,7 +202,7 @@ class RecameraClient:
         if self._transport == "socketio" and self._sio and not self._connected:
             logger.info("Socket.IO disconnected; attempting reconnect...")
             try:
-                self._sio.connect(self._base_url, socketio_path=self._sio_path, wait_timeout=2.0)
+                self._sio.connect(self._sio_url, socketio_path=self._sio_path, wait_timeout=2.0)
             except Exception as e:
                 logger.debug("Socket.IO reconnect failed: %s", str(e)[:60])
 
@@ -243,7 +247,7 @@ class RecameraClient:
         if self._transport == "socketio" and self._sio and not self._connected:
             logger.info("Socket.IO disconnected; attempting reconnect...")
             try:
-                self._sio.connect(self._base_url, socketio_path=self._sio_path, wait_timeout=2.0)
+                self._sio.connect(self._sio_url, socketio_path=self._sio_path, wait_timeout=2.0)
             except Exception as e:
                 logger.debug("Socket.IO reconnect failed: %s", str(e)[:60])
 
