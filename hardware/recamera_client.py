@@ -194,6 +194,14 @@ class RecameraClient:
             return True
 
         # ── Socket.IO transport (Node-RED Dashboard) ──
+        # If Socket.IO was the chosen transport but connection dropped, try to reconnect once.
+        if self._transport == "socketio" and self._sio and not self._connected:
+            logger.info("Socket.IO disconnected; attempting reconnect...")
+            try:
+                self._sio.connect(self._base_url, socketio_path=self._sio_path, wait_timeout=2.0)
+            except Exception as e:
+                logger.debug("Socket.IO reconnect failed: %s", str(e)[:60])
+
         if self._transport == "socketio" and self._sio and self._connected:
             try:
                 # Send pan via widget-change event
@@ -230,6 +238,26 @@ class RecameraClient:
                 pan, tilt,
             )
             return True
+
+        # ── Socket.IO transport: reconnect if dropped ──
+        if self._transport == "socketio" and self._sio and not self._connected:
+            logger.info("Socket.IO disconnected; attempting reconnect...")
+            try:
+                self._sio.connect(self._base_url, socketio_path=self._sio_path, wait_timeout=2.0)
+            except Exception as e:
+                logger.debug("Socket.IO reconnect failed: %s", str(e)[:60])
+
+        if self._transport == "socketio" and self._sio and self._connected:
+            try:
+                pan_int = int(round(pan))
+                self._sio.emit("widget-change", (self._sio_widget_id, pan_int))
+                self._consecutive_fails = 0
+                return True
+            except Exception:
+                self._consecutive_fails += 1
+                self._fail_count += 1
+                logger.warning("Socket.IO send failed (%d consecutive)", self._consecutive_fails)
+                return False
 
         return self._http_send({
             "pan": round(pan, 1),

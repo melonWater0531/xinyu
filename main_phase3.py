@@ -43,7 +43,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-control", action="store_true",
                         help="Enable real gimbal control + real SSCMA vision")
     parser.add_argument("--gimbal-ip", type=str, default="192.168.106.85")
-    parser.add_argument("--max-cycles", type=int, default=500)
+    parser.add_argument("--max-cycles", type=int, default=0,
+                        help="Max control cycles before exit (0 = unlimited)")
     parser.add_argument("--face-conf", type=float, default=0.60,
                         help="Min confidence to accept a face detection")
     parser.add_argument("--person-conf", type=float, default=0.42,
@@ -128,7 +129,7 @@ class Phase3Runner:
                 command = self._orchestrator.handle_vision(signal_bboxes, source="main_phase3")
                 self._apply(command)
                 self._print_frame(signal_bboxes, command)
-                if self._frame_id >= self._max_cycles:
+                if self._max_cycles and self._frame_id >= self._max_cycles:
                     break
                 elapsed = time.monotonic() - start
                 time.sleep(max(0.0, self._frame_delay - elapsed))
