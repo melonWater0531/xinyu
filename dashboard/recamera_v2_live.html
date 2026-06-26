@@ -42,6 +42,13 @@
 .ctrl-btn:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
 .ctrl-btn:active{transform:scale(.96)}
 .ctrl-btn.active-mode{background:rgba(36,124,85,.14);border-color:var(--good);color:#185c3e}
+/* emotion probability bars */
+.prob-row{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:11px}
+.prob-label{width:48px;color:var(--muted);flex-shrink:0;text-align:right}
+.prob-track{flex:1;height:8px;background:rgba(223,210,194,.5);border-radius:4px;overflow:hidden}
+.prob-fill{height:100%;border-radius:4px;background:var(--accent);transition:width .25s ease}
+.prob-fill.top{background:var(--good)}
+.prob-val{width:32px;text-align:right;color:var(--ink);font-weight:600;flex-shrink:0}
 </style>
 </head>
 <body>
@@ -142,14 +149,32 @@
     </section>
 
     <section class="panel card">
-      <h2>单人分析 · 专注 / 情绪</h2>
-      <div class="grid">
-        <div class="metric"><div class="label">专注度</div><div class="value" id="attnVal">--</div></div>
-        <div class="metric"><div class="label">情绪</div><div class="value" id="emoVal">--</div></div>
+      <h2>情绪与人脸分析</h2>
+      <div class="grid3" style="margin-bottom:10px">
+        <div class="metric"><div class="label">情绪类别</div><div class="value" id="emoVal" style="font-size:16px">--</div></div>
+        <div class="metric"><div class="label">识别置信度</div><div class="value" id="emoConf">--</div></div>
+        <div class="metric"><div class="label">人脸置信度</div><div class="value" id="faceConf">--</div></div>
       </div>
-      <div class="status"><span>面部有效</span><span id="faceValid">--</span></div>
-      <div class="status"><span>情绪置信度</span><span id="emoConf">--</span></div>
-      <div class="status"><span>眨眼率 / PERCLOS</span><span id="eyeVal">--</span></div>
+      <div class="status"><span>人脸有效</span><span id="faceValid">--</span></div>
+      <div class="status"><span>MediaPipe</span><span id="mpFaceState">--</span></div>
+      <div class="label" style="margin:10px 0 6px">8 类情绪概率分布</div>
+      <div id="emoProbBars"></div>
+    </section>
+
+    <section class="panel card">
+      <h2>专注度与眼部 / 疲劳指标</h2>
+      <div class="grid3" style="margin-bottom:10px">
+        <div class="metric"><div class="label">专注评分</div><div class="value" id="attnVal">--</div></div>
+        <div class="metric"><div class="label">EAR 眼开合度</div><div class="value" id="earVal">--</div></div>
+        <div class="metric"><div class="label">眼睛状态</div><div class="value" id="eyeOpenVal" style="font-size:16px">--</div></div>
+      </div>
+      <div class="grid" style="margin-bottom:10px">
+        <div class="metric"><div class="label">PERCLOS 疲劳度</div><div class="value" id="perclosVal">--</div></div>
+        <div class="metric"><div class="label">眨眼率 次/分</div><div class="value" id="blinkRateVal">--</div></div>
+      </div>
+      <div class="status"><span>眨眼总次数</span><span id="blinkCountVal">--</span></div>
+      <div class="status"><span>眼部专注分</span><span id="eyeFocusVal">--</span></div>
+      <div class="status"><span>专注状态描述</span><span id="attnState">--</span></div>
     </section>
 
     <section class="panel card">
@@ -214,16 +239,54 @@ function renderState(s){
   $('speechVal').textContent=doa.has_speech?'有':'无';
   $('lostFrames').textContent=ctrl.vision_lost_frames!=null?ctrl.vision_lost_frames:'--';
 
-  // single-person analysis
+  // ── emotion & face analysis ──────────────────────────────────
+  const mp=s.mp_face||{};
+  const emoName=emo.emotion||'--', conf=Number(emo.confidence||0);
+  smoothConf=ema(smoothConf,conf,.28);
+  const EMO_ZH={Happy:'快乐',Sad:'悲伤',Angry:'愤怒',Fear:'恐惧',Surprise:'惊讶',
+                Disgust:'厌恶',Contempt:'轻蔑',Neutral:'平静',Calm:'平静'};
+  $('emoVal').textContent=(EMO_ZH[emoName]||emoName);
+  $('emoConf').textContent=conf?Math.round(smoothConf*100)+'%':'--';
+  // face confidence from first detected person
+  const person0=(pose.persons||[])[0]||{};
+  const fConf=person0.face_conf!=null?person0.face_conf:(att.has_face?1:null);
+  $('faceConf').textContent=fConf!=null?Math.round(Number(fConf)*100)+'%':'--';
+  $('faceValid').textContent=att.has_face?'有效':'无';
+  $('mpFaceState').textContent=mp.success?`${mp.landmarks_count||468}点 · EAR ${num(mp.ear_avg,'',3)}`:'未检测';
+  // 8-class probability bars
+  const probs=emo.probabilities||{};
+  const topEmo=Object.entries(probs).sort((a,b)=>b[1]-a[1]);
+  const EMO_ORDER=['Happy','Sad','Angry','Fear','Surprise','Disgust','Contempt','Neutral','Calm'];
+  const ordered=EMO_ORDER.filter(k=>k in probs).map(k=>[k,probs[k]]);
+  // fallback: use sorted if order not matched
+  const rows=ordered.length?ordered:topEmo.slice(0,8);
+  const topKey=rows[0]?rows[0][0]:'';
+  $('emoProbBars').innerHTML=rows.map(([k,v])=>{
+    const pct=Math.round(Number(v)*100);
+    const isTop=k===topKey;
+    const zh=EMO_ZH[k]||k;
+    return `<div class="prob-row">
+      <span class="prob-label">${zh}</span>
+      <div class="prob-track"><div class="prob-fill${isTop?' top':''}" style="width:${pct}%"></div></div>
+      <span class="prob-val">${pct}%</span>
+    </div>`;
+  }).join('');
+
+  // ── attention & eye metrics ───────────────────────────────────
   const targetAttn=att.has_face&&att.score!=null?Number(att.score):0;
   smoothAttn=ema(smoothAttn,targetAttn,att.has_face?0.35:0.18);
   $('attnVal').textContent=att.has_face?Math.round(smoothAttn):'--';
-  const emoName=emo.emotion||'--',conf=Number(emo.confidence||0);
-  smoothConf=ema(smoothConf,conf,.28);
-  $('emoVal').textContent=emoName;
-  $('faceValid').textContent=att.has_face?'是':'否';
-  $('emoConf').textContent=conf?Math.round(smoothConf*100)+'%':'--';
-  $('eyeVal').textContent=eye.blink_rate!=null?`${num(eye.blink_rate,'',0)} / ${num(eye.perclos,'',2)}`:'--';
+  // EAR: prefer eye_metrics.ear_avg, fallback mp_face.ear_avg
+  const earVal=eye.ear_avg??eye.ear??mp.ear_avg;
+  $('earVal').textContent=earVal!=null?Number(earVal).toFixed(3):'--';
+  // eye open state
+  const eyeOpen=eye.eye_open??mp.eye_open;
+  $('eyeOpenVal').textContent=eyeOpen==null?'--':eyeOpen?'👁 睁开':'😴 闭合';
+  $('perclosVal').textContent=eye.perclos!=null?Number(eye.perclos).toFixed(3):'--';
+  $('blinkRateVal').textContent=eye.blink_rate!=null?num(eye.blink_rate,'',1):'--';
+  $('blinkCountVal').textContent=eye.blink_count!=null?eye.blink_count:'--';
+  $('eyeFocusVal').textContent=eye.focus_score!=null?eye.focus_score:'--';
+  $('attnState').textContent=att.state||att.gaze_direction||'--';
 
   // health
   $('fpsVal').textContent=num(health.video_fps,'',1);
