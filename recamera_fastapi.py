@@ -108,6 +108,8 @@ class SSCMAVideoClient:
         self._connected: bool = False
         self._resolution: list = [1920, 1080]       # [w, h] ->updated on first frame
         self._frame_event: Optional[asyncio.Event] = None  # signal MJPEG generator
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None  # for thread-safe set()
+        self._fail_count: int = 0  # consecutive connection failures
 
     @property
     def resolution(self) -> list:
@@ -144,7 +146,7 @@ class SSCMAVideoClient:
         self._running = True
         self._thread = threading.Thread(target=self._recv_loop, daemon=True, name="sscma-video")
         self._thread.start()
-        logger.info("馃摲 SSCMA connecting to %s", self.url)
+        logger.info("📷 SSCMA connecting to %s", self.url)
 
     def stop(self):
         self._running = False
@@ -164,7 +166,7 @@ class SSCMAVideoClient:
                 ws.settimeout(3.0)
                 ws.connect(self.url, timeout=5.0, http_proxy_host=None, http_proxy_port=None)
                 self._connected = True
-                logger.info("馃摲 SSCMA connected")
+                logger.info("📷 SSCMA connected")
 
                 while self._running:
                     try:
@@ -172,9 +174,9 @@ class SSCMAVideoClient:
                         msg = ws.recv()
                         self._process_message(msg)
 
-                        # Signal MJPEG generator
-                        if self._frame_event:
-                            self._frame_event.set()
+                        # Signal MJPEG generator (thread-safe)
+                        if self._frame_event and self._event_loop and not self._event_loop.is_closed():
+                            self._event_loop.call_soon_threadsafe(self._frame_event.set)
 
                         # FPS
                         fps_count += 1
@@ -189,7 +191,11 @@ class SSCMAVideoClient:
                     except Exception:
                         break
             except Exception as e:
-                logger.debug("SSCMA: %s", str(e)[:80])
+                self._fail_count += 1
+                if self._fail_count == 1:
+                    logger.warning("📷 SSCMA connection failed (%s) ->retrying every 2s", str(e)[:80])
+                elif self._fail_count % 15 == 0:
+                    logger.warning("📷 SSCMA still unreachable after %d attempts (%s)", self._fail_count, str(e)[:60])
             finally:
                 self._connected = False
                 if ws:
@@ -425,7 +431,7 @@ def _ensure_doa_reader() -> bool:
             return False
         reader.start(interval=0.1)
         _doa_reader = reader
-        logger.info("馃帳 DOA ready for yaw-only sound tracking (source=%s)", source)
+        logger.info("🎤 DOA ready for yaw-only sound tracking (source=%s)", source)
         return True
     except Exception as e:
         logger.warning("DOA init failed: %s", str(e)[:160])
@@ -784,7 +790,7 @@ def build_state_snapshot() -> dict:
             # FastAPI holds no control-state mirror; this is read-only.
             "gimbal": dict(_gimbal_tlm),
             "video": {
-                "connected": True if video_client else False,  # MJPEG娴佸瓨娲诲嵆connected
+                "connected": bool(video_client.connected) if video_client else False,
                 "fps": video_client.fps if video_client else 0.0,
                 "width": video_client.resolution[0] if video_client else 1920,
                 "height": video_client.resolution[1] if video_client else 1080,
@@ -829,6 +835,7 @@ async def lifespan(app: FastAPI):
     # Start video client
     video_client = SSCMAVideoClient(device_ip=app_config.device_ip)
     video_client._frame_event = asyncio.Event()
+    video_client._event_loop = asyncio.get_event_loop()
     video_client.start()
 
     # Read-only telemetry client (NO control). get_status() is the only call made.
@@ -850,7 +857,7 @@ async def lifespan(app: FastAPI):
     try:
         from vision.face_tracker_v2 import get_face_tracker_v2
         _face_tracker = get_face_tracker_v2()
-        logger.info("馃攳 FaceTrackerV2: %s",
+        logger.info("🔍 FaceTrackerV2: %s",
             "SCRFD+Kalman+ByteTrack ready" if _face_tracker.available
             else "unavailable, fallback to YOLO")
     except Exception as e:
@@ -864,12 +871,12 @@ async def lifespan(app: FastAPI):
     try:
         from vision.llm_reflect import get_llm
         _llm_engine = get_llm()
-        logger.info("馃 Loading lightweight reflection engine for diary chat...")
+        logger.info("🤖 Loading lightweight reflection engine for diary chat...")
         _llm_engine._load()
         if _llm_engine.loaded:
             logger.info("->Reflection engine ready for diary chat")
         else:
-            logger.warning("鈿狅笍 Reflection engine failed to load ->chat will use fallback")
+            logger.warning("⚠️ Reflection engine failed to load ->chat will use fallback")
     except Exception as e:
         logger.warning("Reflection init skipped: %s ->chat will use fallback", e)
         _llm_engine = None
@@ -1853,13 +1860,13 @@ def main():
         ssl_kwargs = {"ssl_keyfile": args.ssl_keyfile, "ssl_certfile": args.ssl_certfile}
         scheme = "https"
         ws_scheme = "wss"
-        logger.info("馃攼 HTTPS enabled for PWA")
+        logger.info("🔐 HTTPS enabled for PWA")
     if not args.no_dry_run:
-        logger.info("馃敀 DRY-RUN mode ->gimbal commands NOT sent (use --no-dry-run to enable)")
-    logger.info("馃寪 Dashboard: %s://localhost:%d/home  (%s://localhost:%d/v2)", scheme, args.port, scheme, args.port)
-    logger.info("馃摗 MJPEG:     %s://localhost:%d/video_feed", scheme, args.port)
-    logger.info("馃攲 WebSocket: %s://localhost:%d/ws", ws_scheme, args.port)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning", **ssl_kwargs)
+        logger.info("🔒 DRY-RUN mode ->gimbal commands NOT sent (use --no-dry-run to enable)")
+    logger.info("🌐 Dashboard: %s://localhost:%d/home  (%s://localhost:%d/v2)", scheme, args.port, scheme, args.port)
+    logger.info("📡 MJPEG:     %s://localhost:%d/video_feed", scheme, args.port)
+    logger.info("🔌 WebSocket: %s://localhost:%d/ws", ws_scheme, args.port)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", **ssl_kwargs)
 
 
 if __name__ == "__main__":

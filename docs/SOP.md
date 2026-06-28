@@ -892,11 +892,43 @@ ping 192.168.106.85
 失败时通过 USB SSH 重新查询 `wlan0`。
 
 ### 12.2 视频未连接
+
+**第一步：诊断**
 ```bash
 nc -zv 192.168.106.85 8090
 curl http://localhost:8001/api/health
 ```
+
+**错误类型区分：**
+
+| 错误 | 含义 | 解决方法 |
+|------|------|----------|
+| `Connection refused` | 设备在线但 SSCMA 未运行 | 见下方"启动 SSCMA" |
+| `Connection timed out` / `No route to host` | 设备不可达或 IP 错误 | 见 §12.1，SSH 重查 wlan0 IP |
+
 设备 IP 自动加入 `NO_PROXY`，避免代理干扰。
+
+**启动 SSCMA（当出现 `Connection refused` 时）：**
+
+SSCMA 是 reCamera 上的 AI 推理服务，不随设备开机自动运行，需手动部署模型后启动。
+
+方法 1 — 官方 Web UI（推荐）：
+1. 浏览器打开 `http://192.168.106.85`
+2. 进入模型部署页面，选择 YOLO 模型（如 YOLO11n），点击**部署 / 运行**
+3. 等待加载完成，`:8090` WebSocket 自动开放
+
+方法 2 — SSH 排查：
+```bash
+ssh recamera@192.168.106.85   # 密码：recamera0526_
+ps aux | grep -i sscma        # 查看是否有 SSCMA 进程
+systemctl status sscma 2>/dev/null
+```
+
+**确认 SSCMA 已启动：**
+```bash
+nc -zv 192.168.106.85 8090    # 应输出 "succeeded"
+# 此后我们的服务日志会出现：📷 SSCMA connected
+```
 
 ### 12.3 云台不动（main_phase3.py 侧）
 ```bash
