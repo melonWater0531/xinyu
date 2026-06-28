@@ -12,7 +12,7 @@ Key design:
   - Simulates responses when API not available (for testing)
 
 Usage:
-    client = RecameraClient(base_url="http://192.168.106.85")
+    client = RecameraClient(base_url="http://<RECAMERA_IP>")
     if client.connect():
         client.send_delta(pan=1.5, tilt=-0.8)  # relative movement
         client.send_absolute(pan=90, tilt=45)   # absolute position
@@ -24,6 +24,7 @@ import json
 from typing import Optional, Tuple
 from urllib import request, error
 
+from core.device_config import device_http_url
 from core.event import ControlCommand
 from utils.logger import get_logger
 
@@ -31,7 +32,6 @@ logger = get_logger(__name__)
 
 # ══════════════════════════════════════════════════════════════->#  Constants
 # ══════════════════════════════════════════════════════════════->
-DEFAULT_BASE_URL = "http://192.168.106.85"
 DEFAULT_TIMEOUT_MS = 200
 DEFAULT_RETRY = 3
 
@@ -52,11 +52,11 @@ class RecameraClient:
 
     def __init__(
         self,
-        base_url: str = DEFAULT_BASE_URL,
+        base_url: str = "",
         timeout_ms: int = DEFAULT_TIMEOUT_MS,
         retry: int = DEFAULT_RETRY,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
+        self._base_url = (base_url or device_http_url()).rstrip("/")
         self._timeout_ms = timeout_ms
         self._timeout_sec = timeout_ms / 1000.0
         self._retry = retry

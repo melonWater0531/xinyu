@@ -88,12 +88,14 @@ class RealVisionSource(VisionDataSource):
     """
     Real data source backed by SSCMA WebSocket (VideoStream).
 
-    Connects to reCamera ws://<ip>:8090/ and parses detection boxes.
+    Connects to a configured reCamera SSCMA WebSocket and parses detection boxes.
     Also exposes get_jpeg_bytes() for face detection downstream.
     """
 
-    def __init__(self, sscma_url: str = "ws://192.168.106.85:8090/",
+    def __init__(self, sscma_url: str,
                  conf_thresh: float = 0.10) -> None:
+        if not sscma_url:
+            raise ValueError("sscma_url is required for RealVisionSource")
         from vision.video_stream import VideoStream
         self._stream = VideoStream(url=sscma_url)
         self._stream.start()
@@ -148,7 +150,7 @@ class RealVisionSource(VisionDataSource):
 
 def create_vision_source(
     use_mock: bool = True,
-    sscma_url: str = "ws://192.168.106.85:8090/",
+    sscma_url: str = "",
     **mock_kwargs,
 ) -> VisionDataSource:
     """
@@ -157,9 +159,11 @@ def create_vision_source(
     Args:
         use_mock:   If True, use MockVisionSource (no hardware needed).
                     If False, connect to SSCMA WebSocket for real detections.
-        sscma_url:  SSCMA WebSocket URL (only used when use_mock=False).
+        sscma_url:  SSCMA WebSocket URL (required when use_mock=False).
         mock_kwargs: Passed to MockDataGenerator.
     """
     if use_mock:
         return MockVisionSource(**mock_kwargs)
+    if not sscma_url:
+        raise ValueError("sscma_url is required when use_mock=False")
     return RealVisionSource(sscma_url=sscma_url)

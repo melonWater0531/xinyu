@@ -36,13 +36,13 @@ class BBox:
 
 @dataclass(frozen=True)
 class Event:
-    """Minimal event envelope: all perception/control inputs use this shape."""
+    """Event envelope for all vision/audio/ui/system inputs."""
 
     type: str
     name: str
-    ts: float
-    source: str
-    data: Dict[str, Any] = field(default_factory=dict)
+    payload: Dict[str, Any] = field(default_factory=dict)
+    timestamp: int = field(default_factory=lambda: int(time.time() * 1000))
+    source: str = ""
 
     @classmethod
     def make(
@@ -51,14 +51,50 @@ class Event:
         name: str,
         source: str,
         data: Optional[Dict[str, Any]] = None,
+        payload: Optional[Dict[str, Any]] = None,
         ts: Optional[float] = None,
+        timestamp: Optional[int] = None,
     ) -> "Event":
+        event_type = str(type)
+        if event_type not in {"vision", "audio", "ui", "system"}:
+            raise ValueError(f"unsupported event type: {event_type!r}")
+        if timestamp is None:
+            timestamp = int((time.time() if ts is None else float(ts)) * 1000)
         return cls(
-            type=str(type),
+            type=event_type,
             name=str(name),
-            ts=time.monotonic() if ts is None else float(ts),
+            payload=dict(payload if payload is not None else (data or {})),
+            timestamp=int(timestamp),
             source=str(source),
-            data=dict(data or {}),
+        )
+
+    @property
+    def data(self) -> Dict[str, Any]:
+        """Compatibility alias while callers migrate to payload."""
+        return self.payload
+
+    @property
+    def ts(self) -> float:
+        """Compatibility alias as seconds for stale-data comparisons."""
+        return self.timestamp / 1000.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "type": self.type,
+            "name": self.name,
+            "payload": dict(self.payload),
+            "timestamp": self.timestamp,
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Dict[str, Any]) -> "Event":
+        return cls.make(
+            raw.get("type", ""),
+            raw.get("name", ""),
+            raw.get("source", ""),
+            payload=raw.get("payload", raw.get("data", {})),
+            timestamp=raw.get("timestamp"),
         )
 
 

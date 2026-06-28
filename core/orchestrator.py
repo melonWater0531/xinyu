@@ -72,12 +72,14 @@ class Orchestrator:
     def state(self) -> SystemState:
         return self.fsm.state
 
-    def handle(self, event: Event) -> Optional[ControlCommand]:
+    def handle_event(self, event: Event) -> Optional[ControlCommand]:
         self._ingest(event)
         state = self.fsm.transition(event)
 
-        if event.type == "control":
-            return self._control_command(event)
+        if event.type == "ui":
+            return self._ui_command(event)
+        if event.type == "system":
+            return self._system_command(event)
         if state == SystemState.AUDIO_SEARCH:
             return self._audio_command(event)
         if state == SystemState.VISION_TRACK:
@@ -87,6 +89,10 @@ class Orchestrator:
         if state == SystemState.LOST and event.name == "timeout":
             return ControlCommand.make("orchestrator", yaw=self.center_yaw, pitch=self.center_pitch, reason="lost_timeout")
         return None
+
+    def handle(self, event: Event) -> Optional[ControlCommand]:
+        """Compatibility alias: all callers should move to handle_event."""
+        return self.handle_event(event)
 
     def handle_vision(self, bboxes: Sequence[BBox], *, source: str = "vision") -> Optional[ControlCommand]:
         self._frame_count += 1
@@ -107,18 +113,18 @@ class Orchestrator:
             if has_face:
                 # Stage 1: face visible — normal proportional tracking
                 self._reset_tilt_search()
-                return self.handle(event)
+                return self.handle_event(event)
             else:
                 # Stage 2: person visible but no face — tilt to search
                 # Still update FSM (stays VISION_TRACK) but override motion command
-                base_cmd = self.handle(event)
+                base_cmd = self.handle_event(event)
                 if self.fsm.state in (SystemState.AUDIO_SEARCH, SystemState.FUSED_TRACK):
                     return base_cmd  # audio is driving, let fusion handle
                 return self._tilt_search(primary.confidence)
         else:
             self._vision_lost_frames += 1
             event = Event.make("vision", "target_lost", source, {"conf": 0.0})
-            base_cmd = self.handle(event)
+            base_cmd = self.handle_event(event)
             # Stage 3: no person — pan sweep (unless audio is driving)
             if self.fsm.state in (SystemState.AUDIO_SEARCH, SystemState.FUSED_TRACK):
                 return base_cmd
@@ -134,32 +140,35 @@ class Orchestrator:
 
     def _ingest(self, event: Event) -> None:
         if event.type == "audio":
-            if "doa_deg" in event.data:
-                self.target.audio_doa_deg = float(event.data["doa_deg"])
-            self.target.audio_speech = bool(event.data.get("speech", event.name == "speech_detected"))
+            if "doa_deg" in event.payload:
+                self.target.audio_doa_deg = float(event.payload["doa_deg"])
+            self.target.audio_speech = bool(event.payload.get("speech", event.name == "speech_detected"))
             self.target.audio_ts = event.ts
         elif event.type == "vision":
             if event.name == "target_lost":
                 self.target.vision_conf = 0.0
                 return
-            self.target.vision_cx = self._clamp(float(event.data.get("cx", 0.5)), 0.0, 1.0)
-            self.target.vision_cy = self._clamp(float(event.data.get("cy", 0.5)), 0.0, 1.0)
-            self.target.vision_conf = float(event.data.get("conf", 0.0))
+            self.target.vision_cx = self._clamp(float(event.payload.get("cx", 0.5)), 0.0, 1.0)
+            self.target.vision_cy = self._clamp(float(event.payload.get("cy", 0.5)), 0.0, 1.0)
+            self.target.vision_conf = float(event.payload.get("conf", 0.0))
             self.target.vision_ts = event.ts
 
-    def _control_command(self, event: Event) -> Optional[ControlCommand]:
-        if event.name == "emergency_stop":
-            return ControlCommand.make("orchestrator", stop=True, reason="emergency_stop")
-        if event.name == "manual_yaw":
-            return ControlCommand.make("orchestrator", yaw=float(event.data["yaw"]), reason="manual_yaw")
-        if event.name == "manual_pitch":
-            return ControlCommand.make("orchestrator", pitch=float(event.data["pitch"]), reason="manual_pitch")
-        if event.name == "manual_speed":
-            return ControlCommand.make("orchestrator", speed=int(event.data["speed"]), reason="manual_speed")
-        if event.name == "standby":
+    def _ui_command(self, event: Event) -> Optional[ControlCommand]:
+        if event.name == "dpad_move":
+            pan = self._clamp(float(event.payload.get("pan", 0.0)), -2.5, 2.5)
+            tilt = self._clamp(float(event.payload.get("tilt", 0.0)), -2.5, 2.5)
+            return ControlCommand.make("orchestrator", mode="delta", yaw=pan, pitch=tilt, reason="ui_dpad_move")
+        if event.name == "gimbal_home":
             return ControlCommand.make("orchestrator", yaw=self.center_yaw, pitch=self.center_pitch, reason="standby")
-        if event.name == "sleep":
+        if event.name == "gimbal_sleep":
             return ControlCommand.make("orchestrator", yaw=self.center_yaw, pitch=180.0, reason="sleep")
+        if event.name == "gimbal_stop":
+            return ControlCommand.make("orchestrator", stop=True, reason="ui_stop")
+        return None
+
+    def _system_command(self, event: Event) -> Optional[ControlCommand]:
+        if event.name in {"shutdown", "emergency_stop"}:
+            return ControlCommand.make("orchestrator", stop=True, reason=event.name)
         return None
 
     def _audio_command(self, event: Event) -> Optional[ControlCommand]:
@@ -181,7 +190,7 @@ class Orchestrator:
         return ControlCommand.make("orchestrator", yaw=yaw, pitch=pitch, reason=reason)
 
     def _fused_command(self) -> Optional[ControlCommand]:
-        now = time.monotonic()
+        now = time.time()
         if self._vision_fresh(now):
             cmd = self._vision_command("fusion_loop")
             if cmd and self._audio_fresh(now) and self.target.audio_doa_deg is not None:
@@ -275,3 +284,8 @@ class Orchestrator:
     @staticmethod
     def _clamp(value: float, low: float, high: float) -> float:
         return max(low, min(high, float(value)))
+
+
+def make_system_command(name: str, source: str = "system") -> Optional[ControlCommand]:
+    """Create system commands through the orchestrator module."""
+    return Orchestrator().handle_event(Event.make("system", name, source))

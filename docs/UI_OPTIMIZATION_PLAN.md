@@ -1,8 +1,8 @@
 # UI 优化计划
 
-> 适用项目：recamera_multimodal  
-> 适用页面：`/home`、`/v2`、`/device.html`  
-> 更新时间：2026-06-19  
+> 适用项目：recamera_multimodal
+> 适用页面：`/home`、`/v2`、`/device.html`
+> 更新时间：2026-06-19
 > 当前阶段：规划稿，尚未进入 UI 代码改造
 
 ## 1. UI Brief / 设计上下文
@@ -124,7 +124,7 @@
   - ReSpeaker/DOA 通过 TCP 或本地服务输入。
   - 当前不挂载 ReSpeaker 到 WSL。
   - 多人流程不默认保存音频。
-- 统一设备 IP 展示为 `192.168.106.85`。
+- 统一设备 IP 展示为 `RECAMERA_DEVICE_IP`。
 - 在 `/home` 展示产品化运行状态，在 `/v2` 展示工程化运行状态：
   - `/home`：设备在线、监测中、暂停、数据过期、需要连接、权限不足、建议可生成
   - `/v2`：设备在线 / 离线、WebSocket 已连接 / 降级 HTTP 轮询、dry-run / real-control、DOA 新鲜 / DOA 过期 / 无 DOA 输入
@@ -457,3 +457,16 @@ Settings / about：
 - `/v2` 应成为唯一开发调试控制台，避免 `/device.html` 与 `/v2` 长期并列演化。
 - `/home` 中尚未真实接入的能力必须诚实标注模拟/待接入状态，避免把原型假装成可用功能。
 - 多人模式的所有文案要围绕 DOA 与声源跟随，不再延续旧采集资料或录音资料的表达。
+
+---
+
+## 2026-06 Completion Notes
+
+The control dashboard redesign has been implemented with a left sidebar and focused feature pages:
+
+- Single scene: face tracking and analysis in one page.
+- Multi scene: sound-source yaw follow and meeting recording.
+- Sound-source / LED indicators are integrated into multi pages instead of a standalone page.
+- Every page has `启动功能`; switching pages stops old control and never auto-starts the new page.
+- The top device address input reconnects FastAPI video/perception only; real gimbal control remains owned by `main_phase3.py`.
+- Buttons continue to call FastAPI APIs only, preserving the EventBus and single-control-plane architecture.

@@ -138,7 +138,7 @@ FastAPI 内 _observer = Orchestrator(observe_only)
   RecameraClient.apply_command(command)    ← 唯一硬件出口
         │
         ├─ Socket.IO: sio.emit("widget-change", ...) → reCamera Node-RED :1880
-        └─ HTTP:  POST /gimbal/control | /api/gimbal | /motor/control → 192.168.106.85
+        └─ HTTP:  POST /gimbal/control | /api/gimbal | /motor/control → RECAMERA_DEVICE_IP
 
 
 FastAPI（recamera_fastapi.py）— 纯显示层，零控制权
@@ -375,12 +375,12 @@ Debounce:
 
 | 地址/端口 | 服务 | 方向 |
 |---|---|---|
-| `192.168.106.85:1880` | Node-RED Dashboard Socket.IO | `main_phase3.py` → 云台（RecameraClient） |
-| `192.168.106.85:8090` | SSCMA WebSocket | reCamera → `recamera_fastapi.py`（视频接收） |
+| `RECAMERA_DEVICE_IP:1880` | Node-RED Dashboard Socket.IO | `main_phase3.py` → 云台（RecameraClient） |
+| `RECAMERA_DEVICE_IP:8090` | SSCMA WebSocket | reCamera → `recamera_fastapi.py`（视频接收） |
 | `0.0.0.0:9999` | Network DOA TCP | ReSpeaker host → `recamera_fastapi.py` |
 | `0.0.0.0:8001` | FastAPI HTTP/WS | 浏览器/客户端 ↔ `recamera_fastapi.py` |
 | `192.168.42.1:22` | USB SSH | 初始化 |
-| `192.168.106.85:22` | Wi-Fi SSH | 维护 |
+| `RECAMERA_DEVICE_IP:22` | Wi-Fi SSH | 维护 |
 
 **重要**：FastAPI 不直接连接 Node-RED/1880。仅 `main_phase3.py` 通过 `RecameraClient` 连接云台。
 
@@ -393,3 +393,32 @@ Debounce:
 | `core/control_filter.py` | **ORPHAN** | 含 EMA + Kp 比例控制；未被任何生产文件 import；可在后续清理中删除 |
 | `tools/run_orchestrator_mvp.py` | **DEV TOOL** | 含 `MockGimbal.apply_command()`；仅用于开发测试，不在生产链路 |
 | `tools/build_function_arch_docx.py` | **DEV TOOL** | 文档生成工具；含已过时模块引用（`gimbal_mode_state.py`、`state_machine.py`），不影响运行 |
+
+---
+
+## 10. 设备地址配置与 Dashboard 收束
+
+reCamera 设备地址不再写死。运行时统一通过 `RECAMERA_DEVICE_IP`、FastAPI 的 `--device-ip`、`main_phase3.py` 的 `--gimbal-ip`，以及 dashboard 顶部“设备地址”输入框配置。
+
+```bash
+export RECAMERA_DEVICE_IP=<RECAMERA_IP>
+python3 recamera_fastapi.py --device-ip "$RECAMERA_DEVICE_IP"
+python3 main_phase3.py --enable-control --gimbal-ip "$RECAMERA_DEVICE_IP" --manual-control
+```
+
+Dashboard 输入框只负责重连 FastAPI 的视频/感知来源（`SSCMAVideoClient` / `/video_feed`），不创建硬件控制客户端，不修改 FSM，不绕过 EventBus。真实云台控制地址仍由 `main_phase3.py` 启动参数或环境变量传入。
+
+最终控制链路唯一：
+
+```text
+Dashboard UI -> FastAPI UI Event -> EventBus -> main_phase3.py -> FSM -> Orchestrator -> SafetyLayer -> RecameraClient -> gimbal hardware
+```
+
+当前 dashboard 页面结构：
+
+- 单人场景：人脸追踪与分析（找人脸、云台对准、情绪/人脸/专注/眼部指标）
+- 多人场景：声源 yaw 跟随
+- 多人场景：会议录音（Respeaker 调度，集成声源/LED 示意）
+- 设备调试：手动云台
+
+每个页面都有“启动功能”按钮。切换页面时前一页面会发送 stop/deactivate；新页面不会自动启动，必须点击“启动功能”后才开始发送对应请求。

@@ -1,16 +1,15 @@
-"""Pure ControlCommand constraint filter."""
+"""Hard gate for ControlCommand execution."""
 
 from __future__ import annotations
 
 import time
-from dataclasses import replace
 from typing import Optional
 
 from core.event import ControlCommand
 
 
 class SafetyLayer:
-    """Constrains generated ControlCommand values without deciding intent."""
+    """Allows or blocks ControlCommand values without modifying intent."""
 
     def __init__(
         self,
@@ -27,8 +26,6 @@ class SafetyLayer:
         self._max_accel = float(max_accel_ratio)
         self._rate_limit_s = 1.0 / max(0.5, float(rate_limit_hz))
         self._last_cmd_time = 0.0
-        self._last_yaw: Optional[float] = None
-        self._last_pitch: Optional[float] = None
         self._blocked_count = 0
         self._passed_count = 0
         self._last_block_reason = ""
@@ -41,36 +38,38 @@ class SafetyLayer:
             return self._block("safe_mode")
         if not self._enable_real_control:
             return self._block("real_control_disabled")
+        if command.stop:
+            self._last_cmd_time = time.monotonic()
+            self._last_output = command
+            self._last_block_reason = ""
+            self._passed_count += 1
+            return command
 
         now = time.monotonic()
         if now - self._last_cmd_time < self._rate_limit_s:
             return self._block("rate_limit")
 
-        yaw = self._constrain_axis(command.yaw, self._last_yaw)
-        pitch = self._constrain_axis(command.pitch, self._last_pitch)
-        constrained = replace(command, yaw=yaw, pitch=pitch)
+        if command.mode == "delta":
+            if command.yaw is not None and abs(command.yaw) > self._max_step:
+                return self._block("yaw_delta_limit")
+            if command.pitch is not None and abs(command.pitch) > self._max_step:
+                return self._block("pitch_delta_limit")
+        else:
+            if command.yaw is not None and not (1.0 <= command.yaw <= 345.0):
+                return self._block("yaw_range")
+            if command.pitch is not None and not (30.0 <= command.pitch <= 180.0):
+                return self._block("pitch_range")
 
         self._last_cmd_time = now
-        self._last_yaw = yaw if yaw is not None else self._last_yaw
-        self._last_pitch = pitch if pitch is not None else self._last_pitch
-        self._last_output = constrained
+        self._last_output = command
         self._last_block_reason = ""
         self._passed_count += 1
-        return constrained
+        return command
 
     def passes(self, *args, **kwargs):
         command = args[0] if args and isinstance(args[0], ControlCommand) else kwargs.get("command")
         constrained = self.filter(command)
         return constrained is not None, self._last_block_reason or "ok"
-
-    def _constrain_axis(self, value: Optional[float], previous: Optional[float]) -> Optional[float]:
-        if value is None or previous is None:
-            return value
-        delta = value - previous
-        max_delta = max(self._max_step * self._max_accel, 0.0)
-        if abs(delta) > max_delta:
-            return previous + (max_delta if delta > 0 else -max_delta)
-        return value
 
     def _block(self, reason: str) -> None:
         self._blocked_count += 1

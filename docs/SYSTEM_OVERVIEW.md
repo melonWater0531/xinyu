@@ -301,5 +301,15 @@
 
 ---
 
-> 文档生成时间：2026-06-26  
+> 文档生成时间：2026-06-26
 > 对应代码版本：v4.3（已实现：情绪监测 / 专注记录 / DOA 显示 / 周趋势 / LLM 对话 / 会议记录写入）
+
+---
+
+## 2026-06 Runtime Update
+
+Device address configuration is shared through `RECAMERA_DEVICE_IP` plus CLI inputs (`--device-ip` for FastAPI video/perception, `--gimbal-ip` for `main_phase3.py` real control). The control dashboard can update the FastAPI video/perception address at runtime, but it never opens a hardware control client.
+
+The system remains single-control-plane: FastAPI is UI Event emitter + telemetry viewer; EventBus carries UI events; `main_phase3.py` owns FSM, orchestration, safety gating, and all `RecameraClient.apply_command()` calls.
+
+Dashboard feature pages are mutually exclusive and manually activated. Page switches stop the previous feature; each new page waits for `启动功能` before sending feature requests.

@@ -3,445 +3,686 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>reCamera Control Dashboard — 实时控制与可观测性</title>
+<title>reCamera Control Dashboard</title>
 <style>
-:root{--bg:#f6f1e8;--panel:#fffaf2;--ink:#2d2a26;--muted:#796f63;--line:#dfd2c2;--accent:#b8752e;--good:#247c55;--warn:#b36b12;--bad:#a33a32;--blue:#2d5f8f}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,"Noto Sans SC",system-ui,sans-serif}
-.app{min-height:100vh;display:grid;grid-template-columns:minmax(520px,1fr) 420px;gap:14px;padding:14px}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 28px rgba(60,42,20,.07)}
-.video-panel{position:relative;min-height:420px;overflow:hidden;display:flex;flex-direction:column}
-.topbar{min-height:46px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 14px;border-bottom:1px solid var(--line)}
-.title{font-size:15px;font-weight:700}.sub{font-size:12px;color:var(--muted);margin-top:2px}
-.video-wrap{position:relative;flex:1;background:#15120f;min-height:420px;display:flex;align-items:center;justify-content:center}
+:root{
+  --bg:#f5f7fb;
+  --panel:#ffffff;
+  --panel-soft:#f8fafc;
+  --ink:#172033;
+  --muted:#64748b;
+  --line:#d8e0ec;
+  --accent:#2563eb;
+  --accent-soft:#e8f0ff;
+  --good:#138a5b;
+  --warn:#b7791f;
+  --bad:#b42318;
+  --shadow:0 14px 34px rgba(26,39,68,.08);
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  min-height:100vh;
+  background:var(--bg);
+  color:var(--ink);
+  font-family:Inter,"Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+}
+button,input,select{font:inherit}
+.shell{min-height:100vh;display:grid;grid-template-columns:248px minmax(0,1fr)}
+.nav{
+  position:sticky;top:0;height:100vh;overflow:auto;
+  background:#101828;color:#eef4ff;padding:18px 14px;border-right:1px solid rgba(255,255,255,.08)
+}
+.brand{padding:4px 8px 18px;border-bottom:1px solid rgba(255,255,255,.12);margin-bottom:16px}
+.brand-title{font-size:17px;font-weight:800;letter-spacing:.2px}
+.brand-sub{font-size:12px;color:#a8b4c8;margin-top:6px;line-height:1.45}
+.nav-group{margin:18px 0 8px;color:#93a4bd;font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+.nav-btn{
+  width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
+  border:0;border-radius:8px;background:transparent;color:#dbe7fb;
+  padding:11px 10px;margin:4px 0;cursor:pointer;text-align:left
+}
+.nav-btn:hover{background:rgba(255,255,255,.08)}
+.nav-btn.active{background:#eef4ff;color:#10203b;font-weight:800}
+.nav-chip{font-size:11px;color:inherit;opacity:.72}
+.main{min-width:0;padding:18px 20px 26px}
+.topbar{
+  display:flex;align-items:flex-start;justify-content:space-between;gap:14px;
+  margin-bottom:14px
+}
+.title{font-size:22px;font-weight:850;line-height:1.2}
+.sub{margin-top:6px;color:var(--muted);font-size:13px;line-height:1.5}
+.status-row{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+.device-config{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.device-config input{min-height:34px;border:1px solid var(--line);border-radius:8px;padding:6px 10px;min-width:220px;background:#fff;color:var(--ink)}
+.pill{
+  display:inline-flex;align-items:center;gap:6px;min-height:28px;
+  border:1px solid var(--line);border-radius:999px;background:var(--panel);
+  padding:5px 10px;font-size:12px;color:var(--muted);white-space:nowrap
+}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--bad)}
+.dot.on{background:var(--good)}.dot.warn{background:var(--warn)}
+.page{display:none}.page.active{display:block}
+.grid{display:grid;gap:14px}
+.layout-2{grid-template-columns:minmax(360px,1.25fr) minmax(320px,.75fr)}
+.layout-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.card{
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  box-shadow:var(--shadow);padding:14px;min-width:0
+}
+.card h2{margin:0 0 12px;font-size:14px;color:#263854}
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.card-head h2{margin:0}
+.video-card{padding:0;overflow:hidden}
+.video-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line)}
+.video-wrap{position:relative;min-height:430px;background:#0e1522;display:flex;align-items:center;justify-content:center}
 #videoStream{width:100%;height:100%;object-fit:contain;display:block}
 #overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-.side{display:flex;flex-direction:column;gap:12px;min-width:0}
-.card{padding:14px}.card h2{margin:0 0 10px;font-size:13px;letter-spacing:.6px;text-transform:uppercase;color:var(--accent);display:flex;align-items:center;justify-content:space-between}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
-.metric{border:1px solid var(--line);border-radius:8px;padding:10px;background:#fffdf8;min-height:64px}
-.label{font-size:11px;color:var(--muted);margin-bottom:6px}.value{font-size:22px;font-weight:750}.small{font-size:12px;color:var(--muted);line-height:1.5}
-.status{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid rgba(223,210,194,.7);padding:7px 0;font-size:13px}.status:last-child{border-bottom:none}
-.pill{display:inline-flex;align-items:center;gap:5px;border-radius:999px;border:1px solid var(--line);padding:4px 8px;font-size:11px;background:#fff;white-space:nowrap}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--bad)}.dot.on{background:var(--good)}.dot.warn{background:var(--warn)}
-.log{height:150px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fffdf8;padding:8px;font-size:12px;color:var(--muted);line-height:1.55}
+.metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.metric{border:1px solid var(--line);border-radius:8px;background:var(--panel-soft);padding:10px;min-height:72px}
+.label{font-size:12px;color:var(--muted);margin-bottom:6px;line-height:1.35}
+.value{font-size:23px;font-weight:850;line-height:1.15}
+.value.small{font-size:16px}
+.kv{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid #eef2f7;padding:9px 0;font-size:13px}
+.kv:first-child{border-top:0;padding-top:0}
 .mono{font-family:"SFMono-Regular",Consolas,monospace}
-.notice{border-left:3px solid var(--accent);padding:8px 10px;background:#fff5e7;border-radius:6px;font-size:12px;color:var(--muted);line-height:1.55}
-.ro{font-size:10px;font-weight:700;letter-spacing:.4px;color:#5d3514;background:rgba(184,117,46,.15);border:1px solid var(--accent);border-radius:999px;padding:2px 8px}
-/* FSM diagram */
-.fsm{display:flex;flex-wrap:wrap;gap:6px}
-.fsm .node{flex:1 1 30%;text-align:center;border:1px solid var(--line);border-radius:8px;padding:8px 4px;font-size:12px;background:#fffdf8;color:var(--muted);transition:.18s ease}
-.fsm .node.active{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:700;box-shadow:0 3px 10px rgba(184,117,46,.3)}
-.auth{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px}
-.auth .a{text-align:center;border:1px solid var(--line);border-radius:8px;padding:6px 2px;font-size:11px;background:#fffdf8;color:var(--muted)}
-.auth .a.on{background:rgba(36,124,85,.14);border-color:var(--good);color:#185c3e;font-weight:700}
-.trace-row{padding:6px 0;border-bottom:1px solid rgba(223,210,194,.6)}
-.trace-row:last-child{border-bottom:none}
-.tg{color:var(--blue);font-weight:700}.tc{color:var(--accent)}
-@media(max-width:1040px){.app{grid-template-columns:1fr}.video-wrap{min-height:320px}.side{order:2}}
-.ctrl-btn{padding:8px 6px;font-size:13px;font-weight:600;border:1px solid var(--line);border-radius:8px;background:#fffdf8;color:var(--ink);cursor:pointer;transition:.15s ease;min-height:36px}
-.ctrl-btn:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
-.ctrl-btn:active{transform:scale(.96)}
-.ctrl-btn.active-mode{background:rgba(36,124,85,.14);border-color:var(--good);color:#185c3e}
-.ctrl-btn:disabled{opacity:.4;cursor:not-allowed;background:#f3efe6}
-.ctrl-btn:disabled:hover{background:#f3efe6;color:var(--ink);border-color:var(--line)}
-/* emotion probability bars */
-.prob-row{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:11px}
-.prob-label{width:48px;color:var(--muted);flex-shrink:0;text-align:right}
-.prob-track{flex:1;height:8px;background:rgba(223,210,194,.5);border-radius:4px;overflow:hidden}
-.prob-fill{height:100%;border-radius:4px;background:var(--accent);transition:width .25s ease}
+.controls{display:flex;flex-wrap:wrap;gap:8px}
+.btn{
+  min-height:38px;border:1px solid var(--line);border-radius:8px;background:#fff;
+  color:var(--ink);padding:8px 12px;cursor:pointer;font-weight:750
+}
+.btn:hover{border-color:var(--accent);background:var(--accent-soft);color:#123a82}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.danger{border-color:#f1b5ad;color:var(--bad)}
+.btn:disabled{opacity:.48;cursor:not-allowed;background:#eef2f7;color:#69778c;border-color:var(--line)}
+.dpad{display:grid;grid-template-columns:42px 42px 42px;grid-template-rows:42px 42px 42px;gap:7px}
+.dpad .btn{padding:0;min-height:42px}
+.param-row{display:grid;grid-template-columns:1fr 88px;gap:10px;align-items:center;border-top:1px solid #eef2f7;padding:10px 0}
+.param-row:first-child{border-top:0}
+.param-row input{width:100%;accent-color:var(--accent)}
+.log{
+  height:170px;overflow:auto;border:1px solid var(--line);border-radius:8px;
+  background:#0e1522;color:#d9e6ff;padding:10px;font-size:12px;line-height:1.55
+}
+.notice{border-left:3px solid var(--accent);background:var(--accent-soft);padding:10px 12px;border-radius:8px;color:#24436f;font-size:13px;line-height:1.55}
+.bars{display:grid;gap:6px}
+.prob-row{display:grid;grid-template-columns:58px minmax(0,1fr) 40px;gap:8px;align-items:center;font-size:12px}
+.prob-track{height:8px;border-radius:999px;background:#e3e8f1;overflow:hidden}
+.prob-fill{height:100%;background:var(--accent);border-radius:999px}
 .prob-fill.top{background:var(--good)}
-.prob-val{width:32px;text-align:right;color:var(--ink);font-weight:600;flex-shrink:0}
+.doa-card{display:grid;grid-template-columns:220px minmax(0,1fr);gap:14px;align-items:center}
+.doa-scene{
+  position:relative;width:220px;aspect-ratio:1;border-radius:50%;
+  border:1px solid var(--line);background:radial-gradient(circle at center,#fff 0 24%,#edf4ff 25% 26%,#f8fafc 27% 100%)
+}
+.doa-axis{position:absolute;background:#d9e2f0}
+.doa-axis.v{width:1px;height:100%;left:50%;top:0}.doa-axis.h{height:1px;width:100%;left:0;top:50%}
+.device{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:58px;height:58px;border-radius:50%;background:#172033;color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800}
+.sound-arrow{position:absolute;left:50%;top:50%;width:4px;height:88px;margin-left:-2px;transform-origin:50% 0;background:var(--accent);border-radius:999px}
+.sound-dot{position:absolute;left:50%;top:16px;width:18px;height:18px;margin-left:-9px;border-radius:50%;background:var(--accent)}
+.led{position:absolute;width:18px;height:18px;border-radius:50%;background:#d7dee9;border:1px solid #c3cedd}
+.led.on{background:#20c997;box-shadow:0 0 0 6px rgba(32,201,151,.18),0 0 18px rgba(32,201,151,.75)}
+.led.n{left:50%;top:7px;transform:translateX(-50%)}.led.e{right:7px;top:50%;transform:translateY(-50%)}.led.s{left:50%;bottom:7px;transform:translateX(-50%)}.led.w{left:7px;top:50%;transform:translateY(-50%)}
+.trace-row{padding:6px 0;border-bottom:1px solid rgba(255,255,255,.08)}
+.trace-row:last-child{border-bottom:0}
+@media(max-width:1120px){
+  .shell{grid-template-columns:1fr}
+  .nav{position:relative;height:auto}
+  .layout-2,.layout-3{grid-template-columns:1fr}
+  .status-row{justify-content:flex-start}
+}
+@media(max-width:680px){
+  .main{padding:12px}
+  .metric-grid{grid-template-columns:1fr}
+  .doa-card{grid-template-columns:1fr}
+  .video-wrap{min-height:300px}
+}
 </style>
 </head>
 <body>
-<main class="app">
-  <section class="panel video-panel">
-    <div class="topbar">
-      <div><div class="title">reCamera 控制台 · 实时视频 + 决策可观测</div><div class="sub">MJPEG /video_feed · WebSocket /ws · 观测来自 core.orchestrator 镜像</div></div>
-      <span class="pill"><span class="dot" id="wsDot"></span><span id="wsText">连接中</span></span>
+<div class="shell">
+  <aside class="nav">
+    <div class="brand">
+      <div class="brand-title">reCamera Control</div>
+      <div class="brand-sub">单控制平面：UI 只发送请求，硬件控制由 main_phase3 执行。</div>
     </div>
-    <div class="video-wrap" id="videoWrap">
-      <img id="videoStream" alt="reCamera video stream">
-      <canvas id="overlay"></canvas>
-    </div>
-  </section>
-
-  <aside class="side">
-    <section class="panel card">
-      <h2>FSM 状态机 <span class="ro" id="observeBadge">OBSERVE</span></h2>
-      <div class="fsm" id="fsm">
-        <div class="node" data-s="IDLE">IDLE</div>
-        <div class="node" data-s="AUDIO_SEARCH">AUDIO_SEARCH</div>
-        <div class="node" data-s="VISION_TRACK">VISION_TRACK</div>
-        <div class="node" data-s="FUSED_TRACK">FUSED_TRACK</div>
-        <div class="node" data-s="LOST">LOST</div>
-      </div>
-      <div class="label" style="margin-top:10px">控制权 (Control authority)</div>
-      <div class="auth" id="auth">
-        <div class="a" data-a="audio">AUDIO</div>
-        <div class="a" data-a="vision">VISION</div>
-        <div class="a" data-a="fusion">FUSION</div>
-        <div class="a" data-a="idle">IDLE</div>
-      </div>
-      <div class="notice" style="margin-top:10px">本页只读：实际云台控制由 <span class="mono">core.orchestrator → RecameraClient</span> 在控制进程执行。此处 FSM/命令为观测镜像，不下发任何指令。</div>
-    </section>
-
-    <section class="panel card" id="ctrlCard">
-      <h2>功能控制 <span class="ro" id="dryRunBadge" style="display:none">DRY-RUN</span></h2>
-
-      <div class="label" style="margin-bottom:6px">追踪模式</div>
-      <div class="grid3" style="margin-bottom:8px">
-        <button class="ctrl-btn" id="btnSingle" onclick="setMode('single')">单人追踪</button>
-        <button class="ctrl-btn" id="btnMulti" onclick="setMode('multi')">多人 DOA</button>
-        <button class="ctrl-btn" id="btnStop" onclick="setMode('stop')">停止</button>
-      </div>
-      <div class="status" style="margin-bottom:12px"><span>当前模式</span><span id="modeLabel" class="pill">--</span></div>
-
-      <div class="label" style="margin-bottom:6px">麦克风录音</div>
-      <div class="grid" style="margin-bottom:8px">
-        <button class="ctrl-btn" id="btnRecStart" onclick="recCtrl('start')">开始录音</button>
-        <button class="ctrl-btn" id="btnRecStop" onclick="recCtrl('stop')">停止录音</button>
-      </div>
-      <div class="status" style="margin-bottom:12px"><span>录音状态</span><span id="recLabel" class="pill">--</span></div>
-
-      <div class="label" style="margin-bottom:6px">云台控制</div>
-      <div id="gimbalDryBanner" class="notice" style="display:none;margin-bottom:8px">DRY-RUN 模式 · 云台指令不会发送至硬件。需以 <span class="mono">--no-dry-run</span> 启动服务。</div>
-      <div id="gimbalTrackBanner" class="notice" style="display:none;margin-bottom:8px">追踪进行中 · 停止追踪后可手动控制云台。</div>
-      <div id="gimbalDpad" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;max-width:180px;margin-bottom:10px">
-        <div></div>
-        <button class="ctrl-btn gpad-btn" onclick="gMove(0,3)" title="上仰">↑</button>
-        <div></div>
-        <button class="ctrl-btn gpad-btn" onclick="gMove(-5,0)" title="左转">←</button>
-        <button class="ctrl-btn gpad-btn" onclick="gHome()" title="回中">◎</button>
-        <button class="ctrl-btn gpad-btn" onclick="gMove(5,0)" title="右转">→</button>
-        <div></div>
-        <button class="ctrl-btn gpad-btn" onclick="gMove(0,-3)" title="俯仰">↓</button>
-        <div></div>
-      </div>
-      <div class="status"><span>云台响应</span><span id="gimbalCmdResult" class="small">--</span></div>
-    </section>
-
-    <section class="panel card">
-      <h2>决策链 · event → FSM → command</h2>
-      <div class="status"><span>最近事件</span><span id="lastEvent" class="mono">--</span></div>
-      <div class="status"><span>当前命令</span><span id="lastCmd" class="mono">--</span></div>
-      <div class="status"><span>安全门</span><span id="safety">--</span></div>
-      <div class="log mono" id="trace"></div>
-    </section>
-
-    <section class="panel card">
-      <h2>云台遥测 <span class="small" style="text-transform:none">hardware readback</span></h2>
-      <div class="grid3">
-        <div class="metric"><div class="label">Yaw</div><div class="value" id="yawVal">--</div></div>
-        <div class="metric"><div class="label">Pitch</div><div class="value" id="pitchVal">--</div></div>
-        <div class="metric"><div class="label">Speed</div><div class="value" id="speedVal">--</div></div>
-      </div>
-      <div class="status"><span>云台连接</span><span id="gimbalConn">--</span></div>
-      <div class="status"><span>硬件模式</span><span id="gimbalMode">--</span></div>
-    </section>
-
-    <section class="panel card">
-      <h2>感知通道 · audio / vision / fusion</h2>
-      <div class="grid">
-        <div class="metric"><div class="label">DOA 方向</div><div class="value" id="doaVal">--</div></div>
-        <div class="metric"><div class="label">人体/人脸</div><div class="value" id="poseCount">--</div></div>
-      </div>
-      <div class="status"><span>ReSpeaker DOA</span><span id="doaReady">--</span></div>
-      <div class="status"><span>检测人声</span><span id="speechVal">--</span></div>
-      <div class="status"><span>视觉丢帧</span><span id="lostFrames">--</span></div>
-    </section>
-
-    <section class="panel card">
-      <h2>情绪与人脸分析</h2>
-      <div class="grid3" style="margin-bottom:10px">
-        <div class="metric"><div class="label">情绪类别</div><div class="value" id="emoVal" style="font-size:16px">--</div></div>
-        <div class="metric"><div class="label">识别置信度</div><div class="value" id="emoConf">--</div></div>
-        <div class="metric"><div class="label">人脸置信度</div><div class="value" id="faceConf">--</div></div>
-      </div>
-      <div class="status"><span>人脸有效</span><span id="faceValid">--</span></div>
-      <div class="status"><span>MediaPipe</span><span id="mpFaceState">--</span></div>
-      <div class="label" style="margin:10px 0 6px">8 类情绪概率分布</div>
-      <div id="emoProbBars"></div>
-    </section>
-
-    <section class="panel card">
-      <h2>专注度与眼部 / 疲劳指标</h2>
-      <div class="grid3" style="margin-bottom:10px">
-        <div class="metric"><div class="label">专注评分</div><div class="value" id="attnVal">--</div></div>
-        <div class="metric"><div class="label">EAR 眼开合度</div><div class="value" id="earVal">--</div></div>
-        <div class="metric"><div class="label">眼睛状态</div><div class="value" id="eyeOpenVal" style="font-size:16px">--</div></div>
-      </div>
-      <div class="grid" style="margin-bottom:10px">
-        <div class="metric"><div class="label">PERCLOS 疲劳度</div><div class="value" id="perclosVal">--</div></div>
-        <div class="metric"><div class="label">眨眼率 次/分</div><div class="value" id="blinkRateVal">--</div></div>
-      </div>
-      <div class="status"><span>眨眼总次数</span><span id="blinkCountVal">--</span></div>
-      <div class="status"><span>眼部专注分</span><span id="eyeFocusVal">--</span></div>
-      <div class="status"><span>专注状态描述</span><span id="attnState">--</span></div>
-    </section>
-
-    <section class="panel card">
-      <h2>系统健康</h2>
-      <div class="grid3">
-        <div class="metric"><div class="label">视频 FPS</div><div class="value" id="fpsVal">--</div></div>
-        <div class="metric"><div class="label">DOA 延迟</div><div class="value" id="doaAge">--</div></div>
-        <div class="metric"><div class="label">云台 RTT</div><div class="value" id="rttVal">--</div></div>
-      </div>
-      <div class="status"><span>WebSocket 客户端</span><span id="wsClients">--</span></div>
-      <div class="status"><span>对话录音</span><span id="convState">--</span></div>
-    </section>
-
-    <section class="panel card">
-      <h2>事件日志</h2>
-      <div class="log mono" id="log"></div>
-    </section>
+    <div class="nav-group">单人场景</div>
+    <button class="nav-btn active" data-page="single_face_analysis" onclick="activatePage('single_face_analysis')">
+      <span>人脸追踪与分析</span><span class="nav-chip">Face</span>
+    </button>
+    <div class="nav-group">多人场景</div>
+    <button class="nav-btn" data-page="multi_sound_yaw" onclick="activatePage('multi_sound_yaw')">
+      <span>声源 yaw 跟随</span><span class="nav-chip">DOA</span>
+    </button>
+    <button class="nav-btn" data-page="meeting_recording" onclick="activatePage('meeting_recording')">
+      <span>会议录音</span><span class="nav-chip">Respeaker</span>
+    </button>
+    <div class="nav-group">设备调试</div>
+    <button class="nav-btn" data-page="manual_gimbal_debug" onclick="activatePage('manual_gimbal_debug')">
+      <span>手动云台</span><span class="nav-chip">EventBus</span>
+    </button>
   </aside>
-</main>
+
+  <main class="main">
+    <div class="topbar">
+      <div>
+        <div class="title" id="pageTitle">人脸追踪与分析</div>
+        <div class="sub" id="pageSub">切到页面后只展示信息，点击“启动功能”才会找人脸、云台对准，并开始情绪、人脸、专注与眼部指标分析。</div>
+      </div>
+      <div class="status-row">
+        <span class="pill"><span class="dot" id="wsDot"></span><span id="wsText">连接中</span></span>
+        <span class="pill">控制权 <span id="authorityText">--</span></span>
+        <span class="pill">FSM <span id="fsmText">--</span></span>
+        <span class="pill">EventBus <span id="eventBusText">--</span></span>
+      </div>
+      <div class="device-config">
+        <label class="pill" for="deviceIpInput">设备地址</label>
+        <input id="deviceIpInput" autocomplete="off" placeholder="例如 192.168.x.x">
+        <button class="btn" onclick="saveDeviceConfig()">保存并重连视频</button>
+        <span class="pill" id="deviceConfigText">未配置</span>
+      </div>
+    </div>
+
+    <section class="page active" id="page-single_face_analysis">
+      <div class="grid layout-2">
+        <section class="card video-card">
+          <div class="video-head">
+            <strong>摄像头信息源</strong>
+            <span class="pill" id="singleTargetText">等待目标</span>
+          </div>
+          <div class="video-wrap" id="videoWrap">
+            <img id="videoStream" alt="reCamera video stream">
+            <canvas id="overlay"></canvas>
+          </div>
+        </section>
+        <div class="grid">
+          <section class="card">
+            <div class="card-head"><h2>单人控制</h2><span class="pill" id="singleModeText">未激活</span></div>
+            <div class="controls">
+              <button class="btn primary" onclick="startSinglePage()">启动功能</button>
+              <button class="btn requires-feature" data-page-lock="single_face_analysis" onclick="stopSinglePage()">暂停追踪</button>
+              <button class="btn requires-feature" data-page-lock="single_face_analysis" onclick="restartSinglePage()">重新找人脸</button>
+              <button class="btn requires-feature" data-page-lock="single_face_analysis" onclick="gHome()">Home</button>
+            </div>
+            <div class="notice" style="margin-top:12px">切到该页不会自动控制设备。点击“启动功能”后会先停止多人控制，再启用单人追踪和对准分析。</div>
+          </section>
+          <section class="card">
+            <h2>云台状态</h2>
+            <div class="metric-grid">
+              <div class="metric"><div class="label">Yaw</div><div class="value" id="yawVal">--</div></div>
+              <div class="metric"><div class="label">Pitch</div><div class="value" id="pitchVal">--</div></div>
+              <div class="metric"><div class="label">Speed</div><div class="value" id="speedVal">--</div></div>
+            </div>
+          </section>
+          <section class="card">
+            <h2>追踪参数</h2>
+            <div class="param-row"><span>目标置信度阈值</span><input type="range" min="0.2" max="0.8" step="0.01" value="0.42" oninput="setParamLabel('singleConfLabel',this.value)"><span id="singleConfLabel">0.42</span></div>
+            <div class="param-row"><span>对准容忍度</span><input type="range" min="2" max="12" step="1" value="6" oninput="setParamLabel('alignTolLabel',this.value+'°')"><span id="alignTolLabel">6°</span></div>
+            <div class="notice">参数当前用于前端调试记录；真实控制参数仍由 main_phase3/orchestrator 保持统一。</div>
+          </section>
+        </div>
+      </div>
+      <div class="grid layout-3" style="margin-top:14px">
+        <section class="card">
+          <h2>情绪与人脸分析</h2>
+          <div class="metric-grid">
+            <div class="metric"><div class="label">情绪类别</div><div class="value small" id="emoVal">--</div></div>
+            <div class="metric"><div class="label">情绪置信度</div><div class="value" id="emoConf">--</div></div>
+            <div class="metric"><div class="label">人脸置信度</div><div class="value" id="faceConf">--</div></div>
+          </div>
+          <div class="kv"><span>人脸有效</span><span id="faceValid">--</span></div>
+          <div class="kv"><span>MediaPipe</span><span id="mpFaceState">--</span></div>
+          <div class="bars" id="emoProbBars"></div>
+        </section>
+        <section class="card">
+          <h2>专注与眼部指标</h2>
+          <div class="metric-grid">
+            <div class="metric"><div class="label">专注评分</div><div class="value" id="attnVal">--</div></div>
+            <div class="metric"><div class="label">EAR</div><div class="value" id="earVal">--</div></div>
+            <div class="metric"><div class="label">PERCLOS</div><div class="value" id="perclosVal">--</div></div>
+          </div>
+          <div class="kv"><span>眼睛状态</span><span id="eyeOpenVal">--</span></div>
+          <div class="kv"><span>眨眼频率</span><span id="blinkRateVal">--</span></div>
+          <div class="kv"><span>专注状态</span><span id="attnState">--</span></div>
+        </section>
+        <section class="card">
+          <h2>单人页日志</h2>
+          <div class="log mono" id="singleLog"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="page" id="page-multi_sound_yaw">
+      <div class="grid layout-2">
+        <section class="card video-card">
+          <div class="video-head">
+            <strong>摄像头 + 声源信息源</strong>
+            <span class="pill">只自动控制 yaw 轴</span>
+          </div>
+          <div class="video-wrap">
+            <img id="multiVideoMirror" alt="reCamera video mirror">
+          </div>
+        </section>
+        <div class="grid">
+          <section class="card">
+            <div class="card-head"><h2>声源 yaw 跟随控制</h2><span class="pill" id="multiModeText">未激活</span></div>
+            <div class="controls">
+              <button class="btn primary" onclick="startMultiYawPage()">启动功能</button>
+              <button class="btn requires-feature" data-page-lock="multi_sound_yaw" onclick="pauseMultiYawPage()">暂停 yaw 跟随</button>
+              <button class="btn danger requires-feature" data-page-lock="multi_sound_yaw" onclick="stopMultiYawPage()">停止多人控制</button>
+              <button class="btn requires-feature" data-page-lock="multi_sound_yaw" onclick="gHome()">Home</button>
+            </div>
+            <div class="notice" style="margin-top:12px">切到该页只显示信息源。点击“启动功能”后才启用多人模式，云台只按 DOA 调整 yaw，pitch 不做自动跟随。</div>
+          </section>
+          <section class="card">
+            <h2>声源与 LED 示意</h2>
+            <div class="doa-card">
+              <div class="doa-scene">
+                <div class="doa-axis v"></div><div class="doa-axis h"></div>
+                <div class="sound-arrow" id="doaArrow"><div class="sound-dot"></div></div>
+                <div class="device">reCamera</div>
+                <div class="led n" id="ledN"></div><div class="led e" id="ledE"></div><div class="led s" id="ledS"></div><div class="led w" id="ledW"></div>
+              </div>
+              <div>
+                <div class="metric-grid">
+                  <div class="metric"><div class="label">DOA</div><div class="value" id="doaVal">--</div></div>
+                  <div class="metric"><div class="label">Speech</div><div class="value small" id="speechVal">--</div></div>
+                  <div class="metric"><div class="label">LED</div><div class="value small" id="ledVal">--</div></div>
+                </div>
+                <div class="kv"><span>ReSpeaker</span><span id="doaReady">--</span></div>
+                <div class="kv"><span>DOA 延迟</span><span id="doaAge">--</span></div>
+              </div>
+            </div>
+          </section>
+          <section class="card">
+            <h2>多人页日志</h2>
+            <div class="log mono" id="multiLog"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section class="page" id="page-meeting_recording">
+      <div class="grid layout-2">
+        <section class="card">
+          <div class="card-head"><h2>会议录音控制</h2><span class="pill" id="recLabel">--</span></div>
+          <div class="controls">
+            <button class="btn primary" id="btnRecStart" onclick="startMeetingPage()">启动功能</button>
+            <button class="btn danger requires-feature" data-page-lock="meeting_recording" id="btnRecStop" onclick="recCtrl('stop')">停止并保存</button>
+            <button class="btn requires-feature" data-page-lock="meeting_recording" onclick="toggleMeetingYawFollow()">启用声源 yaw 跟随</button>
+            <button class="btn requires-feature" data-page-lock="meeting_recording" onclick="stopMeetingYawFollow()">关闭 yaw 跟随</button>
+          </div>
+          <div class="notice" style="margin-top:12px">切到会议页不会自动录音。点击“启动功能”后调度 Respeaker/录音链路；声源 yaw 跟随是可选能力。</div>
+          <div class="metric-grid" style="margin-top:12px">
+            <div class="metric"><div class="label">录音时长</div><div class="value" id="recDuration">--</div></div>
+            <div class="metric"><div class="label">会话模式</div><div class="value small" id="convMode">--</div></div>
+            <div class="metric"><div class="label">保存状态</div><div class="value small" id="convSave">--</div></div>
+          </div>
+        </section>
+        <section class="card">
+          <h2>会议声源与 LED 示意</h2>
+          <div class="doa-card">
+            <div class="doa-scene">
+              <div class="doa-axis v"></div><div class="doa-axis h"></div>
+              <div class="sound-arrow" id="meetingDoaArrow"><div class="sound-dot"></div></div>
+              <div class="device">Respeaker</div>
+              <div class="led n" id="mLedN"></div><div class="led e" id="mLedE"></div><div class="led s" id="mLedS"></div><div class="led w" id="mLedW"></div>
+            </div>
+            <div>
+              <div class="kv"><span>当前说话方向</span><span id="meetingDoaVal">--</span></div>
+              <div class="kv"><span>LED 方向</span><span id="meetingLedVal">--</span></div>
+              <div class="kv"><span>yaw 跟随</span><span id="meetingYawState">关闭</span></div>
+            </div>
+          </div>
+        </section>
+      </div>
+      <div class="grid layout-2" style="margin-top:14px">
+        <section class="card"><h2>会议日志</h2><div class="log mono" id="meetingLog"></div></section>
+        <section class="card"><h2>录音调试信息</h2><div class="log mono" id="meetingDebug"></div></section>
+      </div>
+    </section>
+
+    <section class="page" id="page-manual_gimbal_debug">
+      <div class="grid layout-2">
+        <section class="card">
+          <div class="card-head"><h2>手动云台调试</h2><span class="pill">仅当前页启用</span></div>
+          <div class="controls" style="margin-bottom:12px">
+            <button class="btn primary" onclick="startManualPage()">启动功能</button>
+            <button class="btn danger requires-feature" data-page-lock="manual_gimbal_debug" onclick="stopManualPage()">关闭手动</button>
+          </div>
+          <div class="dpad">
+            <div></div><button class="btn requires-feature" data-page-lock="manual_gimbal_debug" onclick="gMove(0,3)">上</button><div></div>
+            <button class="btn requires-feature" data-page-lock="manual_gimbal_debug" onclick="gMove(-5,0)">左</button><button class="btn requires-feature" data-page-lock="manual_gimbal_debug" onclick="gHome()">中</button><button class="btn requires-feature" data-page-lock="manual_gimbal_debug" onclick="gMove(5,0)">右</button>
+            <div></div><button class="btn requires-feature" data-page-lock="manual_gimbal_debug" onclick="gMove(0,-3)">下</button><div></div>
+          </div>
+          <div class="kv" style="margin-top:12px"><span>云台响应</span><span id="gimbalCmdResult">--</span></div>
+          <div class="notice" style="margin-top:12px">进入该页会停止单人/多人自动控制。按钮只发送 FastAPI 请求，由 EventBus 进入 main_phase3 后再控制硬件。</div>
+        </section>
+        <section class="card">
+          <h2>手动页日志</h2>
+          <div class="log mono" id="manualLog"></div>
+        </section>
+      </div>
+    </section>
+
+    <div class="grid layout-2" style="margin-top:14px">
+      <section class="card">
+        <h2>控制链路</h2>
+        <div class="kv"><span>最近事件</span><span class="mono" id="lastEvent">--</span></div>
+        <div class="kv"><span>最近命令</span><span class="mono" id="lastCmd">--</span></div>
+        <div class="kv"><span>安全闸门</span><span id="safety">--</span></div>
+        <div class="log mono" id="trace" style="margin-top:10px"></div>
+      </section>
+      <section class="card">
+        <h2>系统健康</h2>
+        <div class="metric-grid">
+          <div class="metric"><div class="label">Video FPS</div><div class="value" id="fpsVal">--</div></div>
+          <div class="metric"><div class="label">人体/人脸</div><div class="value" id="poseCount">--</div></div>
+          <div class="metric"><div class="label">云台 RTT</div><div class="value" id="rttVal">--</div></div>
+        </div>
+        <div class="kv"><span>云台连接</span><span id="gimbalConn">--</span></div>
+        <div class="kv"><span>硬件模式</span><span id="gimbalMode">--</span></div>
+        <div class="kv"><span>WebSocket 客户端</span><span id="wsClients">--</span></div>
+      </section>
+    </div>
+  </main>
+</div>
 
 <script>
-let state=null,smoothAttn=0,smoothConf=0,lastLog='',ws=null,wsRetry=null,lastWsAt=0;
+let state=null,ws=null,wsRetry=null,lastWsAt=0,lastLog='',activePage='single_face_analysis',switching=false,meetingYaw=false;
+const featureActive={
+  single_face_analysis:false,
+  multi_sound_yaw:false,
+  meeting_recording:false,
+  manual_gimbal_debug:false
+};
+let smoothAttn=0,smoothConf=0;
 const $=id=>document.getElementById(id);
-function log(msg){const line=`${new Date().toLocaleTimeString()} ${msg}`;if(line===lastLog)return;lastLog=line;const el=$('log');el.innerHTML=line+'<br>'+el.innerHTML.slice(0,3500)}
+const pageMeta={
+  single_face_analysis:{title:'人脸追踪与分析',sub:'切到页面后只展示信息，点击“启动功能”才会找人脸、云台对准，并开始情绪、人脸、专注与眼部指标分析。'},
+  multi_sound_yaw:{title:'声源 yaw 跟随',sub:'切到页面后只展示声源与摄像头信息，点击“启动功能”才启用多人声源模式，云台只转 yaw 轴。'},
+  meeting_recording:{title:'会议录音',sub:'切到页面后不自动录音，点击“启动功能”才调度 Respeaker 录音链路。'},
+  manual_gimbal_debug:{title:'手动云台调试',sub:'切到页面后不接管云台，点击“启动功能”才允许发送手动 UI Event。'}
+};
+function nowLine(msg){return `${new Date().toLocaleTimeString()} ${msg}`}
+function pageLog(id,msg){
+  const el=$(id); if(!el)return;
+  const line=nowLine(msg); if(line===lastLog)return; lastLog=line;
+  el.innerHTML=line+'<br>'+el.innerHTML.slice(0,4000);
+}
+function log(msg){pageLog(activePage==='meeting_recording'?'meetingLog':activePage==='multi_sound_yaw'?'multiLog':activePage==='manual_gimbal_debug'?'manualLog':'singleLog',msg)}
 function ema(cur,target,a){if(!Number.isFinite(cur)||cur===0)return target;return cur+(target-cur)*a}
 function normalizeState(p){if(!p)return null;if(p.type==='state_snapshot'&&p.data)return p.data;if(p.data&&p.data.gimbal)return p.data;if(p.gimbal||p.video||p.control)return p;return null}
 function setConn(kind,text){$('wsDot').className='dot '+(kind==='on'?'on':kind==='warn'?'warn':'');$('wsText').textContent=text}
 function fmtTime(sec){sec=Math.max(0,Number(sec)||0);const m=Math.floor(sec/60),s=Math.floor(sec%60);return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`}
 function num(v,suffix='',d=0){return v==null||!Number.isFinite(Number(v))?'--':(d?Number(v).toFixed(d):Math.round(Number(v)))+suffix}
+function postKeepalive(path,body={}){
+  try{
+    fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),keepalive:true});
+  }catch(e){}
+}
+async function apiPost(path,body={},opts={}){
+  try{
+    const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),keepalive:!!opts.keepalive});
+    return await r.json();
+  }catch(e){log(`API error ${path}: ${e.message}`);return null}
+}
+function setParamLabel(id,val){$(id).textContent=val}
+function setDeviceConfigText(text){const el=$('deviceConfigText');if(el)el.textContent=text}
+function applyDeviceState(device){
+  if(!device)return;
+  const input=$('deviceIpInput');
+  if(input && document.activeElement!==input)input.value=device.ip||'';
+  setDeviceConfigText(device.configured?(device.video_connected?'视频已连接':'已配置，连接中'):'未配置');
+}
+async function loadDeviceConfig(){
+  try{
+    const r=await fetch('/api/device/config',{cache:'no-store'});
+    const data=await r.json();
+    if(data.device)applyDeviceState(data.device);
+  }catch(e){setDeviceConfigText('配置读取失败')}
+}
+async function saveDeviceConfig(){
+  const input=$('deviceIpInput');
+  const device_ip=(input&&input.value||'').trim();
+  if(!device_ip){setDeviceConfigText('请输入设备地址');return}
+  setDeviceConfigText('正在重连视频');
+  const r=await apiPost('/api/device/config',{device_ip});
+  if(r&&r.ok){
+    applyDeviceState(r.device);
+    const src=`${location.origin}/video_feed?t=${Date.now()}`;
+    videoEl.src=src;
+    multiMirror.src=src;
+    log('设备地址已保存，FastAPI 视频源正在重连');
+  }else{
+    setDeviceConfigText(r&&r.reason?r.reason:'保存失败');
+  }
+}
+
+async function activatePage(pageId){
+  if(switching||pageId===activePage)return;
+  switching=true;
+  await deactivatePage(activePage);
+  activePage=pageId;
+  document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id===`page-${pageId}`));
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.page===pageId));
+  $('pageTitle').textContent=pageMeta[pageId].title;
+  $('pageSub').textContent=pageMeta[pageId].sub;
+  featureActive[pageId]=false;
+  updateFeatureLocks();
+  log('已进入页面，等待点击“启动功能”');
+  switching=false;
+}
+function updateFeatureLocks(){
+  document.querySelectorAll('.requires-feature').forEach(btn=>{
+    const page=btn.dataset.pageLock;
+    btn.disabled=!featureActive[page];
+  });
+}
+async function deactivatePage(pageId,keepalive=false){
+  featureActive[pageId]=false;
+  if(!keepalive)updateFeatureLocks();
+  if(keepalive){
+    if(pageId==='single_face_analysis')postKeepalive('/api/single_track/stop');
+    if(pageId==='multi_sound_yaw')postKeepalive('/api/multi_track/stop',{finalize:false});
+    if(pageId==='meeting_recording'){
+      postKeepalive('/api/conversation/stop',{finalize:true});
+      postKeepalive('/api/multi_track/stop',{finalize:false});
+      meetingYaw=false;
+    }
+    return;
+  }
+  if(pageId==='single_face_analysis')await apiPost('/api/single_track/stop');
+  if(pageId==='multi_sound_yaw')await apiPost('/api/multi_track/stop',{finalize:false});
+  if(pageId==='meeting_recording'){
+    await apiPost('/api/conversation/stop',{finalize:true});
+    await apiPost('/api/multi_track/stop',{finalize:false});
+    meetingYaw=false;
+  }
+}
+async function startSinglePage(){
+  await apiPost('/api/multi_track/stop',{finalize:false});
+  await apiPost('/api/single_track/start');
+  await apiPost('/api/tracking_mode',{mode:'single'});
+  featureActive.single_face_analysis=true;
+  updateFeatureLocks();
+  log('单人追踪已启动：找人脸并对准');
+}
+async function stopSinglePage(){await apiPost('/api/single_track/stop');featureActive.single_face_analysis=false;updateFeatureLocks();log('单人追踪已暂停')}
+async function restartSinglePage(){await stopSinglePage();await startSinglePage();log('重新找人脸')}
+async function startMultiYawPage(){
+  await apiPost('/api/single_track/stop');
+  await apiPost('/api/multi_track/start',{save_audio:false});
+  await apiPost('/api/tracking_mode',{mode:'multi'});
+  featureActive.multi_sound_yaw=true;
+  updateFeatureLocks();
+  log('声源 yaw 跟随已启动');
+}
+async function pauseMultiYawPage(){await apiPost('/api/multi_track/stop',{finalize:false});featureActive.multi_sound_yaw=false;updateFeatureLocks();log('声源 yaw 跟随已暂停')}
+async function stopMultiYawPage(){await apiPost('/api/multi_track/stop',{finalize:false});featureActive.multi_sound_yaw=false;updateFeatureLocks();log('多人控制已停止')}
+async function startMeetingPage(){
+  await apiPost('/api/single_track/stop');
+  await apiPost('/api/multi_track/stop',{finalize:false});
+  featureActive.meeting_recording=true;
+  updateFeatureLocks();
+  await recCtrl('start');
+}
+async function toggleMeetingYawFollow(){
+  if(!featureActive.meeting_recording)return;
+  await apiPost('/api/single_track/stop');
+  await apiPost('/api/multi_track/start',{save_audio:false});
+  await apiPost('/api/tracking_mode',{mode:'multi'});
+  meetingYaw=true; log('会议页已启用声源 yaw 跟随');
+}
+async function stopMeetingYawFollow(){await apiPost('/api/multi_track/stop',{finalize:false});meetingYaw=false;log('会议页 yaw 跟随已关闭')}
+async function recCtrl(action){
+  const path=action==='start'?'/api/conversation/start':'/api/conversation/stop';
+  const body=action==='start'?{save_audio:true}:{finalize:true};
+  const r=await apiPost(path,body);
+  if(action==='stop'){
+    featureActive.meeting_recording=false;
+    meetingYaw=false;
+    updateFeatureLocks();
+  }
+  log(`会议录音 ${action==='start'?'开始':'停止'} ${r?(r.success||r.recording_success?'OK':'WARN'):'ERR'}`);
+}
+async function startManualPage(){
+  await apiPost('/api/single_track/stop');
+  await apiPost('/api/multi_track/stop',{finalize:false});
+  featureActive.manual_gimbal_debug=true;
+  updateFeatureLocks();
+  log('手动云台功能已启动');
+}
+async function stopManualPage(){
+  featureActive.manual_gimbal_debug=false;
+  updateFeatureLocks();
+  log('手动云台功能已关闭');
+}
+async function gMove(pan,tilt){
+  const r=await apiPost('/api/gimbal/move',{pan,tilt});
+  const msg=r?`event ${r.accepted?'accepted':'rejected'} ${r.reason||''}`:'event failed';
+  $('gimbalCmdResult').textContent=msg;log(`云台移动 pan=${pan} tilt=${tilt} ${msg}`);
+}
+async function gHome(){
+  const r=await apiPost('/api/gimbal/home');
+  const msg=r?`home ${r.accepted?'accepted':'rejected'} ${r.reason||''}`:'home failed';
+  const el=$('gimbalCmdResult'); if(el)el.textContent=msg; log(msg);
+}
 
 function renderState(s){
   if(!s)return;
-  const g=s.gimbal||{},pose=s.pose||{},att=s.attention||{},emo=s.emotieff||s.emotion||{},doa=s.doa||{},
-        ctrl=s.control||{},health=s.health||{},conv=s.conversation||{},eye=s.eye_metrics||{};
-  setConn(ws&&ws.readyState===WebSocket.OPEN?'on':'warn',ws&&ws.readyState===WebSocket.OPEN?'WebSocket: Connected':'HTTP polling');
-
-  // FSM + authority
-  const st=ctrl.fsm_state||'IDLE';
-  document.querySelectorAll('#fsm .node').forEach(n=>n.classList.toggle('active',n.dataset.s===st));
-  const auth=ctrl.authority||'idle';
-  document.querySelectorAll('#auth .a').forEach(a=>a.classList.toggle('on',a.dataset.a===auth));
-  $('observeBadge').textContent=ctrl.observe_only?'OBSERVE · READ-ONLY':'LIVE';
-
-  // decision chain
-  const ev=ctrl.last_event,cmd=ctrl.command,saf=ctrl.safety||{};
-  $('lastEvent').textContent=ev?`${ev.type}/${ev.name} ←${ev.source}`:'--';
-  $('lastCmd').textContent=cmd?`${cmd.reason||'?'}${cmd.yaw!=null?' yaw='+Math.round(cmd.yaw):''}${cmd.pitch!=null?' pitch='+Math.round(cmd.pitch):''}${cmd.stop?' STOP':''}`:'hold';
-  $('safety').textContent=(saf.ok?'PASS':'BLOCK')+(saf.reason?' · '+saf.reason:'');
+  const g=s.gimbal||{},pose=s.pose||{},att=s.attention||{},emo=s.emotieff||s.emotion||{},doa=s.doa||{},ctrl=s.control||{},health=s.health||{},conv=s.conversation||{},eye=s.eye_metrics||{},mp=s.mp_face||{};
+  applyDeviceState(s.device);
+  setConn(ws&&ws.readyState===WebSocket.OPEN?'on':'warn',ws&&ws.readyState===WebSocket.OPEN?'WebSocket 已连接':'HTTP polling');
+  $('authorityText').textContent=ctrl.authority||'idle';
+  $('fsmText').textContent=ctrl.fsm_state||'IDLE';
+  $('eventBusText').textContent=ctrl.last_event?'active':'waiting';
+  $('lastEvent').textContent=ctrl.last_event?`${ctrl.last_event.type}/${ctrl.last_event.name} @ ${ctrl.last_event.source}`:'--';
+  const cmd=ctrl.command;
+  $('lastCmd').textContent=cmd?`${cmd.reason||'cmd'}${cmd.yaw!=null?' yaw='+Math.round(cmd.yaw):''}${cmd.pitch!=null?' pitch='+Math.round(cmd.pitch):''}${cmd.stop?' STOP':''}`:'hold';
+  const saf=ctrl.safety||{};$('safety').textContent=(saf.ok?'PASS':'BLOCK')+(saf.reason?' / '+saf.reason:'');
   renderTrace(s.trace||[]);
 
-  // gimbal telemetry
-  $('yawVal').textContent=num(g.yaw,'°');
-  $('pitchVal').textContent=num(g.pitch,'°');
-  $('speedVal').textContent=g.speed!=null?Math.round(g.speed):'--';
-  $('gimbalConn').textContent=g.connected?'已连接':'未连接 / DRY-RUN';
-  $('gimbalMode').textContent=g.mode||'--';
+  $('yawVal').textContent=num(g.yaw,'°');$('pitchVal').textContent=num(g.pitch,'°');$('speedVal').textContent=g.speed!=null?Math.round(g.speed):'--';
+  $('gimbalConn').textContent=g.connected?'已连接':'未连接 / dry-run';$('gimbalMode').textContent=g.mode||'--';
+  $('fpsVal').textContent=num(health.video_fps,'',1);$('poseCount').textContent=(pose.count||0)+' / '+((s.video&&s.video.detections)||[]).length;$('rttVal').textContent=health.gimbal_latency_ms!=null?num(health.gimbal_latency_ms,'ms',0):'--';$('wsClients').textContent=health.ws_clients!=null?health.ws_clients:'--';
 
-  // channels
-  $('doaVal').textContent=doa.doa_deg!=null?Math.round(doa.doa_deg)+'°':'--';
-  $('poseCount').textContent=(pose.count||0)+' / '+((s.video&&s.video.detections)||[]).length;
-  $('doaReady').textContent=doa.available?'已连接 ('+(doa.source||'?')+')':'未连接';
-  $('speechVal').textContent=doa.has_speech?'有':'无';
-  $('lostFrames').textContent=ctrl.vision_lost_frames!=null?ctrl.vision_lost_frames:'--';
-
-  // ── emotion & face analysis ──────────────────────────────────
-  const mp=s.mp_face||{};
-  const emoName=emo.emotion||'--', conf=Number(emo.confidence||0);
-  smoothConf=ema(smoothConf,conf,.28);
-  const EMO_ZH={Happiness:'快乐',Sadness:'悲伤',Anger:'愤怒',Fear:'恐惧',Surprise:'惊讶',
-                Disgust:'厌恶',Contempt:'轻蔑',Neutral:'平静'};
-  $('emoVal').textContent=(EMO_ZH[emoName]||emoName);
-  $('emoConf').textContent=conf?Math.round(smoothConf*100)+'%':'--';
-  // face confidence from first detected person
-  const person0=(pose.persons||[])[0]||{};
-  const fConf=person0.face_conf!=null?person0.face_conf:(att.has_face?1:null);
-  $('faceConf').textContent=fConf!=null?Math.round(Number(fConf)*100)+'%':'--';
-  $('faceValid').textContent=att.has_face?'有效':'无';
-  $('mpFaceState').textContent=mp.success?`${mp.landmarks_count||468}点 · EAR ${num(mp.ear_avg,'',3)}`:'未检测';
-  // 8-class probability bars
-  const probs=emo.probabilities||{};
-  const topEmo=Object.entries(probs).sort((a,b)=>b[1]-a[1]);
-  const EMO_ORDER=['Happiness','Sadness','Anger','Fear','Surprise','Disgust','Contempt','Neutral'];
-  const ordered=EMO_ORDER.filter(k=>k in probs).map(k=>[k,probs[k]]);
-  // fallback: use sorted if order not matched
-  const rows=ordered.length?ordered:topEmo.slice(0,8);
-  const topKey=rows[0]?rows[0][0]:'';
-  $('emoProbBars').innerHTML=rows.map(([k,v])=>{
-    const pct=Math.round(Number(v)*100);
-    const isTop=k===topKey;
-    const zh=EMO_ZH[k]||k;
-    return `<div class="prob-row">
-      <span class="prob-label">${zh}</span>
-      <div class="prob-track"><div class="prob-fill${isTop?' top':''}" style="width:${pct}%"></div></div>
-      <span class="prob-val">${pct}%</span>
-    </div>`;
-  }).join('');
-
-  // ── attention & eye metrics ───────────────────────────────────
-  const targetAttn=att.has_face&&att.score!=null?Number(att.score):0;
-  smoothAttn=ema(smoothAttn,targetAttn,att.has_face?0.35:0.18);
+  const person0=(pose.persons||[])[0]||{},fConf=person0.face_conf!=null?person0.face_conf:(att.has_face?1:null);
+  $('singleTargetText').textContent=att.has_face?'已对准/分析中':((pose.count||0)>0?'检测到人体':'寻找人脸');
+  $('singleModeText').textContent=(s.single_track&&s.single_track.active)?'运行中':'未激活';
+  $('multiModeText').textContent=(s.multi_track&&s.multi_track.active)?'运行中':'未激活';
+  const EMO_ZH={Happiness:'快乐',Sadness:'悲伤',Anger:'愤怒',Fear:'恐惧',Surprise:'惊讶',Disgust:'厌恶',Contempt:'轻蔑',Neutral:'平静'};
+  const emoName=emo.emotion||'--',conf=Number(emo.confidence||0);smoothConf=ema(smoothConf,conf,.28);
+  $('emoVal').textContent=EMO_ZH[emoName]||emoName;$('emoConf').textContent=conf?Math.round(smoothConf*100)+'%':'--';$('faceConf').textContent=fConf!=null?Math.round(Number(fConf)*100)+'%':'--';
+  $('faceValid').textContent=att.has_face?'有效':'无';$('mpFaceState').textContent=mp.success?`${mp.landmarks_count||468}点 / EAR ${num(mp.ear_avg,'',3)}`:'未检测';
+  renderEmotionBars(emo.probabilities||{},EMO_ZH);
+  const targetAttn=att.has_face&&att.score!=null?Number(att.score):0;smoothAttn=ema(smoothAttn,targetAttn,att.has_face?.35:.18);
   $('attnVal').textContent=att.has_face?Math.round(smoothAttn):'--';
-  // EAR: prefer eye_metrics.ear_avg, fallback mp_face.ear_avg
-  const earVal=eye.ear_avg??eye.ear??mp.ear_avg;
-  $('earVal').textContent=earVal!=null?Number(earVal).toFixed(3):'--';
-  // eye open state
-  const eyeOpen=eye.eye_open??mp.eye_open;
-  $('eyeOpenVal').textContent=eyeOpen==null?'--':eyeOpen?'👁 睁开':'😴 闭合';
+  const earVal=eye.ear_avg??eye.ear??mp.ear_avg;$('earVal').textContent=earVal!=null?Number(earVal).toFixed(3):'--';
   $('perclosVal').textContent=eye.perclos!=null?Number(eye.perclos).toFixed(3):'--';
-  $('blinkRateVal').textContent=eye.blink_rate!=null?num(eye.blink_rate,'',1):'--';
-  $('blinkCountVal').textContent=eye.blink_count!=null?eye.blink_count:'--';
-  $('eyeFocusVal').textContent=eye.focus_score!=null?eye.focus_score:'--';
-  $('attnState').textContent=att.state||att.gaze_direction||'--';
+  const eyeOpen=eye.eye_open??mp.eye_open;$('eyeOpenVal').textContent=eyeOpen==null?'--':eyeOpen?'睁开':'闭合';
+  $('blinkRateVal').textContent=eye.blink_rate!=null?num(eye.blink_rate,'',1):'--';$('attnState').textContent=att.state||att.gaze_direction||'--';
 
-  // health
-  $('fpsVal').textContent=num(health.video_fps,'',1);
-  $('doaAge').textContent=health.doa_age!=null?num(health.doa_age,'s',2):'--';
-  $('rttVal').textContent=health.gimbal_latency_ms!=null?num(health.gimbal_latency_ms,'ms',0):'--';
-  $('wsClients').textContent=health.ws_clients!=null?health.ws_clients:'--';
-  $('convState').textContent=conv.recording?('录音中 '+(conv.current?.elapsed||0)+'s'):(conv.mode||'未激活');
+  const deg=doa.doa_deg!=null?Number(doa.doa_deg):null,hasSpeech=!!doa.has_speech;
+  $('doaVal').textContent=deg!=null?Math.round(deg)+'°':'--';$('meetingDoaVal').textContent=$('doaVal').textContent;
+  $('speechVal').textContent=hasSpeech?'有声':'无声';$('doaReady').textContent=doa.available?`已连接 (${doa.source||'doa'})`:'未连接';$('doaAge').textContent=health.doa_age!=null?num(health.doa_age,'s',2):'--';
+  renderDoa(deg,hasSpeech,'doaArrow',['ledN','ledE','ledS','ledW'],'ledVal');
+  renderDoa(deg,hasSpeech,'meetingDoaArrow',['mLedN','mLedE','mLedS','mLedW'],'meetingLedVal');
+  $('meetingYawState').textContent=meetingYaw?'开启':'关闭';
 
+  const active=!!(conv.recording||conv.active||conv.requested),elapsed=conv.current?.elapsed||conv.stats?.duration||0;
+  $('recLabel').textContent=active?`录音中 ${fmtTime(elapsed)}`:'已停止';$('btnRecStart').disabled=active;$('btnRecStop').disabled=!active;
+  $('recDuration').textContent=active?fmtTime(elapsed):'--';$('convMode').textContent=conv.mode||'--';$('convSave').textContent=conv.error?'异常':'就绪';
+  $('meetingDebug').innerHTML=`recording=${active}<br>requested=${!!conv.requested}<br>error=${conv.error||''}<br>mode=${conv.mode||''}`;
+  updateFeatureLocks();
   drawOverlay(s);
 }
-function renderTrace(items){
-  const html=items.slice().reverse().map(t=>{
-    const ev=t.event?`${t.event.type}/${t.event.name}`:'·';
-    const cmd=t.command?(t.command.reason||'cmd'):'hold';
-    const arrow=t.transition?`<span class="tg">${t.from}→${t.state}</span>`:t.state;
-    return `<div class="trace-row">${fmtClock(t.t)} ${ev} → ${arrow} → <span class="tc">${cmd}</span></div>`;
+function renderEmotionBars(probs,labels){
+  const order=['Happiness','Sadness','Anger','Fear','Surprise','Disgust','Contempt','Neutral'];
+  const rows=order.filter(k=>k in probs).map(k=>[k,probs[k]]);
+  const top=rows.slice().sort((a,b)=>b[1]-a[1])[0]?.[0];
+  $('emoProbBars').innerHTML=rows.map(([k,v])=>{
+    const pct=Math.round(Number(v)*100);
+    return `<div class="prob-row"><span>${labels[k]||k}</span><div class="prob-track"><div class="prob-fill${k===top?' top':''}" style="width:${pct}%"></div></div><span>${pct}%</span></div>`;
   }).join('');
-  $('trace').innerHTML=html||'<span class="small">暂无决策记录</span>';
 }
-function fmtClock(t){const d=new Date((t||0)*1000);return d.toLocaleTimeString();}
-
+function ledSector(deg){
+  if(deg==null)return '--';
+  const d=((deg%360)+360)%360;
+  if(d>=315||d<45)return 'N';
+  if(d>=45&&d<135)return 'E';
+  if(d>=135&&d<225)return 'S';
+  return 'W';
+}
+function renderDoa(deg,hasSpeech,arrowId,ledIds,labelId){
+  const arrow=$(arrowId); if(arrow)arrow.style.transform=`rotate(${deg==null?0:deg}deg)`;
+  const sector=hasSpeech?ledSector(deg):'--';
+  const map={N:ledIds[0],E:ledIds[1],S:ledIds[2],W:ledIds[3]};
+  ledIds.forEach(id=>$(id).classList.toggle('on',sector!=='--'&&map[sector]===id));
+  $(labelId).textContent=sector==='--'?'无':sector;
+}
+function renderTrace(items){
+  $('trace').innerHTML=items.slice().reverse().map(t=>{
+    const ev=t.event?`${t.event.type}/${t.event.name}`:'event';
+    const cmd=t.command?(t.command.reason||'cmd'):'hold';
+    return `<div class="trace-row">${fmtClock(t.t)} ${ev} -> ${t.state||'--'} -> ${cmd}</div>`;
+  }).join('')||'暂无控制链路记录';
+}
+function fmtClock(t){return new Date((t||0)*1000).toLocaleTimeString()}
 function drawOverlay(s){
   const img=$('videoStream'),canvas=$('overlay'),wrap=$('videoWrap'),ctx=canvas.getContext('2d');
-  const w=wrap.clientWidth,h=wrap.clientHeight;
-  if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}
+  const w=wrap.clientWidth,h=wrap.clientHeight;if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}
   ctx.clearRect(0,0,w,h);
   const video=s.video||{},pose=s.pose||{},rs=getImageDrawRect(img,w,h);
   ctx.lineWidth=2;ctx.font='12px sans-serif';
-  (video.detections||[]).forEach(d=>{const x=rs.x+d.x*rs.sx,y=rs.y+d.y*rs.sy,bw=d.w*rs.sx,bh=d.h*rs.sy;ctx.strokeStyle='#2d5f8f';ctx.strokeRect(x,y,bw,bh);ctx.fillStyle='#2d5f8f';ctx.fillText(`${d.class_name||'obj'} ${Math.round((d.confidence||0)*100)}%`,x+4,Math.max(14,y-4))});
-  (pose.persons||[]).forEach(p=>{if(p.face_center){ctx.fillStyle='#b8752e';ctx.beginPath();ctx.arc(rs.x+p.face_center[0]*rs.sx,rs.y+p.face_center[1]*rs.sy,5,0,Math.PI*2);ctx.fill()}(p.keypoints||[]).forEach(k=>{if(k.conf<.45)return;ctx.fillStyle='#247c55';ctx.beginPath();ctx.arc(rs.x+k.x*rs.sx,rs.y+k.y*rs.sy,3,0,Math.PI*2);ctx.fill()})});
+  (video.detections||[]).forEach(d=>{const x=rs.x+d.x*rs.sx,y=rs.y+d.y*rs.sy,bw=d.w*rs.sx,bh=d.h*rs.sy;ctx.strokeStyle='#2563eb';ctx.strokeRect(x,y,bw,bh);ctx.fillStyle='#2563eb';ctx.fillText(`${d.class_name||'obj'} ${Math.round((d.confidence||0)*100)}%`,x+4,Math.max(14,y-4))});
+  (pose.persons||[]).forEach(p=>{if(p.face_center){ctx.fillStyle='#138a5b';ctx.beginPath();ctx.arc(rs.x+p.face_center[0]*rs.sx,rs.y+p.face_center[1]*rs.sy,5,0,Math.PI*2);ctx.fill()}});
 }
-function getImageDrawRect(img,w,h){
-  const video=(state&&state.video)||{};
-  const nw=img.naturalWidth||video.width||1920,nh=img.naturalHeight||video.height||1080;
-  const scale=Math.min(w/nw,h/nh),dw=nw*scale,dh=nh*scale;
-  return{x:(w-dw)/2,y:(h-dh)/2,sx:scale,sy:scale}
-}
+function getImageDrawRect(img,w,h){const video=(state&&state.video)||{},nw=img.naturalWidth||video.width||1920,nh=img.naturalHeight||video.height||1080,scale=Math.min(w/nw,h/nh);return{x:(w-nw*scale)/2,y:(h-nh*scale)/2,sx:scale,sy:scale}}
 function connectWS(){
-  clearTimeout(wsRetry);
-  try{if(ws)ws.close()}catch(e){}
-  const proto=location.protocol==='https:'?'wss':'ws';
-  const url=`${proto}://${location.host}/ws`;
+  clearTimeout(wsRetry);try{if(ws)ws.close()}catch(e){}
+  const proto=location.protocol==='https:'?'wss':'ws',url=`${proto}://${location.host}/ws`;
   try{
-    ws=new WebSocket(url);
-    setConn('warn','WebSocket: Connecting');
-    ws.onopen=()=>{lastWsAt=Date.now();setConn('on','WebSocket: Connected');log(`WS connected ${url}`);try{ws.send('request_state')}catch(e){}};
-    ws.onmessage=ev=>{lastWsAt=Date.now();try{const s=normalizeState(JSON.parse(ev.data));if(s){state=s;renderState(state)}}catch(e){log(`WS parse ERR ${e.message}`)}};
-    ws.onerror=()=>setConn('warn','WebSocket: Error');
-    ws.onclose=()=>{setConn('warn','WebSocket: Disconnected');log('WS disconnected → /api/state polling');wsRetry=setTimeout(connectWS,1500)};
-  }catch(e){setConn('warn','WebSocket: Failed');wsRetry=setTimeout(connectWS,1500)}
+    ws=new WebSocket(url);setConn('warn','WebSocket 连接中');
+    ws.onopen=()=>{lastWsAt=Date.now();setConn('on','WebSocket 已连接');log('WS connected');try{ws.send('request_state')}catch(e){}};
+    ws.onmessage=ev=>{lastWsAt=Date.now();try{const s=normalizeState(JSON.parse(ev.data));if(s){state=s;renderState(state)}}catch(e){log(`WS parse error ${e.message}`)}};
+    ws.onerror=()=>setConn('warn','WebSocket 异常');
+    ws.onclose=()=>{setConn('warn','WebSocket 断开');wsRetry=setTimeout(connectWS,1500)};
+  }catch(e){setConn('warn','WebSocket failed');wsRetry=setTimeout(connectWS,1500)}
 }
 async function poll(){
   if(ws&&ws.readyState===WebSocket.OPEN&&Date.now()-lastWsAt<1500)return;
   try{const r=await fetch('/api/state',{cache:'no-store'});const s=normalizeState(await r.json());if(s){state=s;renderState(state)}}catch(e){setConn('warn','HTTP state failed')}
 }
-const videoEl=$('videoStream');
+const videoEl=$('videoStream'),multiMirror=$('multiVideoMirror');
 videoEl.src=`${location.origin}/video_feed?t=${Date.now()}`;
-videoEl.onerror=()=>{log('video_feed failed; retrying');setTimeout(()=>{videoEl.src=`${location.origin}/video_feed?t=${Date.now()}`},1200)};
-connectWS();poll();setInterval(poll,350);addEventListener('resize',()=>state&&drawOverlay(state));
-
-// ── 功能控制 ──────────────────────────────────────────────
-let _curMode = 'stop'; // 'single' | 'multi' | 'stop'
-
-async function apiPost(path, body={}) {
-  try {
-    const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    return await r.json();
-  } catch(e) { log('API error: ' + path + ' ' + e.message); return null; }
-}
-
-async function setMode(mode) {
-  _curMode = mode;
-  if (mode === 'single') {
-    await apiPost('/api/multi_track/stop', {finalize: false});
-    await apiPost('/api/single_track/start');
-    await apiPost('/api/tracking_mode', {mode: 'single'});
-  } else if (mode === 'multi') {
-    await apiPost('/api/single_track/stop');
-    await apiPost('/api/multi_track/start');
-    await apiPost('/api/tracking_mode', {mode: 'multi'});
-  } else {
-    await apiPost('/api/single_track/stop');
-    await apiPost('/api/multi_track/stop', {finalize: true});
-  }
-  updateModeUI();
-  log('mode → ' + mode);
-}
-
-function updateModeUI() {
-  const map = {single:'btnSingle', multi:'btnMulti', stop:'btnStop'};
-  ['single','multi','stop'].forEach(m => {
-    const btn = $(map[m]);
-    if (btn) btn.classList.toggle('active-mode', m === _curMode);
-  });
-  const labels = {single:'单人追踪中', multi:'多人 DOA 中', stop:'已停止'};
-  $('modeLabel').textContent = labels[_curMode] || '--';
-  // Disable manual gimbal D-pad while tracking is active to avoid dual control.
-  const tracking = (_curMode === 'single' || _curMode === 'multi');
-  document.querySelectorAll('.gpad-btn').forEach(b => { b.disabled = tracking; });
-  const tb = $('gimbalTrackBanner');
-  if (tb) tb.style.display = tracking ? 'block' : 'none';
-}
-
-async function recCtrl(action) {
-  const path = action === 'start' ? '/api/conversation/start' : '/api/conversation/stop';
-  const r = await apiPost(path);
-  log('录音 ' + action + (r ? (r.ok ? ' ✓' : ' ✗') : ''));
-}
-
-function updateRecUI(s) {
-  const conv = s.conversation || {};
-  const active = conv.recording || conv.active;
-  const dur = (conv.stats && conv.stats.duration) ? Math.round(conv.stats.duration) : 0;
-  $('recLabel').textContent = active ? `录音中 · ${fmtTime(dur)}` : '已停止';
-  $('btnRecStart').disabled = !!active;
-  $('btnRecStop').disabled = !active;
-}
-
-async function gMove(pan, tilt) {
-  const r = await apiPost('/api/gimbal/move', {pan, tilt});
-  const msg = r ? (r.dry_run ? 'DRY-RUN (不动作)' : `pan:${pan} tilt:${tilt} → ${r.ok?'✓':'✗'}`) : '失败';
-  $('gimbalCmdResult').textContent = msg;
-  if (r && r.dry_run) showDryRunBanner();
-}
-
-async function gHome() {
-  const r = await apiPost('/api/gimbal/home');
-  const msg = r ? (r.dry_run ? 'DRY-RUN (不动作)' : (r.ok ? '回中 ✓' : '回中 ✗')) : '失败';
-  $('gimbalCmdResult').textContent = msg;
-  if (r && r.dry_run) showDryRunBanner();
-}
-
-function showDryRunBanner() {
-  $('gimbalDryBanner').style.display = 'block';
-  $('dryRunBadge').style.display = '';
-}
-
-// 在 renderState 末尾钩入控制状态更新
-const _origRenderState = renderState;
-renderState = function(s) {
-  _origRenderState(s);
-  // sync mode label from WS state
-  const st = s.single_track || {}, mt = s.multi_track || {};
-  if (st.active) _curMode = 'single';
-  else if (mt.active) _curMode = 'multi';
-  else _curMode = 'stop';
-  updateModeUI();
-  updateRecUI(s);
-  // show dry-run banner if gimbal in dry-run
-  const g = s.gimbal || {};
-  if (g.dry_run || (g.connected === false && g.mode == null)) showDryRunBanner();
-};
+multiMirror.src=videoEl.src;
+videoEl.onerror=()=>{log('video_feed failed; retrying');setTimeout(()=>{const src=`${location.origin}/video_feed?t=${Date.now()}`;videoEl.src=src;multiMirror.src=src},1200)};
+connectWS();loadDeviceConfig();poll();setInterval(poll,350);addEventListener('resize',()=>state&&drawOverlay(state));
+addEventListener('beforeunload',()=>{deactivatePage(activePage,true)});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)deactivatePage(activePage,true);else{featureActive[activePage]=false;updateFeatureLocks();log('页面恢复可见，等待点击“启动功能”')}});
+updateFeatureLocks();
+log('已进入页面，等待点击“启动功能”');
 </script>
 </body>
 </html>

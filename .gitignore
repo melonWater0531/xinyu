@@ -8,6 +8,11 @@ venv/
 *.log
 .DS_Store
 
+records/
+*.tar.gz
+*.zip
+
+certs/*.pem
 certs/*key*.pem
 certs/*-key.pem
 

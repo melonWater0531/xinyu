@@ -4,12 +4,12 @@ reCamera Multimodal ->Main Dashboard (FastAPI)
 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
 Architecture:
-  Device (192.168.106.85)                This Server (0.0.0.0:8001)
+  Device (<RECAMERA_IP>)                This Server (0.0.0.0:8001)
   鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->             鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->  ->SSCMA Node :8090    鈹傗攢鈹€WebSocket鈹€鈹€鈫掆攤 /video_feed  (MJPEG)     ->  ->Node-RED  :1880     鈹傗啇鈹€Socket.IO鈹€鈹€鈹€->/api/gimbal/* (control)  ->  ->                    ->             ->/ws          (state push) ->  ->                    ->             ->/home        (蹇冨笨)       ->  ->                    ->             ->/v2          (鎺у埗->     ->  鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->             鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->
 Usage:
     python recamera_fastapi.py                                      # safe dry-run
-    python recamera_fastapi.py --device-ip 192.168.106.85           # real device
-    python recamera_fastapi.py --device-ip 192.168.106.85 --no-dry-run  # real control
+    export RECAMERA_DEVICE_IP=<RECAMERA_IP>
+    python recamera_fastapi.py --device-ip "$RECAMERA_DEVICE_IP"    # video/perception source
 
 Other entry points (secondary):
     main_phase3.py       ->Phase 3 control pipeline (AI tracking + gimbal)
@@ -41,19 +41,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from core.event import BBox, Event
-from core.fsm import SystemState
-from core.orchestrator import Orchestrator
-from core.safety_layer import SafetyLayer
-from hardware.recamera_client import RecameraClient
+from core.device_config import (
+    DEVICE_IP_ENV,
+    device_sscma_ws_url,
+    normalize_device_ip,
+)
+from core.event import Event
+from core.event_bus import EventBusClient
 from utils.logger import get_logger, setup_root_logger
 
 logger = get_logger(__name__)
 
 
-# NOTE: All gimbal control (GimbalMode / ControlModeState FSM, manual-control
-# state mirror) has been removed. FastAPI is display-only; the single control
-# plane lives in core/orchestrator.py -> hardware/recamera_client.py.
+# NOTE: FastAPI is UI + telemetry only. It emits Events to the localhost
+# EventBus and never imports or calls the hardware control layer.
 
 
 def _bypass_proxy_for_device(device_ip: str) -> None:
@@ -77,10 +78,9 @@ HTML_FILE = DASHBOARD_DIR / "recamera_v2_live.html"
 
 @dataclass
 class Config:
-    device_ip: str = "192.168.106.85"
+    device_ip: str = ""
     host: str = "0.0.0.0"
     port: int = 8001
-    dry_run: bool = True
     ssl_enabled: bool = False
 
 
@@ -93,9 +93,9 @@ class SSCMAVideoClient:
     Runs in a background thread.
     """
 
-    def __init__(self, device_ip: str = "192.168.106.85"):
-        self._device_ip = device_ip
-        self.url = f"ws://{device_ip}:8090/"
+    def __init__(self, device_ip: str):
+        self._device_ip = normalize_device_ip(device_ip, required=True)
+        self.url = device_sscma_ws_url(self._device_ip, required=True)
         self._running = False
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
@@ -235,7 +235,7 @@ class SSCMAVideoClient:
 
 # NOTE: GimbalController (Socket.IO/_emit control path, _pd_step PD controller,
 # update_face_tracking, GimbalStateData mirror) removed. FastAPI no longer
-# commands the gimbal. Read-only telemetry is sourced from RecameraClient.get_status().
+# commands the gimbal or opens a hardware control client.
 
 
 
@@ -276,24 +276,23 @@ class ConnectionManager:
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  Global instances (set during lifespan)
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
 video_client: Optional[SSCMAVideoClient] = None
-# Read-only telemetry client. FastAPI NEVER calls apply_command on this; it only
-# reads hardware truth via get_status(). Control lives solely in core/orchestrator.
-recamera: Optional[RecameraClient] = None
-_gimbal_tlm = {"connected": False, "yaw": None, "pitch": None, "speed": None, "mode": None}
-
-# OBSERVE-ONLY control-plane mirror. This Orchestrator/SafetyLayer consume the same
-# perception events as the real control plane and compute FSM state + decision trace
-# for the dashboard. They NEVER call recamera.apply_command -> not a control plane,
-# pure observability. The real control plane is main_phase3.py -> RecameraClient.
-_observer: Optional[Orchestrator] = None
-_safety: Optional[SafetyLayer] = None
+_video_client_lock = threading.Lock()
+_gimbal_tlm = {
+    "connected": False,
+    "yaw": None,
+    "pitch": None,
+    "speed": None,
+    "mode": "external_control_runtime",
+}
+_eventbus = EventBusClient()
 _control_obs = {
     "observe_only": True,
     "fsm_state": "IDLE",
-    "authority": "idle",
+    "authority": "telemetry_only",
     "last_event": None,
     "command": None,
-    "safety": {"ok": False, "reason": "init"},
+    "safety": {"ok": False, "reason": "fastapi_no_hardware"},
+    "eventbus": {"host": "127.0.0.1", "port": 8765, "last_result": None},
 }
 from collections import deque as _deque
 _decision_trace = _deque(maxlen=40)
@@ -326,12 +325,53 @@ _single_track_active: bool = False
 _multi_track_active: bool = False
 
 
-def _audio_event(doa_deg: float, speech: bool, source: str = "doa") -> dict:
-    return {"type": "audio", "source": source, "doa_deg": float(doa_deg), "speech": bool(speech)}
+def _device_config_state() -> dict:
+    ip = app_config.device_ip if app_config else ""
+    return {
+        "ip": ip,
+        "configured": bool(ip),
+        "sscma_url": device_sscma_ws_url(ip) if ip else "",
+        "video_connected": bool(video_client.connected) if video_client else False,
+    }
 
 
-def _vision_event(cx: float, cy: float, conf: float, source: str = "vision") -> dict:
-    return {"type": "vision", "source": source, "cx": float(cx), "cy": float(cy), "conf": float(conf)}
+def _restart_video_client(device_ip: str) -> tuple[bool, str]:
+    """Restart FastAPI's display/perception SSCMA client only."""
+    global video_client
+    try:
+        ip = normalize_device_ip(device_ip, required=True)
+    except ValueError as exc:
+        return False, str(exc)
+
+    old_client = None
+    with _video_client_lock:
+        old_client = video_client
+        video_client = None
+    if old_client:
+        old_client.stop()
+
+    new_client = SSCMAVideoClient(device_ip=ip)
+    try:
+        new_client._frame_event = asyncio.Event()
+        new_client._event_loop = asyncio.get_event_loop()
+    except RuntimeError:
+        pass
+    new_client.start()
+
+    with _video_client_lock:
+        video_client = new_client
+    if app_config:
+        app_config.device_ip = ip
+    _bypass_proxy_for_device(ip)
+    return True, "video_client_restarted"
+
+
+def _audio_event(doa_deg: float, speech: bool, source: str = "doa") -> Event:
+    return Event.make("audio", "speech_detected", source, {"doa_deg": float(doa_deg), "speech": bool(speech)})
+
+
+def _vision_event(cx: float, cy: float, conf: float, source: str = "vision") -> Event:
+    return Event.make("vision", "target_detected", source, {"cx": float(cx), "cy": float(cy), "conf": float(conf)})
 
 
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  Build state snapshot dict
@@ -786,8 +826,9 @@ def build_state_snapshot() -> dict:
     snapshot = {
         "type": "state_snapshot",
         "data": {
-            # Gimbal telemetry = hardware truth only (RecameraClient.get_status()).
-            # FastAPI holds no control-state mirror; this is read-only.
+            "device": _device_config_state(),
+            # Gimbal telemetry is owned by the external control runtime.
+            # FastAPI does not open a hardware client.
             "gimbal": dict(_gimbal_tlm),
             "video": {
                 "connected": bool(video_client.connected) if video_client else False,
@@ -813,7 +854,7 @@ def build_state_snapshot() -> dict:
                 "video_fps": round(float(video_client.fps), 1) if video_client else 0.0,
                 "ws_clients": len(ws_mgr._connections),
                 "doa_age": round(float(getattr(_doa_reader, "age", 999.0)), 2) if _doa_reader else None,
-                "gimbal_latency_ms": round(float(getattr(recamera, "last_latency_ms", 0.0)), 1) if recamera else None,
+                "gimbal_latency_ms": None,
                 "gimbal_connected": bool(_gimbal_tlm.get("connected")),
             },
             "tracking_mode": _tracking_mode,
@@ -830,22 +871,18 @@ def build_state_snapshot() -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 
-    global video_client, recamera
+    global video_client
 
-    # Start video client
-    video_client = SSCMAVideoClient(device_ip=app_config.device_ip)
-    video_client._frame_event = asyncio.Event()
-    video_client._event_loop = asyncio.get_event_loop()
-    video_client.start()
-
-    # Read-only telemetry client (NO control). get_status() is the only call made.
-    recamera = RecameraClient(base_url=f"http://{app_config.device_ip}")
-    recamera.connect(dry_run=app_config.dry_run)
-
-    # Observe-only control-plane mirror (FSM/decision-trace telemetry; never commands).
-    global _observer, _safety
-    _observer = Orchestrator(frame_width=1920, frame_height=1080)
-    _safety = SafetyLayer(safe_mode=False, enable_real_control=True)
+    # Start video client only when a device address is configured. FastAPI can
+    # still run as UI/telemetry viewer without a reCamera address.
+    if app_config.device_ip:
+        video_client = SSCMAVideoClient(device_ip=app_config.device_ip)
+        video_client._frame_event = asyncio.Event()
+        video_client._event_loop = asyncio.get_event_loop()
+        video_client.start()
+    else:
+        video_client = None
+        logger.warning("No reCamera device address configured; /video_feed is disabled until /api/device/config is set")
 
     # Attention engine
     global _attention_engine
@@ -896,9 +933,9 @@ async def lifespan(app: FastAPI):
     _conversation_recording_requested = False
     _ensure_doa_reader()
 
-    # Background tasks: perception/state push + read-only gimbal telemetry poll.
+    # Background task: perception/state push. Control telemetry comes from the
+    # external control runtime, not from direct FastAPI hardware access.
     push_task = asyncio.create_task(state_push_loop())
-    tlm_task = asyncio.create_task(gimbal_telemetry_loop())
 
     logger.info("=" * 55)
     logger.info("reCamera Demo Dashboard (FastAPI) - display only")
@@ -908,21 +945,18 @@ async def lifespan(app: FastAPI):
     logger.info("   Dashboard:    %s://localhost:%d/home", scheme, app_config.port)
     logger.info("   MJPEG:        %s://localhost:%d/video_feed", scheme, app_config.port)
     logger.info("   WebSocket:    %s://localhost:%d/ws", ws_scheme, app_config.port)
-    logger.info("   Gimbal:       telemetry read-only (control plane = core.orchestrator)")
+    logger.info("   Control:      UI Events -> EventBus -> main_phase3")
     logger.info("=" * 55)
 
     yield
 
     # Cleanup
     push_task.cancel()
-    tlm_task.cancel()
-    for _t in (push_task, tlm_task):
-        try: await _t
-        except asyncio.CancelledError: pass
+    try: await push_task
+    except asyncio.CancelledError: pass
 
     _stop_conversation_recording(finalize=True)
     if video_client: video_client.stop()
-    if recamera: recamera.close()
     if _doa_reader: _doa_reader.close()
     logger.info("Dashboard shutdown complete")
 
@@ -943,22 +977,9 @@ app.mount("/static", StaticFiles(directory=str(DASHBOARD_DIR)), name="static")
 
 # 鈹€鈹€ State push loop 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-def _map_status_to_telemetry(status) -> dict:
-    """Normalize hardware readback into UI telemetry. Hardware truth only."""
-    if not status or not isinstance(status, dict):
-        return {"connected": False, "yaw": None, "pitch": None, "speed": None, "mode": None}
-    def pick(*keys):
-        for k in keys:
-            if status.get(k) is not None:
-                return status[k]
-        return None
-    return {
-        "connected": bool(recamera.connected) if recamera else False,
-        "yaw": pick("yaw", "yaw_angle", "pan"),
-        "pitch": pick("pitch", "pitch_angle", "tilt"),
-        "speed": pick("speed"),
-        "mode": pick("mode"),
-    }
+def _external_control_telemetry() -> dict:
+    """FastAPI-owned placeholder; main_phase3 owns hardware telemetry."""
+    return dict(_gimbal_tlm)
 
 
 _AUTHORITY = {
@@ -990,75 +1011,42 @@ def _ev_brief(ev) -> Optional[dict]:
 
 
 def _observe_control_step(detections: list, fw: int, fh: int) -> None:
-    """Feed perception into the observe-only Orchestrator and record the trace.
+    """Record telemetry-only event summaries.
 
-    NEVER issues a hardware command. This mirrors what the real control plane
-    (core/orchestrator.py) would decide, purely for dashboard observability.
+    FastAPI does not run FSM/orchestrator logic. It only reports raw perception
+    observations; the control runtime owns state and commands.
     """
     global _control_obs
-    if _observer is None:
-        return
-    prev_state = _observer.state
-    last_cmd = None
-
-    # Audio event (from read-only DOA), only when speech is present and fresh.
+    last_event = None
     if _doa_reader is not None and bool(getattr(_doa_reader, "has_speech", False)) and float(getattr(_doa_reader, "age", 999.0)) <= 1.0:
-        ev = Event.make("audio", "speech_detected", "doa",
-                        {"doa_deg": float(_doa_reader.doa), "speech": True})
-        cmd_a = _observer.handle(ev)
-        last_cmd = cmd_a or last_cmd
-
-    # Vision event (person detections -> bboxes).
-    bboxes = []
-    for d in detections:
-        if (d.get("class_name") == "person") and float(d.get("confidence", 0)) >= 0.42:
-            x1 = float(d["x"]); y1 = float(d["y"])
-            bboxes.append(BBox(x1=int(x1), y1=int(y1),
-                               x2=int(x1 + float(d["w"])), y2=int(y1 + float(d["h"])),
-                               class_name="person", confidence=float(d["confidence"])))
-    cmd_v = _observer.handle_vision(bboxes, source="vision")
-    last_cmd = cmd_v or last_cmd
-
-    state = _observer.state
-    last_event = _observer.fsm.last_event
-    safety_ok, safety_reason = (False, "no_command")
-    if _safety is not None:
-        safety_ok, safety_reason = _safety.passes(last_cmd)
+        last_event = Event.make("audio", "speech_detected", "fastapi_telemetry",
+                                {"doa_deg": float(_doa_reader.doa), "speech": True})
+    elif detections:
+        last_event = Event.make("vision", "target_detected", "fastapi_telemetry",
+                                {"count": len(detections)})
+    else:
+        last_event = Event.make("vision", "target_lost", "fastapi_telemetry", {"count": 0})
 
     _control_obs = {
         "observe_only": True,
-        "fsm_state": state.value,
-        "authority": _AUTHORITY.get(state.value, "idle"),
+        "fsm_state": "EXTERNAL",
+        "authority": "telemetry_only",
         "last_event": _ev_brief(last_event),
-        "command": _cmd_brief(last_cmd),
-        "safety": {"ok": bool(safety_ok), "reason": safety_reason},
-        "vision_lost_frames": _observer.vision_lost_frames,
+        "command": None,
+        "safety": {"ok": False, "reason": "fastapi_no_hardware"},
+        "vision_lost_frames": 0 if detections else None,
+        "eventbus": dict(_control_obs.get("eventbus", {})),
     }
 
-    # Append to decision trace when something meaningful happened.
-    if last_cmd is not None or state != prev_state:
-        _decision_trace.append({
-            "t": round(time.time(), 2),
-            "event": _ev_brief(last_event),
-            "state": state.value,
-            "transition": (state != prev_state),
-            "from": prev_state.value,
-            "command": _cmd_brief(last_cmd),
-            "authority": _AUTHORITY.get(state.value, "idle"),
-        })
-
-
-async def gimbal_telemetry_loop():
-    """Poll read-only hardware status into _gimbal_tlm. Issues NO control."""
-    global _gimbal_tlm
-    loop = asyncio.get_event_loop()
-    while True:
-        try:
-            status = await loop.run_in_executor(None, recamera.get_status) if recamera else None
-            _gimbal_tlm = _map_status_to_telemetry(status)
-        except Exception as e:
-            logger.debug("gimbal telemetry poll error: %s", str(e)[:80])
-        await asyncio.sleep(0.5)
+    _decision_trace.append({
+        "t": round(time.time(), 2),
+        "event": _ev_brief(last_event),
+        "state": "EXTERNAL",
+        "transition": False,
+        "from": "EXTERNAL",
+        "command": None,
+        "authority": "telemetry_only",
+    })
 
 
 async def state_push_loop():
@@ -1349,6 +1337,18 @@ async def api_state():
     return build_state_snapshot()
 
 
+@app.get("/api/device/config")
+async def api_device_config():
+    return {"ok": True, "device": _device_config_state()}
+
+
+@app.post("/api/device/config")
+async def api_set_device_config(payload: dict = Body(default={})):
+    device_ip = payload.get("device_ip") or payload.get("ip") or ""
+    ok, reason = _restart_video_client(str(device_ip))
+    return {"ok": ok, "reason": reason, "device": _device_config_state()}
+
+
 @app.get("/api/gimbal/state")
 async def api_gimbal_state():
     # Read-only telemetry (hardware truth). No control is exposed here.
@@ -1458,14 +1458,34 @@ async def api_multi_track_stop(payload: dict = Body(default={})):
     return {"ok": True, "active": False}
 
 
+async def _emit_ui_event(name: str, payload: dict) -> dict:
+    global _control_obs
+    event = Event.make("ui", name, "fastapi", payload=payload)
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
+    eventbus_state = {
+        "host": _eventbus.host,
+        "port": _eventbus.port,
+        "last_result": result,
+    }
+    _control_obs = {
+        **_control_obs,
+        "authority": result.get("authority", "unreachable"),
+        "last_event": _ev_brief(event),
+        "command": result.get("command"),
+        "eventbus": eventbus_state,
+    }
+    return {
+        **result,
+        "event": event.to_dict(),
+        "eventbus": eventbus_state,
+    }
+
+
 @app.post("/api/gimbal/home")
 async def api_gimbal_home():
-    """Return gimbal to center position (yaw=180, pitch=90). Only in non-dry-run mode."""
-    if recamera and app_config and not app_config.dry_run:
-        loop = asyncio.get_event_loop()
-        ok = await loop.run_in_executor(None, lambda: recamera.send_absolute(180.0, 90.0))
-        return {"ok": ok, "dry_run": False}
-    return {"ok": False, "dry_run": True}
+    """Emit a UI Event. main_phase3 decides whether this becomes a command."""
+    return await _emit_ui_event("gimbal_home", {})
 
 
 @app.post("/api/gimbal/move")
@@ -1473,11 +1493,7 @@ async def api_gimbal_move(payload: dict = Body(default={})):
     """Relative gimbal move. Body: {pan: float, tilt: float} degrees. Clamped to ±15/±10."""
     pan = max(-15.0, min(15.0, float(payload.get("pan", 0.0))))
     tilt = max(-10.0, min(10.0, float(payload.get("tilt", 0.0))))
-    if recamera and app_config and not app_config.dry_run:
-        loop = asyncio.get_event_loop()
-        ok = await loop.run_in_executor(None, lambda: recamera.send_delta(pan, tilt))
-        return {"ok": ok, "pan": pan, "tilt": tilt, "dry_run": False}
-    return {"ok": False, "dry_run": True, "pan": pan, "tilt": tilt}
+    return await _emit_ui_event("dpad_move", {"pan": pan, "tilt": tilt})
 
 
 @app.get("/api/debug/video")
@@ -1818,15 +1834,13 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="reCamera Demo Dashboard (FastAPI+MJPEG)",
         epilog="Examples:\n"
-               "  %(prog)s                          # safe: video + TCP DOA + gimbal dry-run\n"
-               "  %(prog)s --device-ip 192.168.106.85  # use the current WiFi device\n"
-               "  %(prog)s --no-dry-run             # enable real gimbal control",
+               "  %(prog)s                          # video + TCP DOA + UI EventBus emitter\n"
+               "  RECAMERA_DEVICE_IP=<RECAMERA_IP> %(prog)s  # use the current WiFi device\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--device-ip", default="192.168.106.85", help="reCamera device IP")
+    p.add_argument("--device-ip", default=os.environ.get(DEVICE_IP_ENV, ""), help=f"reCamera device address (or set {DEVICE_IP_ENV})")
     p.add_argument("--host", default="0.0.0.0", help="Server host")
     p.add_argument("--port", type=int, default=8001, help="Server port")
-    p.add_argument("--no-dry-run", action="store_true", help="Send REAL gimbal commands to device")
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING"])
     p.add_argument("--ssl-keyfile", default="", help="Optional TLS key file for tablet PWA install")
     p.add_argument("--ssl-certfile", default="", help="Optional TLS cert file for tablet PWA install")
@@ -1839,11 +1853,15 @@ def main():
 
 
     global app_config
+    try:
+        device_ip = normalize_device_ip(args.device_ip)
+    except ValueError as exc:
+        logger.error("%s", exc)
+        raise SystemExit(2)
     app_config = Config(
-        device_ip=args.device_ip,
+        device_ip=device_ip,
         host=args.host,
         port=args.port,
-        dry_run=not args.no_dry_run,
         ssl_enabled=bool(args.ssl_keyfile and args.ssl_certfile),
     )
 
@@ -1861,8 +1879,7 @@ def main():
         scheme = "https"
         ws_scheme = "wss"
         logger.info("🔐 HTTPS enabled for PWA")
-    if not args.no_dry_run:
-        logger.info("🔒 DRY-RUN mode ->gimbal commands NOT sent (use --no-dry-run to enable)")
+    logger.info("🔒 FastAPI emits UI Events only; main_phase3 owns hardware control")
     logger.info("🌐 Dashboard: %s://localhost:%d/home  (%s://localhost:%d/v2)", scheme, args.port, scheme, args.port)
     logger.info("📡 MJPEG:     %s://localhost:%d/video_feed", scheme, args.port)
     logger.info("🔌 WebSocket: %s://localhost:%d/ws", ws_scheme, args.port)

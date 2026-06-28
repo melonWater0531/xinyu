@@ -29,8 +29,6 @@ _DEBOUNCE: Dict[Tuple[SystemState, str, str], int] = {
 _TRANSITIONS: Dict[Tuple[SystemState, str, str], SystemState] = {
     (SystemState.IDLE, "audio", "speech_detected"): SystemState.AUDIO_SEARCH,
     (SystemState.IDLE, "vision", "target_detected"): SystemState.VISION_TRACK,
-    (SystemState.IDLE, "control", "manual_override"): SystemState.IDLE,
-    (SystemState.IDLE, "control", "emergency_stop"): SystemState.IDLE,
 
     (SystemState.AUDIO_SEARCH, "vision", "target_detected"): SystemState.FUSED_TRACK,
     (SystemState.AUDIO_SEARCH, "audio", "speech_detected"): SystemState.AUDIO_SEARCH,
@@ -77,23 +75,20 @@ class FSM:
 
     def transition(self, event: Event) -> SystemState:
         self._total_frames += 1
-        if event.type == "control" and event.name in {"emergency_stop", "manual_override"}:
-            next_state = SystemState.IDLE
-        else:
-            key = (self._state, event.type, event.name)
-            next_state = _TRANSITIONS.get(key, self._state)
-            required = _DEBOUNCE.get(key, 0)
-            if next_state != self._state and required > 0:
-                if self._pending_key == key:
-                    self._pending_frames += 1
-                else:
-                    self._pending_key = key
-                    self._pending_frames = 1
-                if self._pending_frames < required:
-                    self._last_event = event
-                    return self._state
-                self._pending_key = None
-                self._pending_frames = 0
+        key = (self._state, event.type, event.name)
+        next_state = _TRANSITIONS.get(key, self._state)
+        required = _DEBOUNCE.get(key, 0)
+        if next_state != self._state and required > 0:
+            if self._pending_key == key:
+                self._pending_frames += 1
+            else:
+                self._pending_key = key
+                self._pending_frames = 1
+            if self._pending_frames < required:
+                self._last_event = event
+                return self._state
+            self._pending_key = None
+            self._pending_frames = 0
 
         self._last_event = event
         if next_state != self._state:

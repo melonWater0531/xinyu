@@ -3,7 +3,7 @@
 > 唯一流程主文档  
 > 版本：4.0  
 > 更新日期：2026-06-26  
-> 当前 reCamera 无线 IP：`192.168.106.85`
+> 当前 reCamera 无线 IP：`RECAMERA_DEVICE_IP`
 
 本文档描述当前代码真实实现。架构深度说明见 `docs/ARCHITECTURE.md`。
 
@@ -31,7 +31,7 @@
 ## 2. 总体架构
 
 ```
-reCamera 192.168.106.85
+reCamera RECAMERA_DEVICE_IP
   ├─ :8090  SSCMA WebSocket ──────────────> recamera_fastapi.py :8001
   └─ :1880  Node-RED Socket.IO <────────── main_phase3.py（唯一控制进程）
 
@@ -58,10 +58,10 @@ recamera_fastapi.py
 | 地址/端口 | 服务 | 用途 |
 |---|---|---|
 | `192.168.42.1:22` | reCamera USB SSH | 初始化及查询无线 IP |
-| `192.168.106.85:22` | reCamera Wi-Fi SSH | 无线维护 |
-| `192.168.106.85:80` | 官方 Demo | reCamera 官方页面 |
-| `192.168.106.85:1880` | Node-RED Dashboard | 云台 Socket.IO 控制（仅 `main_phase3.py` 使用） |
-| `192.168.106.85:8090` | SSCMA WebSocket | 视频和检测框（FastAPI 接收） |
+| `RECAMERA_DEVICE_IP:22` | reCamera Wi-Fi SSH | 无线维护 |
+| `RECAMERA_DEVICE_IP:80` | 官方 Demo | reCamera 官方页面 |
+| `RECAMERA_DEVICE_IP:1880` | Node-RED Dashboard | 云台 Socket.IO 控制（仅 `main_phase3.py` 使用） |
+| `RECAMERA_DEVICE_IP:8090` | SSCMA WebSocket | 视频和检测框（FastAPI 接收） |
 | `0.0.0.0:9999` | Network DOA Receiver | 接收远程 DOA 数据 |
 | `0.0.0.0:8001` | FastAPI | 项目页面、API、MJPEG、WebSocket |
 
@@ -145,7 +145,7 @@ recamera_fastapi.py
 
 3. 拔 USB，浏览器访问：
    ```text
-   http://192.168.106.85/
+   http://RECAMERA_DEVICE_IP/
    ```
 
 无线 IP 可能被 DHCP 重新分配，网络变化后必须重新查询并更新代码默认值。
@@ -248,9 +248,9 @@ export RECAMERA_AUDIO_DEVICE=2   # 示例：索引为 2
 ### 6.1 启动前检查
 ```bash
 cd ~/recamera_multimodal
-ping -c 3 192.168.106.85          # reCamera 可达
-nc -zv 192.168.106.85 8090        # SSCMA 视频端口
-nc -zv 192.168.106.85 1880        # Node-RED（M3 需要）
+ping -c 3 RECAMERA_DEVICE_IP          # reCamera 可达
+nc -zv RECAMERA_DEVICE_IP 8090        # SSCMA 视频端口
+nc -zv RECAMERA_DEVICE_IP 1880        # Node-RED（M3 需要）
 usbipd.exe list | grep 2886       # ReSpeaker 状态（Shared / Attached）
 ```
 
@@ -275,7 +275,7 @@ python3 recamera_fastapi.py
 
 启动成功日志：
 ```
-SSCMA connected to ws://192.168.106.85:8090/
+SSCMA connected to ws://RECAMERA_DEVICE_IP:8090/
 Network DOA listening on 0.0.0.0:9999
 DRY-RUN mode → gimbal commands NOT sent
 Uvicorn running on http://0.0.0.0:8001
@@ -321,7 +321,7 @@ python3 recamera_fastapi.py --no-dry-run
 ```
 🎤 ReSpeaker XVF3800 connected (VID=0x2886 PID=0x001A)
 🎤 DOA polling started @ 10 Hz
-RecameraClient: CONNECTED via Socket.IO → 192.168.106.85:1880
+RecameraClient: CONNECTED via Socket.IO → RECAMERA_DEVICE_IP:1880
 Uvicorn running on http://0.0.0.0:8001
 ```
 
@@ -350,14 +350,14 @@ python3 recamera_fastapi.py --no-dry-run
 cd ~/recamera_multimodal
 python3 main_phase3.py \
   --enable-control \
-  --gimbal-ip 192.168.106.85 \
+  --gimbal-ip RECAMERA_DEVICE_IP \
   --fps 10 \
   --max-cycles 500
 ```
 
 `main_phase3.py` 关键日志：
 ```
-CONNECTED via Socket.IO → 192.168.106.85:1880
+CONNECTED via Socket.IO → RECAMERA_DEVICE_IP:1880
 [0001] state=IDLE target=no command=hold
 [0004] state=VISION_TRACK target=yes command=vision_track   ← 检测到目标
 ```
@@ -367,7 +367,7 @@ CONNECTED via Socket.IO → 192.168.106.85:1880
 - 决策 trace 出现 `vision_track` 命令记录
 - Gimbal 遥测 yaw/pitch 数值随追踪实时变化（由 main_phase3.py 驱动，FastAPI 读 readback）
 
-**注意 SSCMA 双连接**：FastAPI 和 main_phase3.py 各自独立连接 `ws://192.168.106.85:8090/`，二者同时持有连接。reCamera 通常支持多客户端，但若出现视频断连，先停 main_phase3.py，单独验证 FastAPI。
+**注意 SSCMA 双连接**：FastAPI 和 main_phase3.py 各自独立连接 `ws://RECAMERA_DEVICE_IP:8090/`，二者同时持有连接。reCamera 通常支持多客户端，但若出现视频断连，先停 main_phase3.py，单独验证 FastAPI。
 
 ---
 
@@ -887,7 +887,7 @@ PAGE 1（`/control`）提供实时 FSM 可视化：
 
 ### 12.1 reCamera 不可达
 ```bash
-ping 192.168.106.85
+ping RECAMERA_DEVICE_IP
 ```
 失败时通过 USB SSH 重新查询 `wlan0`。
 
@@ -895,7 +895,7 @@ ping 192.168.106.85
 
 **第一步：诊断**
 ```bash
-nc -zv 192.168.106.85 8090
+nc -zv RECAMERA_DEVICE_IP 8090
 curl http://localhost:8001/api/health
 ```
 
@@ -913,20 +913,20 @@ curl http://localhost:8001/api/health
 SSCMA 是 reCamera 上的 AI 推理服务，不随设备开机自动运行，需手动部署模型后启动。
 
 方法 1 — 官方 Web UI（推荐）：
-1. 浏览器打开 `http://192.168.106.85`
+1. 浏览器打开 `http://RECAMERA_DEVICE_IP`
 2. 进入模型部署页面，选择 YOLO 模型（如 YOLO11n），点击**部署 / 运行**
 3. 等待加载完成，`:8090` WebSocket 自动开放
 
 方法 2 — SSH 排查：
 ```bash
-ssh recamera@192.168.106.85   # 密码：recamera0526_
+ssh recamera@RECAMERA_DEVICE_IP   # 密码：recamera0526_
 ps aux | grep -i sscma        # 查看是否有 SSCMA 进程
 systemctl status sscma 2>/dev/null
 ```
 
 **确认 SSCMA 已启动：**
 ```bash
-nc -zv 192.168.106.85 8090    # 应输出 "succeeded"
+nc -zv RECAMERA_DEVICE_IP 8090    # 应输出 "succeeded"
 # 此后我们的服务日志会出现：📷 SSCMA connected
 ```
 
@@ -990,6 +990,38 @@ FastAPI 侧云台 readback 为 null 属正常（dry-run 模式下 `get_status()`
 |---|---|---|
 | 4.3 | 2026-06-26 | 情绪监测/专注计时/DOA 实时接通真实后端（`isFilePreview=false`）；新增 6 个 POST 路由（tracking_mode / single_track / multi_track / meeting/summarize）；修复 `/api/chat` 重复路由 bug，接入 DeepSeek + LLMReflect 降级；`/api/reflect` diary 模式增强（user_text / duration_min / valence）；日记写入后注入聊天回应；周趋势图读 localStorage 实际数据；会议记录功能（faster-whisper + DeepSeek 摘要 → 独立 `xinyu_meeting_notes`）；新增 `audio/transcriber.py` |
 | 4.2 | 2026-06-26 | 重写 §6 启动流程（三模式 M1/M2/M3）；新增 §9 前端页面说明与验证手册（PAGE 1 面板详解 + 端到端验证清单 + PAGE 2 说明）；章节重编号 §9→§15 |
-| 4.1 | 2026-06-26 | 更新设备 IP → 192.168.106.85；密码更新为 recamera0526_；新增 §7 ReSpeaker XVF3800 完整连接方案（方式 A usbipd WSL 直连 + 方式 B Windows TCP 转发），含验证命令、持久化 attach、环境变量、格式说明 |
+| 4.1 | 2026-06-26 | 更新设备 IP → RECAMERA_DEVICE_IP；密码更新为 recamera0526_；新增 §7 ReSpeaker XVF3800 完整连接方案（方式 A usbipd WSL 直连 + 方式 B Windows TCP 转发），含验证命令、持久化 attach、环境变量、格式说明 |
 | 4.0 | 2026-06-26 | 重写：对齐清理后架构；删除 GimbalController/影子控制链路相关说明；更新模块表、API 表、端口表；新增 FSM observe-only 说明；删除已不存在的页面/路由/API |
 | 3.0 | 2026-06-19 | 旧版（已过期） |
+
+---
+
+## 16. 设备地址配置与新版 Dashboard 操作
+
+reCamera 地址统一通过环境变量或启动参数传入，不再在代码中写死：
+
+```bash
+export RECAMERA_DEVICE_IP=<RECAMERA_IP>
+python3 recamera_fastapi.py --device-ip "$RECAMERA_DEVICE_IP"
+python3 main_phase3.py --enable-control --gimbal-ip "$RECAMERA_DEVICE_IP" --manual-control
+```
+
+FastAPI 可在未配置设备地址时启动，此时 dashboard 会显示视频源未配置。进入 dashboard 后，在顶部“设备地址”输入框填写 `<RECAMERA_IP>` 并点击“保存并重连视频”，只会重连 FastAPI 视频/感知链路；真实云台控制仍必须用同一个地址启动 `main_phase3.py`。
+
+新版 dashboard 操作规则：
+
+1. 左侧导航分为“单人场景”“多人场景”“设备调试”。
+2. 单人场景的“人脸追踪与分析”合并找脸、云台对准、情绪/人脸/专注/眼部指标。
+3. 多人场景包含“声源 yaw 跟随”和“会议录音”，两个页面都集成声源位置与 LED 示意。
+4. 每个页面进入后默认空闲，必须点击“启动功能”才开始对应控制。
+5. 切换页面、隐藏页面或关闭页面时，当前页面功能会 best-effort stop，新页面不会自动启动。
+
+排障命令：
+
+```bash
+ping "$RECAMERA_DEVICE_IP"
+nc -zv "$RECAMERA_DEVICE_IP" 8090
+nc -zv "$RECAMERA_DEVICE_IP" 1880
+nc -zv "$RECAMERA_DEVICE_IP" 80
+nc -zv "$RECAMERA_DEVICE_IP" 22
+```

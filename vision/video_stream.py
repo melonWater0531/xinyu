@@ -1,11 +1,11 @@
 """
 Video stream client ->receives frames + AI results from reCamera WebSocket.
 
-Connects to ws://192.168.106.85:8090/ (sscma-node).
+Connects to ws://<RECAMERA_IP>:8090/ (sscma-node).
 Receives: JSON with base64-encoded JPEG + detection boxes.
 
 Usage:
-    vs = VideoStream(url="ws://192.168.106.85:8090/")
+    vs = VideoStream(url="ws://<RECAMERA_IP>:8090/")
     vs.start()
     frame = vs.latest_frame    # base64 JPEG string or None
     boxes = vs.latest_boxes    # list of [x1,y1,x2,y2,conf,cls]
@@ -33,8 +33,10 @@ class VideoStream:
     Runs in a daemon thread. Auto-reconnects on disconnect.
     """
 
-    def __init__(self, url: str = "ws://192.168.106.85:8090/",
+    def __init__(self, url: str,
                  reconnect_delay: float = 2.0) -> None:
+        if not url:
+            raise ValueError("VideoStream url is required")
         self._url = url
         self._reconnect_delay = reconnect_delay
 
