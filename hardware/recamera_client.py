@@ -1,28 +1,11 @@
-"""
-reCamera Gimbal WiFi HTTP Client.
+"""reCamera Gimbal client for the companion Node-RED control bridge."""
 
-Phase 3: Real hardware control over WiFi.
-Connects to reCamera Gimbal 2002W at the configured IP.
+from __future__ import annotations
 
-Key design:
-  - 200ms timeout per request (WiFi may have latency)
-  - 3 retries on failure
-  - Both delta (relative) and absolute angle modes
-  - Falls back to dry-run if unreachable
-  - Simulates responses when API not available (for testing)
-
-Usage:
-    client = RecameraClient(base_url="http://<RECAMERA_IP>")
-    if client.connect():
-        client.send_delta(pan=1.5, tilt=-0.8)  # relative movement
-        client.send_absolute(pan=90, tilt=45)   # absolute position
-"""
-
-import threading
-import time
 import json
-from typing import Optional, Tuple
-from urllib import request, error
+import time
+from typing import Optional
+from urllib import error, parse, request
 
 from core.device_config import device_http_url
 from core.event import ControlCommand
@@ -30,351 +13,131 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# ══════════════════════════════════════════════════════════════->#  Constants
-# ══════════════════════════════════════════════════════════════->
-DEFAULT_TIMEOUT_MS = 200
+DEFAULT_TIMEOUT_MS = 350
 DEFAULT_RETRY = 3
 
 
-# ══════════════════════════════════════════════════════════════->#  RecameraClient
-# ══════════════════════════════════════════════════════════════->
 class RecameraClient:
-    """
-    WiFi HTTP client for reCamera Gimbal 2002W.
+    """The sole adapter allowed to exchange gimbal commands and readback."""
 
-    Features:
-      - Connection health check
-      - Delta (relative) and absolute angle commands
-      - Automatic retry with backoff
-      - Dry-run mode when unreachable
-      - Request latency tracking
-    """
-
-    def __init__(
-        self,
-        base_url: str = "",
-        timeout_ms: int = DEFAULT_TIMEOUT_MS,
-        retry: int = DEFAULT_RETRY,
-    ) -> None:
-        self._base_url = (base_url or device_http_url()).rstrip("/")
-        self._timeout_ms = timeout_ms
-        self._timeout_sec = timeout_ms / 1000.0
-        self._retry = retry
-
-        # State
-        self._connected: bool = False
-        self._dry_run: bool = True
-        self._last_request_time: float = 0.0
-        self._request_count: int = 0
-        self._fail_count: int = 0
-        self._consecutive_fails: int = 0
-        self._last_latency_ms: float = 0.0
-
-        # Transport mode: "http" or "socketio"
-        self._transport: str = "http"
-        self._sio = None  # Socket.IO client
-        self._sio_widget_id: str = "1528e53340ceac14"
-        self._sio_path: str = "/dashboard/socket.io"
-        # Node-RED Dashboard listens on port 1880, not the base HTTP port (80).
-        import urllib.parse as _up
-        _parsed = _up.urlparse(self._base_url)
-        self._sio_url: str = f"{_parsed.scheme}://{_parsed.hostname}:1880"
-
-        # Known endpoints (tried in order)
-        self._control_urls = [
-            f"{self._base_url}/gimbal/control",
-            f"{self._base_url}/api/gimbal",
-            f"{self._base_url}/motor/control",
-        ]
-
-    # ── Connection ──────────────────────────────────
+    def __init__(self, base_url: str = "", timeout_ms: int = DEFAULT_TIMEOUT_MS, retry: int = DEFAULT_RETRY) -> None:
+        raw = (base_url or device_http_url()).rstrip("/")
+        parsed = parse.urlparse(raw)
+        host = parsed.hostname or ""
+        scheme = parsed.scheme or "http"
+        port = parsed.port or 1880
+        self._bridge_url = f"{scheme}://{host}:{port}/recamera-control/v1" if host else ""
+        self._timeout_sec = max(0.05, timeout_ms / 1000.0)
+        self._retry = max(1, int(retry))
+        self._connected = False
+        self._dry_run = True
+        self._request_count = 0
+        self._fail_count = 0
+        self._consecutive_fails = 0
+        self._last_latency_ms = 0.0
 
     def connect(self, dry_run: bool = False) -> bool:
-        """
-        Establish connection to reCamera.
-
-        Auto-detects:
-          - Port 1880 ->Node-RED Dashboard ->Socket.IO
-          - Other ports ->HTTP POST /gimbal/control
-
-        Args:
-            dry_run: If True, skip real connection (safe testing mode).
-        """
         if dry_run:
             self._dry_run = True
             self._connected = False
-            logger.info("DRY-RUN mode ->commands NOT sent to %s", self._base_url)
+            logger.info("DRY-RUN mode: gimbal bridge disabled")
             return True
-
-        # ── Try Socket.IO (Node-RED Dashboard on port 1880) ──
-        try:
-            import socketio
-            sio = socketio.Client(logger=False)
-            sio_url = self._sio_url
-            sio_path = self._sio_path
-            connected_event = threading.Event()
-
-            @sio.on("connect")
-            def _ok():
-                self._connected = True
-                connected_event.set()
-
-            @sio.on("disconnect")
-            def _dc():
-                self._connected = False
-
-            @sio.on("connect_error")
-            def _err(data):
-                logger.debug("Socket.IO connect_error: %s", data)
-
-            sio.connect(sio_url, socketio_path=sio_path, wait_timeout=3.0)
-
-            if connected_event.wait(timeout=3.0):
-                self._sio = sio
-                self._transport = "socketio"
-                self._dry_run = False
-                logger.info("🟢 CONNECTED via Socket.IO ->%s%s", sio_url, sio_path)
-                return True
-            else:
-                try:
-                    sio.disconnect()
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.debug("Socket.IO probe failed: %s", str(e)[:80])
-
-        # ── Fall back to HTTP ──
-        for attempt in range(self._retry):
-            for endpoint in ["/device/info", "/gimbal/status", "/"]:
-                try:
-                    url = f"{self._base_url}{endpoint}"
-                    req = request.Request(url, method="GET")
-                    resp = request.urlopen(req, timeout=self._timeout_sec)
-                    if resp.status in (200, 301, 302):
-                        self._connected = True
-                        self._dry_run = False
-                        self._transport = "http"
-                        logger.info("CONNECTED via HTTP ->%s", self._base_url)
-                        return True
-                except Exception:
-                    pass
-            if attempt < self._retry - 1:
-                time.sleep(0.1)
-
-        # Unreachable ->enter dry-run
-        logger.warning("UNREACHABLE at %s ->entering DRY-RUN mode", self._base_url)
-        self._dry_run = True
-        self._connected = False
-        return True
-
-    # ── Control commands ─────────────────────────────
+        self._dry_run = False
+        status = self.get_status()
+        if status is None:
+            self._connected = False
+            logger.error("Node-RED control bridge unavailable: %s/status", self._bridge_url)
+            return False
+        self._connected = bool(status.get("connected", True))
+        logger.info("CONNECTED to Node-RED gimbal bridge: %s", self._bridge_url)
+        return self._connected
 
     def apply_command(self, command: ControlCommand) -> bool:
-        """Only hardware exit: apply a normalized ControlCommand."""
         if not isinstance(command, ControlCommand):
             raise TypeError("RecameraClient.apply_command requires ControlCommand")
         if command.stop:
             return self.emergency_stop()
-        if command.mode == "delta":
-            return self.send_delta(float(command.yaw or 0.0), float(command.pitch or 0.0))
-        if command.yaw is not None or command.pitch is not None:
-            return self.send_absolute(
-                float(command.yaw if command.yaw is not None else 180.0),
-                float(command.pitch if command.pitch is not None else 90.0),
-            )
-        return True
-
-    def send_delta(self, pan: float, tilt: float) -> bool:
-        """Send relative pan/tilt movement. Auto-routes via Socket.IO or HTTP."""
-        self._request_count += 1
-        pan = max(-2.5, min(2.5, pan))
-        tilt = max(-2.5, min(2.5, tilt))
-        if abs(pan) < 0.01 and abs(tilt) < 0.01:
-            return True
-
-        if self._dry_run:
-            self._consecutive_fails = 0
-            logger.debug("[DRY-RUN] pan=%+.2f° tilt=%+.2f°", pan, tilt)
-            return True
-
-        # ── Socket.IO transport (Node-RED Dashboard) ──
-        # If Socket.IO was the chosen transport but connection dropped, try to reconnect once.
-        if self._transport == "socketio" and self._sio and not self._connected:
-            logger.info("Socket.IO disconnected; attempting reconnect...")
-            try:
-                self._sio.connect(self._sio_url, socketio_path=self._sio_path, wait_timeout=2.0)
-            except Exception as e:
-                logger.debug("Socket.IO reconnect failed: %s", str(e)[:60])
-
-        if self._transport == "socketio" and self._sio and self._connected:
-            try:
-                # Send pan via widget-change event
-                pan_int = int(round(pan + 90))  # convert delta→absolute for slider widget
-                self._sio.emit("widget-change", (self._sio_widget_id, pan_int))
-                self._consecutive_fails = 0
-                return True
-            except Exception:
-                self._consecutive_fails += 1
-                self._fail_count += 1
-                logger.warning("Socket.IO send failed (%d consecutive)", self._consecutive_fails)
-                return False
-
-        # ── HTTP transport ──
-        return self._http_send({"pan": round(pan, 2), "tilt": round(tilt, 2)})
-
-    def send_absolute(self, pan: float, tilt: float) -> bool:
-        """
-        Send absolute pan/tilt position.
-
-        Args:
-            pan:  Target pan angle in degrees.
-            tilt: Target tilt angle in degrees.
-
-        Returns:
-            True if command was sent.
-        """
-        self._request_count += 1
-
-        if self._dry_run:
-            self._consecutive_fails = 0
-            logger.debug(
-                "[DRY-RUN] ABS  | pan=%5.1f°  tilt=%5.1f°",
-                pan, tilt,
-            )
-            return True
-
-        # ── Socket.IO transport: reconnect if dropped ──
-        if self._transport == "socketio" and self._sio and not self._connected:
-            logger.info("Socket.IO disconnected; attempting reconnect...")
-            try:
-                self._sio.connect(self._sio_url, socketio_path=self._sio_path, wait_timeout=2.0)
-            except Exception as e:
-                logger.debug("Socket.IO reconnect failed: %s", str(e)[:60])
-
-        if self._transport == "socketio" and self._sio and self._connected:
-            try:
-                pan_int = int(round(pan))
-                self._sio.emit("widget-change", (self._sio_widget_id, pan_int))
-                self._consecutive_fails = 0
-                return True
-            except Exception:
-                self._consecutive_fails += 1
-                self._fail_count += 1
-                logger.warning("Socket.IO send failed (%d consecutive)", self._consecutive_fails)
-                return False
-
-        return self._http_send({
-            "pan": round(pan, 1),
-            "tilt": round(tilt, 1),
-            "mode": "absolute",
-        })
+        payload = {
+            "mode": command.mode,
+            "yaw": command.yaw,
+            "pitch": command.pitch,
+            "yaw_speed": command.speed or 180,
+            "pitch_speed": command.speed or 180,
+            "reason": command.reason,
+        }
+        return self._post("command", payload)
 
     def emergency_stop(self) -> bool:
-        """
-        Immediately stop all gimbal movement.
-
-        Sends zero-delta command with highest priority.
-        """
-        logger.warning("EMERGENCY STOP ->halting gimbal")
-
         if self._dry_run:
             return True
-
-        # Try stop endpoint first
-        for url in [
-            f"{self._base_url}/gimbal/stop",
-            f"{self._base_url}/motor/stop",
-        ]:
-            try:
-                data = json.dumps({"stop": True}).encode()
-                req = request.Request(
-                    url, data=data,
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                request.urlopen(req, timeout=self._timeout_sec)
-                return True
-            except Exception:
-                pass
-
-        # Fallback: send zero movement
-        return self._http_send({"pan": 0.0, "tilt": 0.0, "stop": True})
-
-    # ── Status ──────────────────────────────────────
+        return self._post("stop", {"stop": True})
 
     def get_status(self) -> Optional[dict]:
-        """Query device status. Returns None if unreachable."""
         if self._dry_run:
-            return {"mode": "dry_run", "connected": False}
-
-        try:
-            url = f"{self._base_url}/gimbal/status"
-            req = request.Request(url, method="GET")
-            resp = request.urlopen(req, timeout=self._timeout_sec)
-            return json.loads(resp.read())
-        except Exception:
+            return {
+                "connected": False, "yaw": None, "pitch": None,
+                "yaw_speed": None, "pitch_speed": None,
+                "source": "dry_run", "age_ms": None,
+            }
+        data = self._request_json("GET", "status")
+        if data is None:
+            self._connected = False
             return None
-
-    # ── Internal ────────────────────────────────────
-
-    def _http_send(self, payload: dict) -> bool:
-        """Send JSON payload to the control endpoint with retry."""
-        data = json.dumps(payload).encode()
-        last_error = None
-
-        for attempt in range(self._retry):
-            for url in self._control_urls:
-                try:
-                    t0 = time.monotonic()
-                    req = request.Request(
-                        url, data=data,
-                        headers={"Content-Type": "application/json"},
-                        method="POST",
-                    )
-                    resp = request.urlopen(req, timeout=self._timeout_sec)
-                    self._last_latency_ms = (time.monotonic() - t0) * 1000
-
-                    if resp.status in (200, 202, 204):
-                        self._consecutive_fails = 0
-                        return True
-                except error.HTTPError as e:
-                    last_error = f"HTTP {e.code}"
-                except error.URLError as e:
-                    last_error = f"URL error: {e.reason}"
-                except Exception as e:
-                    last_error = str(e)
-
-            if attempt < self._retry - 1:
-                time.sleep(0.05)
-
-        self._consecutive_fails += 1
-        self._fail_count += 1
-        logger.warning(
-            "RecameraClient: send failed (%d consecutive) ->%s",
-            self._consecutive_fails, last_error,
-        )
-        return False
-
-    # ── Cleanup ──────────────────────────────────
+        now_ms = int(time.time() * 1000)
+        sample_ms = int(data.get("timestamp", now_ms))
+        result = {
+            "connected": bool(data.get("connected", True)),
+            "yaw": _optional_float(data.get("yaw")),
+            "pitch": _optional_float(data.get("pitch")),
+            "yaw_speed": _optional_int(data.get("yaw_speed", data.get("speed"))),
+            "pitch_speed": _optional_int(data.get("pitch_speed", data.get("speed"))),
+            "source": str(data.get("source", "motor_readback")),
+            "age_ms": max(0, now_ms - sample_ms),
+            "timestamp": sample_ms,
+        }
+        self._connected = result["connected"] and result["age_ms"] <= 2000
+        result["connected"] = self._connected
+        return result
 
     def close(self) -> None:
-        """Clean shutdown: stop gimbal, disconnect, release resources."""
         if not self._dry_run and self._connected:
-            try:
-                self.emergency_stop()
-            except Exception:
-                pass
-        if self._sio:
-            try:
-                self._sio.disconnect()
-            except Exception:
-                pass
-            self._sio = None
+            self.emergency_stop()
         self._connected = False
         self._dry_run = True
-        logger.debug("RecameraClient closed")
 
-    # ── Properties ──────────────────────────────────
+    def _post(self, path: str, payload: dict) -> bool:
+        if self._dry_run:
+            return True
+        result = self._request_json("POST", path, payload)
+        ok = bool(result and result.get("ok", result.get("accepted", False)))
+        self._connected = ok
+        return ok
+
+    def _request_json(self, method: str, path: str, payload: dict | None = None) -> Optional[dict]:
+        if not self._bridge_url:
+            return None
+        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        headers = {"Content-Type": "application/json"} if body is not None else {}
+        last_error = ""
+        for attempt in range(self._retry):
+            self._request_count += 1
+            started = time.monotonic()
+            try:
+                req = request.Request(f"{self._bridge_url}/{path}", data=body, headers=headers, method=method)
+                with request.urlopen(req, timeout=self._timeout_sec) as response:
+                    self._last_latency_ms = (time.monotonic() - started) * 1000.0
+                    raw = response.read().decode("utf-8", errors="replace")
+                    data = json.loads(raw) if raw else {}
+                    self._consecutive_fails = 0
+                    return data
+            except (error.URLError, error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+                last_error = str(exc)
+            if attempt + 1 < self._retry:
+                time.sleep(0.05)
+        self._fail_count += 1
+        self._consecutive_fails += 1
+        logger.warning("gimbal bridge request failed: %s %s (%s)", method, path, last_error[:120])
+        return None
 
     @property
     def connected(self) -> bool:
@@ -395,3 +158,11 @@ class RecameraClient:
     @property
     def last_latency_ms(self) -> float:
         return self._last_latency_ms
+
+
+def _optional_float(value) -> Optional[float]:
+    return None if value is None else float(value)
+
+
+def _optional_int(value) -> Optional[int]:
+    return None if value is None else int(value)

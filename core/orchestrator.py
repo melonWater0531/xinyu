@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Optional, Sequence
 
 from core.event import BBox, ControlCommand, Event
+from core.control_session import ControlMode, ControlSession
 from core.fsm import FSM, SystemState
 
 
@@ -21,6 +22,7 @@ class TargetState:
     vision_ts: float = 0.0
     yaw_target: float = 180.0
     pitch_target: float = 90.0
+    vision_class: str = ""
 
 
 class Orchestrator:
@@ -38,6 +40,8 @@ class Orchestrator:
         vision_stale_s: float = 0.8,
         frame_width: int = 1920,
         frame_height: int = 1080,
+        default_speed: int = 180,
+        lease_ms: int = 2500,
     ) -> None:
         self.fsm = FSM()
         self.target = TargetState(yaw_target=center_yaw, pitch_target=center_pitch)
@@ -50,6 +54,10 @@ class Orchestrator:
         self.vision_stale_s = float(vision_stale_s)
         self.frame_width = max(1, int(frame_width))
         self.frame_height = max(1, int(frame_height))
+        self.default_speed = max(1, min(720, int(default_speed)))
+        self.doa_offset_deg = 0.0
+        self.doa_direction = 1.0
+        self.session = ControlSession(default_lease_ms=lease_ms)
         self._vision_lost_frames = 0
         self._frame_count = 0
 
@@ -73,6 +81,20 @@ class Orchestrator:
         return self.fsm.state
 
     def handle_event(self, event: Event) -> Optional[ControlCommand]:
+        lifecycle = self._handle_lifecycle(event)
+        if lifecycle is not _NOT_LIFECYCLE:
+            return lifecycle
+
+        mode = self.session.mode
+        if mode is ControlMode.INACTIVE:
+            return None
+        if event.type == "vision" and mode is not ControlMode.SINGLE_FACE_ANALYSIS:
+            return None
+        if event.type == "audio" and mode not in {ControlMode.MULTI_SOUND_YAW, ControlMode.MEETING_SOUND_YAW}:
+            return None
+        if event.type == "ui" and not self._ui_event_allowed(event):
+            return None
+
         self._ingest(event)
         state = self.fsm.transition(event)
 
@@ -82,13 +104,87 @@ class Orchestrator:
             return self._system_command(event)
         if state == SystemState.AUDIO_SEARCH:
             return self._audio_command(event)
+        if event.type == "vision" and event.name == "target_lost":
+            return self._sweep_scan()
         if state == SystemState.VISION_TRACK:
-            return self._vision_command("vision_track")
+            if self.target.vision_class == "face":
+                self._reset_tilt_search()
+                return self._vision_command("vision_track")
+            return self._tilt_search(self.target.vision_conf)
         if state == SystemState.FUSED_TRACK:
             return self._fused_command()
         if state == SystemState.LOST and event.name == "timeout":
             return ControlCommand.make("orchestrator", yaw=self.center_yaw, pitch=self.center_pitch, reason="lost_timeout")
         return None
+
+    def _handle_lifecycle(self, event: Event):
+        if event.type == "ui" and event.name == "feature_start":
+            accepted = self.session.start(
+                str(event.payload.get("feature", "")),
+                str(event.payload.get("session_id", "")),
+                event.payload.get("lease_ms"),
+            )
+            if accepted:
+                self._reset_control_context()
+            return None
+        if event.type == "ui" and event.name == "feature_heartbeat":
+            self.session.heartbeat(str(event.payload.get("session_id", "")), event.payload.get("lease_ms"))
+            return None
+        if event.type == "ui" and event.name == "feature_mode_update":
+            accepted = self.session.update_mode(
+                str(event.payload.get("feature", "")),
+                str(event.payload.get("session_id", "")),
+                event.payload.get("lease_ms"),
+            )
+            if accepted:
+                self._reset_control_context()
+            return None
+        if event.type == "ui" and event.name == "feature_stop":
+            if self.session.stop(str(event.payload.get("session_id", ""))):
+                self._reset_control_context()
+                return ControlCommand.make("orchestrator", stop=True, reason="feature_stop")
+            return None
+        if event.type == "ui" and event.name == "control_config":
+            if not self.session.matches(str(event.payload.get("session_id", ""))):
+                return None
+            if "speed" in event.payload:
+                self.default_speed = max(1, min(720, int(event.payload["speed"])))
+            if "doa_offset_deg" in event.payload:
+                self.doa_offset_deg = max(-180.0, min(180.0, float(event.payload["doa_offset_deg"])))
+            if "doa_direction" in event.payload:
+                self.doa_direction = -1.0 if float(event.payload["doa_direction"]) < 0 else 1.0
+            return None
+        if event.type == "system" and event.name in {"lease_expired", "shutdown", "emergency_stop"}:
+            self.session.clear()
+            self._reset_control_context()
+            return ControlCommand.make("orchestrator", stop=True, reason=event.name)
+        return _NOT_LIFECYCLE
+
+    def _ui_event_allowed(self, event: Event) -> bool:
+        session_id = str(event.payload.get("session_id", ""))
+        if not self.session.matches(session_id):
+            return False
+        if event.name == "dpad_move":
+            return self.session.mode is ControlMode.MANUAL_GIMBAL_DEBUG
+        return event.name in {"gimbal_home", "gimbal_sleep", "gimbal_stop"}
+
+    def _reset_control_context(self) -> None:
+        self.fsm.transition(Event.make("system", "control_reset", "orchestrator"))
+        self.target.audio_speech = False
+        self.target.vision_conf = 0.0
+        self.target.vision_class = ""
+        self._vision_lost_frames = 0
+        self._sweep_idle_frames = 0
+        self._reset_tilt_search()
+
+    def runtime_state(self) -> dict:
+        return {
+            **self.session.snapshot(),
+            "fsm_state": self.state.value,
+            "speed": self.default_speed,
+            "doa_offset_deg": self.doa_offset_deg,
+            "doa_direction": int(self.doa_direction),
+        }
 
     def handle(self, event: Event) -> Optional[ControlCommand]:
         """Compatibility alias: all callers should move to handle_event."""
@@ -151,17 +247,18 @@ class Orchestrator:
             self.target.vision_cx = self._clamp(float(event.payload.get("cx", 0.5)), 0.0, 1.0)
             self.target.vision_cy = self._clamp(float(event.payload.get("cy", 0.5)), 0.0, 1.0)
             self.target.vision_conf = float(event.payload.get("conf", 0.0))
+            self.target.vision_class = str(event.payload.get("class_name", "target"))
             self.target.vision_ts = event.ts
 
     def _ui_command(self, event: Event) -> Optional[ControlCommand]:
         if event.name == "dpad_move":
             pan = self._clamp(float(event.payload.get("pan", 0.0)), -2.5, 2.5)
             tilt = self._clamp(float(event.payload.get("tilt", 0.0)), -2.5, 2.5)
-            return ControlCommand.make("orchestrator", mode="delta", yaw=pan, pitch=tilt, reason="ui_dpad_move")
+            return ControlCommand.make("orchestrator", mode="delta", yaw=pan, pitch=tilt, speed=self.default_speed, reason="ui_dpad_move")
         if event.name == "gimbal_home":
-            return ControlCommand.make("orchestrator", yaw=self.center_yaw, pitch=self.center_pitch, reason="standby")
+            return ControlCommand.make("orchestrator", yaw=self.center_yaw, pitch=self.center_pitch, speed=self.default_speed, reason="standby")
         if event.name == "gimbal_sleep":
-            return ControlCommand.make("orchestrator", yaw=self.center_yaw, pitch=180.0, reason="sleep")
+            return ControlCommand.make("orchestrator", yaw=self.center_yaw, pitch=180.0, speed=self.default_speed, reason="sleep")
         if event.name == "gimbal_stop":
             return ControlCommand.make("orchestrator", stop=True, reason="ui_stop")
         return None
@@ -176,7 +273,7 @@ class Orchestrator:
             return None
         yaw = self._doa_to_yaw(float(self.target.audio_doa_deg or 0.0))
         self.target.yaw_target = yaw
-        return ControlCommand.make("orchestrator", yaw=yaw, reason="audio_only_loop")
+        return ControlCommand.make("orchestrator", yaw=yaw, speed=self.default_speed, reason="audio_only_loop")
 
     def _vision_command(self, reason: str) -> Optional[ControlCommand]:
         if self.target.vision_cx is None or self.target.vision_cy is None:
@@ -187,7 +284,7 @@ class Orchestrator:
         pitch = self._clamp(self.target.pitch_target + err_y * self.vision_pitch_gain, 30.0, 150.0)
         self.target.yaw_target = yaw
         self.target.pitch_target = pitch
-        return ControlCommand.make("orchestrator", yaw=yaw, pitch=pitch, reason=reason)
+        return ControlCommand.make("orchestrator", yaw=yaw, pitch=pitch, speed=self.default_speed, reason=reason)
 
     def _fused_command(self) -> Optional[ControlCommand]:
         now = time.time()
@@ -198,7 +295,7 @@ class Orchestrator:
                 yaw = 0.85 * float(cmd.yaw or self.target.yaw_target) + 0.15 * audio_yaw
                 yaw = self._clamp(yaw, 1.0, 345.0)
                 self.target.yaw_target = yaw
-                return ControlCommand.make("orchestrator", yaw=yaw, pitch=cmd.pitch, reason="fusion_loop")
+                return ControlCommand.make("orchestrator", yaw=yaw, pitch=cmd.pitch, speed=self.default_speed, reason="fusion_loop")
             return cmd
         if self._audio_fresh(now):
             return self._audio_command(Event.make("audio", "speech_detected", "orchestrator", {"doa_deg": self.target.audio_doa_deg, "speech": True}))
@@ -211,7 +308,9 @@ class Orchestrator:
         return self.target.vision_conf > 0.0 and (now - self.target.vision_ts) <= self.vision_stale_s
 
     def _doa_to_yaw(self, doa_deg: float) -> float:
-        signed = doa_deg if doa_deg <= 180.0 else doa_deg - 360.0
+        corrected = (float(doa_deg) + self.doa_offset_deg) % 360.0
+        signed = corrected if corrected <= 180.0 else corrected - 360.0
+        signed *= self.doa_direction
         target = self._clamp(self.center_yaw + signed, 1.0, 345.0)
         delta = target - self.target.yaw_target
         if abs(delta) > self.audio_max_step:
@@ -246,6 +345,7 @@ class Orchestrator:
             "orchestrator",
             yaw=self.target.yaw_target,
             pitch=new_pitch,
+            speed=self.default_speed,
             reason="tilt_search",
         )
 
@@ -264,6 +364,7 @@ class Orchestrator:
                 "orchestrator",
                 yaw=self.center_yaw,
                 pitch=self.center_pitch,
+                speed=self.default_speed,
                 reason="return_center",
             )
         # Advance sweep position
@@ -278,6 +379,7 @@ class Orchestrator:
             "orchestrator",
             yaw=self._clamp(self._sweep_yaw, 1.0, 345.0),
             pitch=self.center_pitch,
+            speed=self.default_speed,
             reason="idle_scan",
         )
 
@@ -289,3 +391,6 @@ class Orchestrator:
 def make_system_command(name: str, source: str = "system") -> Optional[ControlCommand]:
     """Create system commands through the orchestrator module."""
     return Orchestrator().handle_event(Event.make("system", name, source))
+
+
+_NOT_LIFECYCLE = object()

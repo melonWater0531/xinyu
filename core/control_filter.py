@@ -18,8 +18,8 @@ Key design:
 Usage:
     cf = ControlFilter(frame_width=1920, frame_height=1080)
     delta_pan, delta_tilt = cf.update(bbox_center_x, bbox_center_y)
-    if delta_pan is not None:
-        client.send_delta(delta_pan, delta_tilt)
+    # The Orchestrator consumes this result and remains the only component
+    # allowed to construct a ControlCommand.
 """
 
 from typing import Optional, Tuple

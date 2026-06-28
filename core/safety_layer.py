@@ -59,6 +59,8 @@ class SafetyLayer:
                 return self._block("yaw_range")
             if command.pitch is not None and not (30.0 <= command.pitch <= 180.0):
                 return self._block("pitch_range")
+        if command.speed is not None and not (1 <= command.speed <= 720):
+            return self._block("speed_range")
 
         self._last_cmd_time = now
         self._last_output = command

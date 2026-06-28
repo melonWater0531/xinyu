@@ -120,7 +120,7 @@
 
 | 功能 | 说明 |
 |------|------|
-| **声源到达方向（DOA）接收** | 通过 TCP 服务（端口 9999）接收 ReSpeaker XVF3800 麦克风阵列计算的声源方向角（0–359°，正北方向为 0°）。支持纯角度文本、JSON 格式、xvf_host 格式等多种数据协议。 |
+| **声源到达方向（DOA）接收** | 生产模式通过 USB control 直接读取 ReSpeaker XVF3800 四麦阵列计算的 DOA/VAD（最高 10 Hz）；TCP 9999 仅作远端备用输入，备用模式不能控制本机实体 LED。 |
 | **语音活动检测（VAD）** | 基于 RMS 自适应噪声底的语音活动检测。系统实时估计环境噪声底，当音量超过动态阈值时判定为有声，并结合 DOA 的 `has_speech` 信号进行双重验证，提高在噪声环境下的语音判断精度。 |
 | **发言片段录制与分割** | 检测到语音活动时，系统自动开始录制当前片段（16kHz 单声道 WAV）。在持续静音一定时间后结束本片段，并为每段发言标注其 DOA 方向区域（左侧 / 正前方 / 右侧 / 后方），方便后续区分不同说话人。 |
 | **语音识别（Whisper）** | 使用 faster-whisper-tiny 模型在本地对录制的 WAV 片段进行中文语音识别，输出转写文本。tiny 模型在 CPU 上对 10 秒音频的处理时间约为 2 秒，满足会议场景对准实时性的需求。 |
@@ -229,7 +229,7 @@
 |------|-------------|
 | **硬件** | reCamera（SSCMA, Wi-Fi, PTZ 云台）/ ReSpeaker XVF3800 麦克风阵列 |
 | **视觉模型** | SCRFD（人脸检测）/ ByteTrack（目标追踪）/ ArcFace（特征提取）/ YOLO11n-pose（人体关键点）/ MediaPipe Face Landmarker（精细网格）/ EmotiEffLib（情绪分类）|
-| **音频处理** | sounddevice（16kHz 采集）/ NetworkDOA（TCP 声源定向）/ faster-whisper-tiny（本地语音识别）|
+| **音频处理** | ReSpeaker USB control（DOA/VAD/LED）/ USB Audio + sounddevice（16kHz 录音）/ NetworkDOA（TCP 备用）/ faster-whisper-tiny（本地语音识别）|
 | **计算机视觉** | OpenCV（图像处理）/ NumPy（数值计算）/ 自实现 EAR/PERCLOS 算法 |
 | **后端框架** | Python 3.10+ / FastAPI / WebSocket / asyncio |
 | **AI 对话** | DeepSeek API（云端 LLM）/ 本地模板引擎（离线降级）|
@@ -243,7 +243,7 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          硬件层                                      │
 │   reCamera 摄像头               ReSpeaker XVF3800 麦克风阵列         │
-│   SSCMA 视频 ws://device:8090/  声源方向 TCP 9999 / 音频 sounddevice │
+│   SSCMA 视频 ws://device:8090/  ReSpeaker USB DOA/Audio/WS2812 LED  │
 └───────────────────┬─────────────────────────┬───────────────────────┘
                     │                         │
                     ▼                         ▼
@@ -306,10 +306,28 @@
 
 ---
 
-## 2026-06 Runtime Update
+## 2026-06-28 Hardware Closure Update
 
 Device address configuration is shared through `RECAMERA_DEVICE_IP` plus CLI inputs (`--device-ip` for FastAPI video/perception, `--gimbal-ip` for `main_phase3.py` real control). The control dashboard can update the FastAPI video/perception address at runtime, but it never opens a hardware control client.
 
 The system remains single-control-plane: FastAPI is UI Event emitter + telemetry viewer; EventBus carries UI events; `main_phase3.py` owns FSM, orchestration, safety gating, and all `RecameraClient.apply_command()` calls.
 
-Dashboard feature pages are mutually exclusive and manually activated. Page switches stop the previous feature; each new page waits for `启动功能` before sending feature requests.
+Dashboard feature pages are mutually exclusive and manually activated through a lease-backed session. Each page waits for `启动功能`; the browser renews a 2.5-second lease, page switches stop the previous session, and lease expiry stops control after crashes or network loss.
+
+Hardware mapping:
+
+- **ReSpeaker XVF3800**: USB control provides DOA/VAD and the physical 12-LED WS2812 DOA ring; USB Audio Class provides meeting recording. TCP 9999 is fallback DOA transport and cannot control a local physical LED ring.
+- **reCamera Gimbal 2002w**: SSCMA provides video; the companion Node-RED flow exposes dual-axis command/stop/status APIs backed by official CAN motor nodes.
+- **main_phase3.py**: owns the only Orchestrator, SafetyLayer, RecameraClient, feature session, lease and real motor readback.
+- **FastAPI**: converts ReSpeaker/HTML input to Events and displays the runtime snapshot. It never opens a gimbal hardware client.
+
+Closed control paths:
+
+```text
+reCamera vision -> Event -> single session -> yaw/pitch command -> CAN motors
+ReSpeaker DOA -> EventBus -> multi/meeting-yaw session -> yaw-only command -> CAN motor
+Node-RED motor status -> main_phase3 -> EventBus runtime snapshot -> FastAPI -> Dashboard
+authoritative audio feature -> ReSpeaker LED_EFFECT=4 -> physical DOA ring + UI sector
+```
+
+The device flow is stored at `deploy/node_red/recamera_control_bridge.json`.

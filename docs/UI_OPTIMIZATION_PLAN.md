@@ -121,9 +121,9 @@
   - “停止 DOA 跟随”
   - “保存当前状态快照”或直接移除保存按钮
 - 明确标识多人模式当前策略：
-  - ReSpeaker/DOA 通过 TCP 或本地服务输入。
-  - 当前不挂载 ReSpeaker 到 WSL。
-  - 多人流程不默认保存音频。
+  - ReSpeaker/DOA 生产默认通过 WSL 内 USB control 输入，TCP 9999 仅备用。
+  - ReSpeaker 已通过 `usbipd` 挂载到 WSL，DOA 读取与实体 LED 写入共用线程锁。
+  - 声源跟随不默认保存音频；会议录音使用同一设备的 USB Audio Class 接口。
 - 统一设备 IP 展示为 `RECAMERA_DEVICE_IP`。
 - 在 `/home` 展示产品化运行状态，在 `/v2` 展示工程化运行状态：
   - `/home`：设备在线、监测中、暂停、数据过期、需要连接、权限不足、建议可生成
@@ -470,3 +470,7 @@ The control dashboard redesign has been implemented with a left sidebar and focu
 - Every page has `启动功能`; switching pages stops old control and never auto-starts the new page.
 - The top device address input reconnects FastAPI video/perception only; real gimbal control remains owned by `main_phase3.py`.
 - Buttons continue to call FastAPI APIs only, preserving the EventBus and single-control-plane architecture.
+- Page activation now returns an authoritative `session_id`; controls unlock only after `main_phase3` accepts the session.
+- A 1-second heartbeat renews a 2.5-second lease. Page loss, browser crash, or network loss automatically returns the runtime to inactive and stops the gimbal.
+- Multi-person pages distinguish the physical ReSpeaker XVF3800 WS2812 ring from the UI direction diagram and show hardware/readback status.
+- Gimbal yaw/pitch/speed values come from the Node-RED CAN readback bridge rather than frontend state.

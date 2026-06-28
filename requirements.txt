@@ -4,8 +4,7 @@
 numpy
 PyYAML
 
-# Gimbal hardware control (real device over WiFi)
-python-socketio[client]
+# reCamera video and ReSpeaker USB control
 websocket-client
 pyusb
 

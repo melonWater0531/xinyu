@@ -39,6 +39,10 @@ PID = 0x001A
 DOA_RESID = 20
 DOA_CMDID = 0x80 | 18  # 0x80 | cmdid for read
 DOA_LENGTH = 9  # 1 status + 4 × uint16 (8 bytes) — matches simple script
+LED_EFFECT_CMDID = 12
+LED_BRIGHTNESS_CMDID = 13
+LED_GAMMIFY_CMDID = 14
+LED_DOA_COLOR_CMDID = 17
 
 
 class ReSpeakerDOA:
@@ -53,6 +57,7 @@ class ReSpeakerDOA:
         self._pid = pid
         self._dev = None
         self._lock = threading.Lock()
+        self._usb_lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
 
@@ -62,6 +67,11 @@ class ReSpeakerDOA:
         self._last_read_time: float = 0.0
         self._read_count: int = 0
         self._error_count: int = 0
+        self._led = {
+            "hardware": True, "effect": "off", "brightness": 80,
+            "base_color": "#102030", "doa_color": "#24c98b",
+            "last_write_ok": False,
+        }
 
     # ── Open / Close ────────────────────────────────────────
 
@@ -96,10 +106,25 @@ class ReSpeakerDOA:
         import usb.util
         if self._dev is None:
             return
-        self._dev.ctrl_transfer(
-            usb.util.CTRL_OUT | usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE,
-            0, cmdid, resid, payload, 500
-        )
+        with self._usb_lock:
+            self._dev.ctrl_transfer(
+                usb.util.CTRL_OUT | usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE,
+                0, cmdid, resid, payload, 500
+            )
+
+    def _ctrl_read_raw(self, resid: int, cmdid: int, length: int) -> bytes:
+        import usb.util
+        if self._dev is None:
+            return b""
+        with self._usb_lock:
+            response = self._dev.ctrl_transfer(
+                usb.util.CTRL_IN | usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE,
+                0, 0x80 | cmdid, resid, length + 1, 500,
+            )
+        raw = response.tobytes() if hasattr(response, "tobytes") else bytes(response)
+        if not raw or raw[0] != 0:
+            raise RuntimeError(f"XVF3800 read failed for command {cmdid}")
+        return raw[1:]
 
     def close(self) -> None:
         """Stop polling and release USB device."""
@@ -159,10 +184,11 @@ class ReSpeakerDOA:
         import usb.core, usb.util
         TIMEOUT = 200
 
-        response = self._dev.ctrl_transfer(
-            usb.util.CTRL_IN | usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE,
-            0, DOA_CMDID, DOA_RESID, DOA_LENGTH, TIMEOUT,
-        )
+        with self._usb_lock:
+            response = self._dev.ctrl_transfer(
+                usb.util.CTRL_IN | usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE,
+                0, DOA_CMDID, DOA_RESID, DOA_LENGTH, TIMEOUT,
+            )
 
         # Use raw byte list like simple script (ignores status byte)
         raw = response.tolist()
@@ -255,13 +281,70 @@ class ReSpeakerDOA:
     @property
     def stats(self) -> dict:
         with self._lock:
+            age = 999.0 if self._last_read_time == 0.0 else time.monotonic() - self._last_read_time
             return {
                 "doa": round(self._doa_deg, 1),
                 "has_speech": self._has_speech,
-                "age": round(self.age, 2),
+                "age": round(age, 2),
                 "reads": self._read_count,
                 "errors": self._error_count,
             }
+
+    def set_led_doa(
+        self,
+        *,
+        brightness: int = 80,
+        base_color: int = 0x102030,
+        doa_color: int = 0x24C98B,
+    ) -> bool:
+        """Enable the XVF3800 firmware's physical DOA ring effect."""
+        if self._dev is None:
+            return False
+        try:
+            self._ctrl_write_raw(DOA_RESID, LED_DOA_COLOR_CMDID, struct.pack("<II", int(base_color), int(doa_color)))
+            self._ctrl_write_raw(DOA_RESID, LED_BRIGHTNESS_CMDID, bytes([max(0, min(255, int(brightness)))]))
+            self._ctrl_write_raw(DOA_RESID, LED_GAMMIFY_CMDID, bytes([1]))
+            self._ctrl_write_raw(DOA_RESID, LED_EFFECT_CMDID, bytes([4]))
+            effect = self._ctrl_read_raw(DOA_RESID, LED_EFFECT_CMDID, 1)[0]
+            brightness_read = self._ctrl_read_raw(DOA_RESID, LED_BRIGHTNESS_CMDID, 1)[0]
+            colors = struct.unpack("<II", self._ctrl_read_raw(DOA_RESID, LED_DOA_COLOR_CMDID, 8))
+            self._led.update({
+                "effect": "doa" if effect == 4 else f"mode_{effect}", "brightness": brightness_read,
+                "base_color": f"#{colors[0] & 0xFFFFFF:06x}",
+                "doa_color": f"#{colors[1] & 0xFFFFFF:06x}",
+                "last_write_ok": effect == 4, "readback": True,
+            })
+            return effect == 4
+        except Exception as exc:
+            self._led["last_write_ok"] = False
+            logger.warning("ReSpeaker LED DOA mode failed: %s", exc)
+            return False
+
+    def set_led_off(self) -> bool:
+        if self._dev is None:
+            return False
+        try:
+            self._ctrl_write_raw(DOA_RESID, LED_EFFECT_CMDID, bytes([0]))
+            effect = self._ctrl_read_raw(DOA_RESID, LED_EFFECT_CMDID, 1)[0]
+            self._led.update({"effect": "off" if effect == 0 else f"mode_{effect}", "last_write_ok": effect == 0, "readback": True})
+            return effect == 0
+        except Exception as exc:
+            self._led["last_write_ok"] = False
+            logger.warning("ReSpeaker LED off failed: %s", exc)
+            return False
+
+    @property
+    def led_status(self) -> dict:
+        return dict(self._led)
+
+    def status(self) -> dict:
+        return {
+            "available": self._dev is not None and self.age <= 1.0,
+            "source": "usb", "connected": self._dev is not None,
+            "doa_deg": round(self.doa, 1), "has_speech": self.has_speech,
+            "age": round(self.age, 2), "packet_count": self._read_count,
+            "errors": self._error_count, "led": self.led_status,
+        }
 
     def __repr__(self) -> str:
         return (

@@ -15,7 +15,7 @@ from core.event import Event
 
 
 class EventBusClient:
-    def __init__(self, host: str = "127.0.0.1", port: int = 8765, timeout: float = 0.35) -> None:
+    def __init__(self, host: str = "127.0.0.1", port: int = 8765, timeout: float = 1.5) -> None:
         self.host = host
         self.port = int(port)
         self.timeout = float(timeout)
@@ -26,7 +26,12 @@ class EventBusClient:
             with socket.create_connection((self.host, self.port), timeout=self.timeout) as sock:
                 sock.settimeout(self.timeout)
                 sock.sendall(payload)
-                data = sock.recv(4096)
+                data = b""
+                while b"\n" not in data and len(data) < 1024 * 1024:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
         except OSError as exc:
             return {
                 "ok": False,
@@ -98,7 +103,10 @@ class EventBusServer:
             with client:
                 client.settimeout(0.5)
                 response = self._handle_client(client)
-                client.sendall(json.dumps(response, ensure_ascii=False).encode("utf-8") + b"\n")
+                try:
+                    client.sendall(json.dumps(response, ensure_ascii=False).encode("utf-8") + b"\n")
+                except OSError:
+                    pass
 
     def _handle_client(self, client: socket.socket) -> dict:
         data = b""

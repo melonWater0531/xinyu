@@ -75,6 +75,14 @@ class FSM:
 
     def transition(self, event: Event) -> SystemState:
         self._total_frames += 1
+        if event.type == "system" and event.name == "control_reset":
+            self._last_event = event
+            self._pending_key = None
+            self._pending_frames = 0
+            if self._state != SystemState.IDLE:
+                self._state = SystemState.IDLE
+                self._state_since = time.monotonic()
+            return self._state
         key = (self._state, event.type, event.name)
         next_state = _TRANSITIONS.get(key, self._state)
         required = _DEBOUNCE.get(key, 0)

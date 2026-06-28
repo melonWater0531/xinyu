@@ -125,6 +125,8 @@ button,input,select{font:inherit}
 .led.n{left:50%;top:7px;transform:translateX(-50%)}.led.e{right:7px;top:50%;transform:translateY(-50%)}.led.s{left:50%;bottom:7px;transform:translateX(-50%)}.led.w{left:7px;top:50%;transform:translateY(-50%)}
 .trace-row{padding:6px 0;border-bottom:1px solid rgba(255,255,255,.08)}
 .trace-row:last-child{border-bottom:0}
+.hardware-map{display:flex;flex-wrap:wrap;gap:8px;padding:10px 12px;margin-bottom:14px;border:1px solid var(--line);background:#fff}
+.hardware-map .pill{font-size:12px}
 @media(max-width:1120px){
   .shell{grid-template-columns:1fr}
   .nav{position:relative;height:auto}
@@ -174,6 +176,7 @@ button,input,select{font:inherit}
         <span class="pill">控制权 <span id="authorityText">--</span></span>
         <span class="pill">FSM <span id="fsmText">--</span></span>
         <span class="pill">EventBus <span id="eventBusText">--</span></span>
+        <span class="pill">租约 <span id="leaseText">--</span></span>
       </div>
       <div class="device-config">
         <label class="pill" for="deviceIpInput">设备地址</label>
@@ -181,6 +184,13 @@ button,input,select{font:inherit}
         <button class="btn" onclick="saveDeviceConfig()">保存并重连视频</button>
         <span class="pill" id="deviceConfigText">未配置</span>
       </div>
+    </div>
+    <div class="hardware-map" aria-label="当前硬件链路">
+      <span class="pill">Camera: reCamera SSCMA</span>
+      <span class="pill">DOA: ReSpeaker XVF3800 USB</span>
+      <span class="pill">Audio: ReSpeaker USB Audio</span>
+      <span class="pill">LED: ReSpeaker WS2812 hardware</span>
+      <span class="pill">Gimbal: reCamera CAN motor readback</span>
     </div>
 
     <section class="page active" id="page-single_face_analysis">
@@ -218,7 +228,8 @@ button,input,select{font:inherit}
             <h2>追踪参数</h2>
             <div class="param-row"><span>目标置信度阈值</span><input type="range" min="0.2" max="0.8" step="0.01" value="0.42" oninput="setParamLabel('singleConfLabel',this.value)"><span id="singleConfLabel">0.42</span></div>
             <div class="param-row"><span>对准容忍度</span><input type="range" min="2" max="12" step="1" value="6" oninput="setParamLabel('alignTolLabel',this.value+'°')"><span id="alignTolLabel">6°</span></div>
-            <div class="notice">参数当前用于前端调试记录；真实控制参数仍由 main_phase3/orchestrator 保持统一。</div>
+            <div class="param-row"><span>云台速度</span><input id="controlSpeed" type="range" min="1" max="720" step="1" value="180" oninput="setParamLabel('speedLabel',this.value)"><span id="speedLabel">180</span></div>
+            <button class="btn requires-feature" data-page-lock="single_face_analysis" onclick="applyControlConfig()">应用控制参数</button>
           </section>
         </div>
       </div>
@@ -291,8 +302,11 @@ button,input,select{font:inherit}
                 </div>
                 <div class="kv"><span>ReSpeaker</span><span id="doaReady">--</span></div>
                 <div class="kv"><span>DOA 延迟</span><span id="doaAge">--</span></div>
+                <div class="kv"><span>实体 LED</span><span id="hardwareLedState">--</span></div>
               </div>
             </div>
+            <div class="param-row"><span>DOA 零点偏移</span><input id="doaOffset" type="number" min="-180" max="180" value="0"><span>°</span></div>
+            <div class="param-row"><span>DOA 方向</span><select id="doaDirection"><option value="1">正向</option><option value="-1">反向</option></select><button class="btn requires-feature" data-page-lock="multi_sound_yaw" onclick="applyControlConfig()">应用</button></div>
           </section>
           <section class="card">
             <h2>多人页日志</h2>
@@ -332,6 +346,7 @@ button,input,select{font:inherit}
               <div class="kv"><span>当前说话方向</span><span id="meetingDoaVal">--</span></div>
               <div class="kv"><span>LED 方向</span><span id="meetingLedVal">--</span></div>
               <div class="kv"><span>yaw 跟随</span><span id="meetingYawState">关闭</span></div>
+              <div class="kv"><span>实体灯环</span><span id="meetingHardwareLed">--</span></div>
             </div>
           </div>
         </section>
@@ -382,6 +397,7 @@ button,input,select{font:inherit}
         </div>
         <div class="kv"><span>云台连接</span><span id="gimbalConn">--</span></div>
         <div class="kv"><span>硬件模式</span><span id="gimbalMode">--</span></div>
+        <div class="kv"><span>Telemetry age</span><span id="gimbalAge">--</span></div>
         <div class="kv"><span>WebSocket 客户端</span><span id="wsClients">--</span></div>
       </section>
     </div>
@@ -389,7 +405,7 @@ button,input,select{font:inherit}
 </div>
 
 <script>
-let state=null,ws=null,wsRetry=null,lastWsAt=0,lastLog='',activePage='single_face_analysis',switching=false,meetingYaw=false;
+let state=null,ws=null,wsRetry=null,lastWsAt=0,lastLog='',activePage='single_face_analysis',switching=false,meetingYaw=false,currentSessionId='';
 const featureActive={
   single_face_analysis:false,
   multi_sound_yaw:false,
@@ -427,6 +443,14 @@ async function apiPost(path,body={},opts={}){
     return await r.json();
   }catch(e){log(`API error ${path}: ${e.message}`);return null}
 }
+function adoptSession(result,page){
+  if(!result||!result.accepted||!result.session_id){log(`启动失败：${result&&result.reason||'EventBus 不可达'}`);return false}
+  currentSessionId=result.session_id;
+  featureActive[page]=true;
+  updateFeatureLocks();
+  return true;
+}
+function clearSession(){currentSessionId='';meetingYaw=false;Object.keys(featureActive).forEach(k=>featureActive[k]=false);updateFeatureLocks()}
 function setParamLabel(id,val){$(id).textContent=val}
 function setDeviceConfigText(text){const el=$('deviceConfigText');if(el)el.textContent=text}
 function applyDeviceState(device){
@@ -480,111 +504,115 @@ function updateFeatureLocks(){
   });
 }
 async function deactivatePage(pageId,keepalive=false){
+  const session_id=currentSessionId;
   featureActive[pageId]=false;
   if(!keepalive)updateFeatureLocks();
   if(keepalive){
-    if(pageId==='single_face_analysis')postKeepalive('/api/single_track/stop');
-    if(pageId==='multi_sound_yaw')postKeepalive('/api/multi_track/stop',{finalize:false});
+    if(pageId==='single_face_analysis')postKeepalive('/api/single_track/stop',{session_id});
+    if(pageId==='multi_sound_yaw')postKeepalive('/api/multi_track/stop',{finalize:false,session_id});
     if(pageId==='meeting_recording'){
-      postKeepalive('/api/conversation/stop',{finalize:true});
-      postKeepalive('/api/multi_track/stop',{finalize:false});
+      postKeepalive('/api/conversation/stop',{finalize:true,session_id});
       meetingYaw=false;
     }
+    if(pageId==='manual_gimbal_debug')postKeepalive('/api/control/manual/stop',{session_id});
+    clearSession();
     return;
   }
-  if(pageId==='single_face_analysis')await apiPost('/api/single_track/stop');
-  if(pageId==='multi_sound_yaw')await apiPost('/api/multi_track/stop',{finalize:false});
+  if(pageId==='single_face_analysis')await apiPost('/api/single_track/stop',{session_id});
+  if(pageId==='multi_sound_yaw')await apiPost('/api/multi_track/stop',{finalize:false,session_id});
   if(pageId==='meeting_recording'){
-    await apiPost('/api/conversation/stop',{finalize:true});
-    await apiPost('/api/multi_track/stop',{finalize:false});
+    await apiPost('/api/conversation/stop',{finalize:true,session_id});
     meetingYaw=false;
   }
+  if(pageId==='manual_gimbal_debug')await apiPost('/api/control/manual/stop',{session_id});
+  clearSession();
 }
 async function startSinglePage(){
-  await apiPost('/api/multi_track/stop',{finalize:false});
-  await apiPost('/api/single_track/start');
-  await apiPost('/api/tracking_mode',{mode:'single'});
-  featureActive.single_face_analysis=true;
-  updateFeatureLocks();
-  log('单人追踪已启动：找人脸并对准');
+  const r=await apiPost('/api/single_track/start');
+  if(adoptSession(r,'single_face_analysis'))log('单人追踪已接管：reCamera 找脸并进行双轴对准');
 }
-async function stopSinglePage(){await apiPost('/api/single_track/stop');featureActive.single_face_analysis=false;updateFeatureLocks();log('单人追踪已暂停')}
+async function stopSinglePage(){await apiPost('/api/single_track/stop',{session_id:currentSessionId});clearSession();log('单人追踪已暂停')}
 async function restartSinglePage(){await stopSinglePage();await startSinglePage();log('重新找人脸')}
 async function startMultiYawPage(){
-  await apiPost('/api/single_track/stop');
-  await apiPost('/api/multi_track/start',{save_audio:false});
-  await apiPost('/api/tracking_mode',{mode:'multi'});
-  featureActive.multi_sound_yaw=true;
-  updateFeatureLocks();
-  log('声源 yaw 跟随已启动');
+  const r=await apiPost('/api/multi_track/start',{save_audio:false});
+  if(adoptSession(r,'multi_sound_yaw')){await applyControlConfig();log('ReSpeaker DOA → reCamera yaw 跟随已接管')}
 }
-async function pauseMultiYawPage(){await apiPost('/api/multi_track/stop',{finalize:false});featureActive.multi_sound_yaw=false;updateFeatureLocks();log('声源 yaw 跟随已暂停')}
-async function stopMultiYawPage(){await apiPost('/api/multi_track/stop',{finalize:false});featureActive.multi_sound_yaw=false;updateFeatureLocks();log('多人控制已停止')}
+async function pauseMultiYawPage(){await apiPost('/api/multi_track/stop',{finalize:false,session_id:currentSessionId});clearSession();log('声源 yaw 跟随已暂停')}
+async function stopMultiYawPage(){await pauseMultiYawPage();log('多人控制已停止')}
 async function startMeetingPage(){
-  await apiPost('/api/single_track/stop');
-  await apiPost('/api/multi_track/stop',{finalize:false});
-  featureActive.meeting_recording=true;
-  updateFeatureLocks();
-  await recCtrl('start');
+  const r=await apiPost('/api/conversation/start',{save_audio:true,control_session:true});
+  if(adoptSession(r,'meeting_recording'))log('ReSpeaker USB Audio 会议录音已启动');
 }
 async function toggleMeetingYawFollow(){
   if(!featureActive.meeting_recording)return;
-  await apiPost('/api/single_track/stop');
-  await apiPost('/api/multi_track/start',{save_audio:false});
-  await apiPost('/api/tracking_mode',{mode:'multi'});
-  meetingYaw=true; log('会议页已启用声源 yaw 跟随');
+  const r=await apiPost('/api/meeting/yaw/start',{session_id:currentSessionId});
+  meetingYaw=!!(r&&r.accepted); log(meetingYaw?'会议页已启用 ReSpeaker 声源 yaw 跟随':'yaw 跟随启动失败');
 }
-async function stopMeetingYawFollow(){await apiPost('/api/multi_track/stop',{finalize:false});meetingYaw=false;log('会议页 yaw 跟随已关闭')}
+async function stopMeetingYawFollow(){await apiPost('/api/meeting/yaw/stop',{session_id:currentSessionId});meetingYaw=false;log('会议页 yaw 跟随已关闭')}
 async function recCtrl(action){
   const path=action==='start'?'/api/conversation/start':'/api/conversation/stop';
-  const body=action==='start'?{save_audio:true}:{finalize:true};
+  const body=action==='start'?{save_audio:true,control_session:true}:{finalize:true,session_id:currentSessionId};
   const r=await apiPost(path,body);
   if(action==='stop'){
-    featureActive.meeting_recording=false;
-    meetingYaw=false;
-    updateFeatureLocks();
+    clearSession();
   }
   log(`会议录音 ${action==='start'?'开始':'停止'} ${r?(r.success||r.recording_success?'OK':'WARN'):'ERR'}`);
 }
 async function startManualPage(){
-  await apiPost('/api/single_track/stop');
-  await apiPost('/api/multi_track/stop',{finalize:false});
-  featureActive.manual_gimbal_debug=true;
-  updateFeatureLocks();
-  log('手动云台功能已启动');
+  const r=await apiPost('/api/control/manual/start');
+  if(adoptSession(r,'manual_gimbal_debug'))log('手动云台会话已接管');
 }
 async function stopManualPage(){
-  featureActive.manual_gimbal_debug=false;
-  updateFeatureLocks();
+  await apiPost('/api/control/manual/stop',{session_id:currentSessionId});clearSession();
   log('手动云台功能已关闭');
 }
+async function applyControlConfig(){
+  if(!currentSessionId)return;
+  const speed=Number($('controlSpeed')?.value||180),doa_offset_deg=Number($('doaOffset')?.value||0),doa_direction=Number($('doaDirection')?.value||1);
+  const r=await apiPost('/api/control/config',{session_id:currentSessionId,speed,doa_offset_deg,doa_direction});
+  log(r&&r.accepted?`控制参数已应用 speed=${speed}`:'控制参数应用失败');
+}
 async function gMove(pan,tilt){
-  const r=await apiPost('/api/gimbal/move',{pan,tilt});
+  const r=await apiPost('/api/gimbal/move',{pan,tilt,session_id:currentSessionId});
   const msg=r?`event ${r.accepted?'accepted':'rejected'} ${r.reason||''}`:'event failed';
   $('gimbalCmdResult').textContent=msg;log(`云台移动 pan=${pan} tilt=${tilt} ${msg}`);
 }
 async function gHome(){
-  const r=await apiPost('/api/gimbal/home');
+  const r=await apiPost('/api/gimbal/home',{session_id:currentSessionId});
   const msg=r?`home ${r.accepted?'accepted':'rejected'} ${r.reason||''}`:'home failed';
   const el=$('gimbalCmdResult'); if(el)el.textContent=msg; log(msg);
+}
+async function heartbeat(){
+  if(!currentSessionId)return;
+  const r=await apiPost('/api/control/heartbeat',{session_id:currentSessionId});
+  if(!r||!r.accepted){log('控制租约已失效，功能已锁定');clearSession()}
 }
 
 function renderState(s){
   if(!s)return;
-  const g=s.gimbal||{},pose=s.pose||{},att=s.attention||{},emo=s.emotieff||s.emotion||{},doa=s.doa||{},ctrl=s.control||{},health=s.health||{},conv=s.conversation||{},eye=s.eye_metrics||{},mp=s.mp_face||{};
+  const g=s.gimbal||{},pose=s.pose||{},att=s.attention||{},emo=s.emotieff||s.emotion||{},doa=s.doa||{},rs=s.respeaker||{},ctrl=s.control||{},health=s.health||{},conv=s.conversation||{},eye=s.eye_metrics||{},mp=s.mp_face||{};
   applyDeviceState(s.device);
   setConn(ws&&ws.readyState===WebSocket.OPEN?'on':'warn',ws&&ws.readyState===WebSocket.OPEN?'WebSocket 已连接':'HTTP polling');
   $('authorityText').textContent=ctrl.authority||'idle';
   $('fsmText').textContent=ctrl.fsm_state||'IDLE';
   $('eventBusText').textContent=ctrl.last_event?'active':'waiting';
+  $('leaseText').textContent=ctrl.lease_remaining_ms!=null?`${Math.ceil(Number(ctrl.lease_remaining_ms)/100)/10}s`:'--';
+  const runtimeFeature=ctrl.active_feature||'inactive';
+  if(currentSessionId&&ctrl.session_id&&ctrl.session_id!==currentSessionId){log('控制权已被新会话接管');clearSession()}
+  if(currentSessionId&&ctrl.session_id===currentSessionId){
+    Object.keys(featureActive).forEach(k=>featureActive[k]=false);
+    if(runtimeFeature==='meeting_sound_yaw'||runtimeFeature==='meeting_recording')featureActive.meeting_recording=true;
+    else if(runtimeFeature in featureActive)featureActive[runtimeFeature]=true;
+    meetingYaw=runtimeFeature==='meeting_sound_yaw';
+  }
   $('lastEvent').textContent=ctrl.last_event?`${ctrl.last_event.type}/${ctrl.last_event.name} @ ${ctrl.last_event.source}`:'--';
   const cmd=ctrl.command;
   $('lastCmd').textContent=cmd?`${cmd.reason||'cmd'}${cmd.yaw!=null?' yaw='+Math.round(cmd.yaw):''}${cmd.pitch!=null?' pitch='+Math.round(cmd.pitch):''}${cmd.stop?' STOP':''}`:'hold';
-  const saf=ctrl.safety||{};$('safety').textContent=(saf.ok?'PASS':'BLOCK')+(saf.reason?' / '+saf.reason:'');
+  const saf=ctrl.safety||{},block=saf.last_block_reason||saf.reason||'';$('safety').textContent=block?`BLOCK / ${block}`:'PASS';
   renderTrace(s.trace||[]);
 
-  $('yawVal').textContent=num(g.yaw,'°');$('pitchVal').textContent=num(g.pitch,'°');$('speedVal').textContent=g.speed!=null?Math.round(g.speed):'--';
-  $('gimbalConn').textContent=g.connected?'已连接':'未连接 / dry-run';$('gimbalMode').textContent=g.mode||'--';
+  $('yawVal').textContent=num(g.yaw,'°');$('pitchVal').textContent=num(g.pitch,'°');$('speedVal').textContent=g.yaw_speed!=null?Math.round(g.yaw_speed):'--';
+  $('gimbalConn').textContent=g.connected?'已连接':'未连接 / stale';$('gimbalMode').textContent=g.source||'--';$('gimbalAge').textContent=g.age_ms!=null?`${g.age_ms}ms`:'--';
   $('fpsVal').textContent=num(health.video_fps,'',1);$('poseCount').textContent=(pose.count||0)+' / '+((s.video&&s.video.detections)||[]).length;$('rttVal').textContent=health.gimbal_latency_ms!=null?num(health.gimbal_latency_ms,'ms',0):'--';$('wsClients').textContent=health.ws_clients!=null?health.ws_clients:'--';
 
   const person0=(pose.persons||[])[0]||{},fConf=person0.face_conf!=null?person0.face_conf:(att.has_face?1:null);
@@ -609,6 +637,8 @@ function renderState(s){
   renderDoa(deg,hasSpeech,'doaArrow',['ledN','ledE','ledS','ledW'],'ledVal');
   renderDoa(deg,hasSpeech,'meetingDoaArrow',['mLedN','mLedE','mLedS','mLedW'],'meetingLedVal');
   $('meetingYawState').textContent=meetingYaw?'开启':'关闭';
+  const led=rs.led||doa.led||{},ledText=led.hardware?`${led.effect||'--'} / hardware`:'unavailable';
+  $('hardwareLedState').textContent=ledText;$('meetingHardwareLed').textContent=ledText;
 
   const active=!!(conv.recording||conv.active||conv.requested),elapsed=conv.current?.elapsed||conv.stats?.duration||0;
   $('recLabel').textContent=active?`录音中 ${fmtTime(elapsed)}`:'已停止';$('btnRecStart').disabled=active;$('btnRecStop').disabled=!active;
@@ -678,7 +708,7 @@ const videoEl=$('videoStream'),multiMirror=$('multiVideoMirror');
 videoEl.src=`${location.origin}/video_feed?t=${Date.now()}`;
 multiMirror.src=videoEl.src;
 videoEl.onerror=()=>{log('video_feed failed; retrying');setTimeout(()=>{const src=`${location.origin}/video_feed?t=${Date.now()}`;videoEl.src=src;multiMirror.src=src},1200)};
-connectWS();loadDeviceConfig();poll();setInterval(poll,350);addEventListener('resize',()=>state&&drawOverlay(state));
+connectWS();loadDeviceConfig();poll();setInterval(poll,350);setInterval(heartbeat,1000);addEventListener('resize',()=>state&&drawOverlay(state));
 addEventListener('beforeunload',()=>{deactivatePage(activePage,true)});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)deactivatePage(activePage,true);else{featureActive[activePage]=false;updateFeatureLocks();log('页面恢复可见，等待点击“启动功能”')}});
 updateFeatureLocks();

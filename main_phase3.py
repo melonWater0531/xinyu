@@ -18,6 +18,7 @@ import numpy as np
 from core.device_config import DEVICE_IP_ENV, device_http_url, device_sscma_ws_url, normalize_device_ip
 from core.event import BBox, ControlCommand, Event
 from core.event_bus import EventBusServer
+from core.control_session import ControlMode
 from core.fsm import SystemState
 from core.orchestrator import Orchestrator
 from core.safety_layer import SafetyLayer
@@ -28,12 +29,13 @@ from vision.data_source import VisionDataSource, create_vision_source
 logger = get_logger(__name__)
 
 _global_hw_client: Optional[RecameraClient] = None
+_global_runner: Optional["Phase3Runner"] = None
 
 
 def _atexit_emergency_stop() -> None:
-    if _global_hw_client is not None and not _global_hw_client.is_dry_run:
+    if _global_runner is not None:
         try:
-            _global_hw_client.apply_command(ControlCommand.make("atexit", stop=True, reason="atexit"))
+            _global_runner.process_event(Event.make("system", "shutdown", "atexit"))
         except Exception:
             pass
 
@@ -86,9 +88,19 @@ class Phase3Runner:
         self._person_conf_thresh = float(person_conf_thresh)
         self._event_queue: deque[Event] = deque(maxlen=256)
         self._event_lock = threading.Lock()
+        self._runtime_lock = threading.RLock()
         self._last_event: Optional[Event] = None
         self._last_command: Optional[ControlCommand] = None
         self._last_block_reason = ""
+        self._trace: deque[dict] = deque(maxlen=40)
+        self._last_apply_ok: Optional[bool] = None
+        self._gimbal_tlm = {
+            "connected": False, "yaw": None, "pitch": None,
+            "yaw_speed": None, "pitch_speed": None,
+            "source": "unavailable", "age_ms": None,
+        }
+        self._telemetry_running = False
+        self._telemetry_thread: Optional[threading.Thread] = None
 
         device_ip = normalize_device_ip(gimbal_ip, required=enable_control)
 
@@ -116,7 +128,10 @@ class Phase3Runner:
         self._orchestrator = Orchestrator(frame_width=1920, frame_height=1080)
         self._safety = SafetyLayer(safe_mode=not enable_control, enable_real_control=enable_control)
         self._hw = RecameraClient(base_url=device_http_url(device_ip, required=enable_control), timeout_ms=200, retry=3)
-        self._hw.connect(dry_run=not enable_control)
+        if not self._hw.connect(dry_run=not enable_control):
+            raise ValueError("reCamera Node-RED control bridge is unreachable")
+        if enable_control:
+            self._start_telemetry()
         self._eventbus: Optional[EventBusServer] = None
         if manual_control:
             self._eventbus = EventBusServer(self._handle_bus_event, host=eventbus_host, port=eventbus_port)
@@ -129,6 +144,8 @@ class Phase3Runner:
 
         global _global_hw_client
         _global_hw_client = self._hw
+        global _global_runner
+        _global_runner = self
 
     def run(self) -> None:
         def _on_shutdown_signal(sig: int, _frame) -> None:
@@ -142,29 +159,27 @@ class Phase3Runner:
             while self._running:
                 start = time.monotonic()
                 self._frame_id += 1
-                self._drain_event_queue()
+                self._expire_lease_if_needed()
 
-                # Person detections from SSCMA (or mock)
-                person_bboxes = [
-                    b for b in (self._coerce_bbox(r) for r in self._vision.get_bboxes())
-                    if b.confidence >= self._person_conf_thresh
-                ]
+                signal_bboxes: List[BBox] = []
+                if self._orchestrator.session.mode is ControlMode.SINGLE_FACE_ANALYSIS:
+                    person_bboxes = [
+                        b for b in (self._coerce_bbox(r) for r in self._vision.get_bboxes())
+                        if b.confidence >= self._person_conf_thresh
+                    ]
 
-                # Face detections (real mode only, when FaceTrackerV2 available)
-                face_bboxes = self._get_face_bboxes()
+                    face_bboxes = self._get_face_bboxes()
+                    signal_bboxes = face_bboxes if face_bboxes else person_bboxes
 
-                # Priority: face > person > empty  (class_name drives Stage routing)
-                signal_bboxes = face_bboxes if face_bboxes else person_bboxes
-
-                command = self._handle_vision_event(signal_bboxes)
-                self._apply(command)
+                command = self._handle_vision_event(signal_bboxes) if self._orchestrator.session.mode is ControlMode.SINGLE_FACE_ANALYSIS else None
                 self._print_frame(signal_bboxes, command)
                 if self._max_cycles and self._frame_id >= self._max_cycles:
                     break
                 elapsed = time.monotonic() - start
                 time.sleep(max(0.0, self._frame_delay - elapsed))
         finally:
-            self._apply(ControlCommand.make("main_phase3", stop=True, reason="shutdown"))
+            self.process_event(Event.make("system", "shutdown", "main_phase3"))
+            self._stop_telemetry()
             if self._eventbus is not None:
                 self._eventbus.close()
 
@@ -196,35 +211,57 @@ class Phase3Runner:
             logger.debug("face detection error: %s", exc)
             return []
 
-    def _apply(self, command: Optional[ControlCommand]) -> None:
+    def _apply(self, command: Optional[ControlCommand]) -> dict:
         if command is None or not command.has_motion():
-            return
+            return {"command": None, "applied": False, "reason": "no_command"}
         allowed = self._safety.filter(command)
         self._last_block_reason = self._safety.last_block_reason
         if allowed is None:
             logger.debug("SafetyLayer blocked command: %s", self._last_block_reason)
-            return
+            self._last_apply_ok = False
+            return {"command": self._command_dict(command), "applied": False, "reason": self._last_block_reason}
         self._last_command = allowed
-        self._hw.apply_command(allowed)
+        ok = bool(self._hw.apply_command(allowed))
+        self._last_apply_ok = ok
+        return {"command": self._command_dict(allowed), "applied": ok, "reason": "ok" if ok else "hardware_error"}
 
     def _handle_bus_event(self, event: Event) -> dict:
-        with self._event_lock:
-            self._event_queue.append(event)
-        return {
-            "ok": True,
-            "accepted": True,
-            "authority": "main_phase3",
-            "state": self._orchestrator.state.value,
-        }
+        if event.type == "system" and event.name == "runtime_snapshot_request":
+            return {"ok": True, "accepted": True, "authority": "main_phase3", "runtime": self.runtime_snapshot()}
+        return self.process_event(event)
 
-    def _drain_event_queue(self) -> None:
-        while True:
-            with self._event_lock:
-                event = self._event_queue.popleft() if self._event_queue else None
-            if event is None:
-                return
+    def process_event(self, event: Event) -> dict:
+        with self._runtime_lock:
+            before = self._orchestrator.runtime_state()
+            requested_session = str(event.payload.get("session_id", ""))
+            session_bound = event.type == "ui" and event.name in {
+                "feature_stop", "feature_heartbeat", "feature_mode_update",
+                "control_config", "dpad_move", "gimbal_home", "gimbal_sleep", "gimbal_stop",
+            }
+            valid_before = requested_session == before.get("session_id") and bool(before.get("active"))
+            if event.name == "dpad_move":
+                valid_before = valid_before and before.get("active_feature") == "manual_gimbal_debug"
             self._last_event = event
-            self._apply(self._orchestrator.handle_event(event))
+            command = self._orchestrator.handle_event(event)
+            apply_result = self._apply(command)
+            after = self._orchestrator.runtime_state()
+            accepted = not session_bound or valid_before
+            if event.name == "feature_start":
+                accepted = after.get("session_id") == str(event.payload.get("session_id", ""))
+            self._trace.append({
+                "t": time.time(), "event": event.to_dict(),
+                "state": after.get("fsm_state"), "feature": after.get("active_feature"),
+                "command": apply_result.get("command"), "applied": apply_result.get("applied"),
+                "accepted": accepted,
+            })
+            return {
+                "ok": accepted,
+                "accepted": accepted,
+                "authority": "main_phase3",
+                "state": self._orchestrator.state.value,
+                **apply_result,
+                "runtime": self.runtime_snapshot(),
+            }
 
     def _handle_vision_event(self, bboxes: List[BBox]) -> Optional[ControlCommand]:
         if bboxes:
@@ -243,7 +280,56 @@ class Phase3Runner:
         else:
             event = Event.make("vision", "target_lost", "main_phase3", payload={"conf": 0.0})
         self._last_event = event
-        return self._orchestrator.handle_event(event)
+        result = self.process_event(event)
+        return self._last_command if result.get("command") else None
+
+    def _expire_lease_if_needed(self) -> None:
+        if self._orchestrator.session.expired():
+            self.process_event(Event.make("system", "lease_expired", "main_phase3"))
+
+    @staticmethod
+    def _command_dict(command: ControlCommand) -> dict:
+        return {
+            "mode": command.mode, "yaw": command.yaw, "pitch": command.pitch,
+            "speed": command.speed, "stop": command.stop, "reason": command.reason,
+        }
+
+    def runtime_snapshot(self) -> dict:
+        with self._runtime_lock:
+            return {
+                **self._orchestrator.runtime_state(),
+                "authority": "main_phase3",
+                "last_event": self._last_event.to_dict() if self._last_event else None,
+                "last_command": self._command_dict(self._last_command) if self._last_command else None,
+                "last_apply_ok": self._last_apply_ok,
+                "safety": {**self._safety.stats, "last_block_reason": self._last_block_reason},
+                "gimbal": dict(self._gimbal_tlm),
+                "trace": list(self._trace)[-12:],
+            }
+
+    def _start_telemetry(self) -> None:
+        self._telemetry_running = True
+
+        def _poll() -> None:
+            while self._telemetry_running:
+                status = self._hw.get_status()
+                if status:
+                    with self._runtime_lock:
+                        self._gimbal_tlm = dict(status)
+                elif self._gimbal_tlm.get("connected"):
+                    with self._runtime_lock:
+                        self._gimbal_tlm["connected"] = False
+                        self._gimbal_tlm["source"] = "stale"
+                time.sleep(0.5)
+
+        self._telemetry_thread = threading.Thread(target=_poll, daemon=True, name="gimbal-telemetry")
+        self._telemetry_thread.start()
+
+    def _stop_telemetry(self) -> None:
+        self._telemetry_running = False
+        if self._telemetry_thread is not None:
+            self._telemetry_thread.join(timeout=1.0)
+            self._telemetry_thread = None
 
     @staticmethod
     def _coerce_bbox(raw) -> BBox:

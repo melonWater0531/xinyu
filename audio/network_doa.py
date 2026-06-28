@@ -194,6 +194,11 @@ class NetworkDOA:
                 "packet_count": self._packet_count,
                 "last_line": self._last_line,
                 "doa_deg": doa_deg,
+                "led": {
+                    "hardware": False,
+                    "effect": "unavailable",
+                    "reason": "tcp_doa_has_no_local_usb_led_control",
+                },
             }
         now = time.monotonic()
         detail["has_speech"] = bool(

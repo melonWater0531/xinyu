@@ -28,6 +28,7 @@ import struct
 import sys
 import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -323,6 +324,16 @@ _last_conversation_start_attempt = 0.0
 _tracking_mode: str = "single"
 _single_track_active: bool = False
 _multi_track_active: bool = False
+_ui_session_id: str = ""
+_runtime_cache = {
+    "connected": False,
+    "active_feature": "inactive",
+    "session_id": "",
+    "lease_remaining_ms": 0,
+    "authority": "unreachable",
+}
+_led_runtime_mode = ""
+_last_audio_event_active = False
 
 
 def _device_config_state() -> dict:
@@ -454,7 +465,7 @@ def _ensure_doa_reader() -> bool:
     if _doa_reader is not None:
         return True
     try:
-        source = os.environ.get("RECAMERA_DOA_SOURCE", "tcp").strip().lower()
+        source = os.environ.get("RECAMERA_DOA_SOURCE", "usb").strip().lower()
         if source == "usb":
             from audio.respeaker_doa import ReSpeakerDOA
             reader = ReSpeakerDOA()
@@ -481,7 +492,11 @@ def _ensure_doa_reader() -> bool:
 
 def _doa_status() -> dict:
     if _doa_reader is None:
-        return {"available": False, "source": os.environ.get("RECAMERA_DOA_SOURCE", "tcp")}
+        return {
+            "available": False,
+            "source": os.environ.get("RECAMERA_DOA_SOURCE", "usb"),
+            "led": {"hardware": False, "effect": "unavailable"},
+        }
     status_fn = getattr(_doa_reader, "status", None)
     detail = status_fn() if callable(status_fn) else {}
     return {
@@ -492,6 +507,105 @@ def _doa_status() -> dict:
         "age": round(float(_doa_reader.age), 2),
         **detail,
     }
+
+
+def _respeaker_state() -> dict:
+    doa = _doa_status()
+    return {
+        "connected": bool(doa.get("available") or doa.get("connected")),
+        "source": doa.get("source", os.environ.get("RECAMERA_DOA_SOURCE", "usb")),
+        "doa_deg": doa.get("doa_deg"),
+        "has_speech": bool(doa.get("has_speech")),
+        "age": doa.get("age"),
+        "audio_device": os.environ.get("RECAMERA_AUDIO_DEVICE", "system_default"),
+        "led": doa.get("led", {"hardware": False, "effect": "unavailable"}),
+    }
+
+
+def _apply_runtime_result(result: dict) -> None:
+    global _runtime_cache, _gimbal_tlm, _control_obs, _decision_trace
+    global _single_track_active, _multi_track_active, _conversation_recording_requested
+    runtime = result.get("runtime") if isinstance(result, dict) else None
+    if not isinstance(runtime, dict):
+        return
+    previous_feature = _runtime_cache.get("active_feature", "inactive")
+    _runtime_cache = {**runtime, "connected": True}
+    feature = _runtime_cache.get("active_feature", "inactive")
+    _single_track_active = feature == "single_face_analysis"
+    _multi_track_active = feature in {"multi_sound_yaw", "meeting_sound_yaw"}
+    if feature == "inactive" and previous_feature in {"meeting_recording", "meeting_sound_yaw"}:
+        _conversation_recording_requested = False
+        _stop_conversation_recording(finalize=True)
+    _gimbal_tlm = dict(runtime.get("gimbal") or _gimbal_tlm)
+    _control_obs = {
+        "observe_only": False,
+        "fsm_state": runtime.get("fsm_state", "IDLE"),
+        "authority": runtime.get("authority", "main_phase3"),
+        "last_event": runtime.get("last_event"),
+        "command": runtime.get("last_command"),
+        "safety": runtime.get("safety", {}),
+        "eventbus": {
+            "host": _eventbus.host, "port": _eventbus.port,
+            "last_result": {"ok": True, "accepted": True},
+        },
+        "active_feature": runtime.get("active_feature", "inactive"),
+        "session_id": runtime.get("session_id", ""),
+        "lease_remaining_ms": runtime.get("lease_remaining_ms", 0),
+    }
+    _decision_trace.clear()
+    _decision_trace.extend(runtime.get("trace", []))
+
+
+def _set_respeaker_led_for_feature(feature: str) -> None:
+    global _led_runtime_mode
+    desired = "doa" if feature in {"multi_sound_yaw", "meeting_recording", "meeting_sound_yaw"} else "off"
+    if desired == _led_runtime_mode or _doa_reader is None:
+        return
+    method = getattr(_doa_reader, "set_led_doa" if desired == "doa" else "set_led_off", None)
+    if not callable(method):
+        _led_runtime_mode = desired
+    elif method():
+        _led_runtime_mode = desired
+
+
+async def runtime_sync_loop() -> None:
+    global _runtime_cache, _led_runtime_mode
+    loop = asyncio.get_running_loop()
+    while True:
+        event = Event.make("system", "runtime_snapshot_request", "fastapi")
+        result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
+        if result.get("ok") and isinstance(result.get("runtime"), dict):
+            _apply_runtime_result(result)
+            _set_respeaker_led_for_feature(_runtime_cache.get("active_feature", "inactive"))
+        else:
+            _runtime_cache = {**_runtime_cache, "connected": False, "authority": "unreachable", "lease_remaining_ms": 0}
+            if _led_runtime_mode != "off":
+                _set_respeaker_led_for_feature("inactive")
+        await asyncio.sleep(0.25)
+
+
+async def doa_event_loop() -> None:
+    global _last_audio_event_active
+    loop = asyncio.get_running_loop()
+    while True:
+        active = bool(
+            _doa_reader is not None
+            and getattr(_doa_reader, "has_speech", False)
+            and float(getattr(_doa_reader, "age", 999.0)) <= 1.0
+        )
+        if active:
+            event = Event.make(
+                "audio", "speech_detected", "respeaker",
+                payload={"doa_deg": float(_doa_reader.doa), "speech": True},
+            )
+            result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
+            _apply_runtime_result(result)
+        elif _last_audio_event_active:
+            event = Event.make("audio", "timeout", "respeaker", payload={"speech": False})
+            result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
+            _apply_runtime_result(result)
+        _last_audio_event_active = active
+        await asyncio.sleep(0.1)
 
 
 # NOTE: removed _resume_ai_gimbal_mode and _update_sound_tracking_yaw
@@ -839,6 +953,7 @@ def build_state_snapshot() -> dict:
             },
             "pose": _build_pose_data(),
             "doa": _doa_status(),
+            "respeaker": _respeaker_state(),
             "conversation": _conversation_state(),
             "attention": _attn_result,
             "emotion": _emotion_result,
@@ -927,7 +1042,7 @@ async def lifespan(app: FastAPI):
     from vision.emotieff_adapter import get_emotieff_adapter
     get_emotieff_adapter()
 
-    # DOA defaults to TCP input, so ReSpeaker does not need USB passthrough to WSL.
+    # USB is the production source; TCP remains an explicit fallback.
     global _doa_reader, _conversation_recording_requested
     _doa_reader = None
     _conversation_recording_requested = False
@@ -936,6 +1051,8 @@ async def lifespan(app: FastAPI):
     # Background task: perception/state push. Control telemetry comes from the
     # external control runtime, not from direct FastAPI hardware access.
     push_task = asyncio.create_task(state_push_loop())
+    runtime_task = asyncio.create_task(runtime_sync_loop())
+    doa_task = asyncio.create_task(doa_event_loop())
 
     logger.info("=" * 55)
     logger.info("reCamera Demo Dashboard (FastAPI) - display only")
@@ -952,12 +1069,20 @@ async def lifespan(app: FastAPI):
 
     # Cleanup
     push_task.cancel()
+    runtime_task.cancel()
+    doa_task.cancel()
     try: await push_task
     except asyncio.CancelledError: pass
+    for task in (runtime_task, doa_task):
+        try: await task
+        except asyncio.CancelledError: pass
 
     _stop_conversation_recording(finalize=True)
     if video_client: video_client.stop()
-    if _doa_reader: _doa_reader.close()
+    if _doa_reader:
+        led_off = getattr(_doa_reader, "set_led_off", None)
+        if callable(led_off): led_off()
+        _doa_reader.close()
     logger.info("Dashboard shutdown complete")
 
 
@@ -1017,6 +1142,8 @@ def _observe_control_step(detections: list, fw: int, fh: int) -> None:
     observations; the control runtime owns state and commands.
     """
     global _control_obs
+    if _runtime_cache.get("connected"):
+        return
     last_event = None
     if _doa_reader is not None and bool(getattr(_doa_reader, "has_speech", False)) and float(getattr(_doa_reader, "age", 999.0)) <= 1.0:
         last_event = Event.make("audio", "speech_detected", "fastapi_telemetry",
@@ -1374,13 +1501,22 @@ async def api_conversation_debug():
 
 @app.post("/api/conversation/start")
 async def api_conversation_start(payload: dict = None):
-    # Audio recording only — does not move the gimbal.
-    global _conversation_recording_requested
+    global _conversation_recording_requested, _ui_session_id
     payload = payload or {}
+    session_result = None
+    if payload.get("control_session"):
+        session_result = await _start_feature("meeting_recording")
+        if not session_result.get("accepted"):
+            return {"success": False, "recording_success": False, **session_result}
     _conversation_recording_requested = bool(payload.get("save_audio", False))
     doa_ok = _ensure_doa_reader()
     ok = _start_conversation_recording() if _conversation_recording_requested else True
-    return {"success": bool(doa_ok), "recording_success": bool(ok), "state": _conversation_state()}
+    if not ok and session_result:
+        await _stop_feature(session_result.get("session_id", ""))
+    return {
+        "success": bool(doa_ok and ok), "recording_success": bool(ok),
+        "state": _conversation_state(), **(session_result or {}),
+    }
 
 
 @app.post("/api/conversation/stop")
@@ -1389,7 +1525,8 @@ async def api_conversation_stop(payload: dict = None):
     payload = payload or {}
     _conversation_recording_requested = False
     _stop_conversation_recording(finalize=bool(payload.get("finalize", True)))
-    return {"success": True, "state": _conversation_state()}
+    session_result = await _stop_feature(str(payload.get("session_id", ""))) if payload.get("session_id") else {}
+    return {"success": True, "state": _conversation_state(), **session_result}
 
 
 @app.post("/api/conversation/save")
@@ -1421,32 +1558,36 @@ async def api_set_tracking_mode(payload: dict = Body(default={})):
 
 @app.post("/api/single_track/start")
 async def api_single_track_start(payload: dict = Body(default={})):
-    global _single_track_active, _multi_track_active
-    # Mutual exclusion: daily-scene and work-scene cannot run together.
-    if _multi_track_active:
-        _multi_track_active = False
-        _stop_conversation_recording(finalize=True)
+    global _single_track_active, _multi_track_active, _tracking_mode
+    result = await _start_feature("single_face_analysis")
+    if not result.get("accepted"):
+        return {**result, "active": False}
+    _multi_track_active = False
     _single_track_active = True
-    return {"ok": True, "active": True}
+    _tracking_mode = "single"
+    return {**result, "active": True}
 
 
 @app.post("/api/single_track/stop")
 async def api_single_track_stop(payload: dict = Body(default={})):
     global _single_track_active
     _single_track_active = False
-    return {"ok": True, "active": False}
+    result = await _stop_feature(str(payload.get("session_id", ""))) if payload.get("session_id") else {"ok": True}
+    return {**result, "active": False}
 
 
 @app.post("/api/multi_track/start")
 async def api_multi_track_start(payload: dict = Body(default={})):
-    global _multi_track_active, _single_track_active
-    # Mutual exclusion: work-scene and daily-scene cannot run together.
-    if _single_track_active:
-        _single_track_active = False
+    global _multi_track_active, _single_track_active, _tracking_mode
+    result = await _start_feature("multi_sound_yaw")
+    if not result.get("accepted"):
+        return {**result, "active": False}
+    _single_track_active = False
     _multi_track_active = True
+    _tracking_mode = "multi"
     if payload.get("save_audio", False):
         _start_conversation_recording()
-    return {"ok": True, "active": True}
+    return {**result, "active": True}
 
 
 @app.post("/api/multi_track/stop")
@@ -1455,7 +1596,8 @@ async def api_multi_track_stop(payload: dict = Body(default={})):
     _multi_track_active = False
     if payload.get("finalize", True):
         _stop_conversation_recording(finalize=True)
-    return {"ok": True, "active": False}
+    result = await _stop_feature(str(payload.get("session_id", ""))) if payload.get("session_id") else {"ok": True}
+    return {**result, "active": False}
 
 
 async def _emit_ui_event(name: str, payload: dict) -> dict:
@@ -1463,6 +1605,7 @@ async def _emit_ui_event(name: str, payload: dict) -> dict:
     event = Event.make("ui", name, "fastapi", payload=payload)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
+    _apply_runtime_result(result)
     eventbus_state = {
         "host": _eventbus.host,
         "port": _eventbus.port,
@@ -1482,10 +1625,86 @@ async def _emit_ui_event(name: str, payload: dict) -> dict:
     }
 
 
+async def _start_feature(feature: str) -> dict:
+    global _ui_session_id, _single_track_active, _multi_track_active
+    session_id = uuid.uuid4().hex
+    result = await _emit_ui_event(
+        "feature_start",
+        {"feature": feature, "session_id": session_id, "lease_ms": 2500},
+    )
+    if result.get("accepted"):
+        _ui_session_id = session_id
+        _single_track_active = feature == "single_face_analysis"
+        _multi_track_active = feature in {"multi_sound_yaw", "meeting_sound_yaw"}
+    return {**result, "session_id": session_id, "feature": feature}
+
+
+async def _stop_feature(session_id: str) -> dict:
+    global _ui_session_id
+    if not session_id:
+        return {"ok": False, "accepted": False, "reason": "session_id_required"}
+    result = await _emit_ui_event("feature_stop", {"session_id": session_id})
+    if session_id == _ui_session_id:
+        _ui_session_id = ""
+    return result
+
+
+@app.post("/api/control/heartbeat")
+async def api_control_heartbeat(payload: dict = Body(default={})):
+    return await _emit_ui_event(
+        "feature_heartbeat",
+        {"session_id": str(payload.get("session_id", "")), "lease_ms": 2500},
+    )
+
+
+@app.get("/api/control/runtime")
+async def api_control_runtime():
+    return {"ok": bool(_runtime_cache.get("connected")), "runtime": dict(_runtime_cache)}
+
+
+@app.get("/api/respeaker/state")
+async def api_respeaker_state():
+    return {"ok": True, "respeaker": _respeaker_state()}
+
+
+@app.post("/api/control/manual/start")
+async def api_manual_start():
+    return await _start_feature("manual_gimbal_debug")
+
+
+@app.post("/api/control/manual/stop")
+async def api_manual_stop(payload: dict = Body(default={})):
+    return await _stop_feature(str(payload.get("session_id", "")))
+
+
+@app.post("/api/meeting/yaw/start")
+async def api_meeting_yaw_start(payload: dict = Body(default={})):
+    return await _emit_ui_event("feature_mode_update", {
+        "feature": "meeting_sound_yaw", "session_id": str(payload.get("session_id", "")), "lease_ms": 2500,
+    })
+
+
+@app.post("/api/meeting/yaw/stop")
+async def api_meeting_yaw_stop(payload: dict = Body(default={})):
+    return await _emit_ui_event("feature_mode_update", {
+        "feature": "meeting_recording", "session_id": str(payload.get("session_id", "")), "lease_ms": 2500,
+    })
+
+
+@app.post("/api/control/config")
+async def api_control_config(payload: dict = Body(default={})):
+    return await _emit_ui_event("control_config", {
+        "session_id": str(payload.get("session_id", "")),
+        "speed": payload.get("speed", 180),
+        "doa_offset_deg": payload.get("doa_offset_deg", 0),
+        "doa_direction": payload.get("doa_direction", 1),
+    })
+
+
 @app.post("/api/gimbal/home")
-async def api_gimbal_home():
+async def api_gimbal_home(payload: dict = Body(default={})):
     """Emit a UI Event. main_phase3 decides whether this becomes a command."""
-    return await _emit_ui_event("gimbal_home", {})
+    return await _emit_ui_event("gimbal_home", {"session_id": str(payload.get("session_id", ""))})
 
 
 @app.post("/api/gimbal/move")
@@ -1493,7 +1712,9 @@ async def api_gimbal_move(payload: dict = Body(default={})):
     """Relative gimbal move. Body: {pan: float, tilt: float} degrees. Clamped to ±15/±10."""
     pan = max(-15.0, min(15.0, float(payload.get("pan", 0.0))))
     tilt = max(-10.0, min(10.0, float(payload.get("tilt", 0.0))))
-    return await _emit_ui_event("dpad_move", {"pan": pan, "tilt": tilt})
+    return await _emit_ui_event("dpad_move", {
+        "pan": pan, "tilt": tilt, "session_id": str(payload.get("session_id", "")),
+    })
 
 
 @app.get("/api/debug/video")
@@ -1834,7 +2055,7 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="reCamera Demo Dashboard (FastAPI+MJPEG)",
         epilog="Examples:\n"
-               "  %(prog)s                          # video + TCP DOA + UI EventBus emitter\n"
+               "  %(prog)s                          # dashboard + USB ReSpeaker + EventBus emitter\n"
                "  RECAMERA_DEVICE_IP=<RECAMERA_IP> %(prog)s  # use the current WiFi device\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
