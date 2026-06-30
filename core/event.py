@@ -110,6 +110,10 @@ class ControlCommand:
     speed: Optional[int] = None
     stop: bool = False
     reason: str = ""
+    session_id: str = ""
+    sequence: int = 0
+    issued_at: float = 0.0
+    expires_at: float = 0.0
 
     @classmethod
     def make(
@@ -122,7 +126,11 @@ class ControlCommand:
         speed: Optional[int] = None,
         stop: bool = False,
         reason: str = "",
+        session_id: str = "",
+        sequence: int = 0,
+        ttl_s: float = 0.75,
     ) -> "ControlCommand":
+        now = time.time()
         return cls(
             ts=time.monotonic(),
             source=str(source),
@@ -132,6 +140,10 @@ class ControlCommand:
             speed=None if speed is None else int(speed),
             stop=bool(stop),
             reason=str(reason),
+            session_id=str(session_id),
+            sequence=max(0, int(sequence)),
+            issued_at=now,
+            expires_at=now + max(0.1, float(ttl_s)),
         )
 
     def has_motion(self) -> bool:

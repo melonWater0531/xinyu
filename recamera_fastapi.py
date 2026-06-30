@@ -313,6 +313,8 @@ _mp_face = None
 _eye_tracker = None
 _mp_face_result = {"success": False, "ear_avg": 0.3, "eye_open": True, "head_yaw": 0, "head_pitch": 0}
 _mp_landmarks5 = None
+_observation_id = 0
+_face_landmark_mode = "five"
 _eye_metrics = {"ear_avg": 0.3, "blink_rate": 0, "perclos": 0, "focus_score": 100}
 _emotieff_result = None  # EmotiEffLib parallel inference result
 # Audio conversation recording (perception/recording only — does NOT move the gimbal).
@@ -849,10 +851,16 @@ def _build_pose_data() -> dict:
     """Convert latest pose persons to JSON-serializable dict (all native Python types)."""
     persons = []
     for p in _latest_pose_persons:
+        if int(getattr(p, "_lost_frames", 0) or 0) != 0:
+            continue
         kps = [{"x": float(kp.x), "y": float(kp.y),
                 "conf": round(float(kp.conf), 2), "name": str(kp.name)}
                for kp in p.keypoints]
         persons.append({
+            "track_id": getattr(p, "_track_id", None),
+            "lost_frames": int(getattr(p, "_lost_frames", 0) or 0),
+            "source": str(getattr(p, "_source", "")),
+            "is_primary": bool(getattr(p, "_is_primary", False)),
             "bbox": [round(float(v), 1) for v in p.bbox],
             "conf": round(float(p.conf), 2),
             "keypoints": kps,
@@ -862,6 +870,62 @@ def _build_pose_data() -> dict:
             "face_conf": round(float(p.face_conf), 2),
         })
     return {"persons": persons, "count": len(persons)}
+
+
+def _build_vision_observation() -> dict:
+    """Build normalized, current-frame candidates for the control runtime."""
+    global _observation_id
+    _observation_id += 1
+    width, height = (video_client.resolution if video_client else [1920, 1080])
+    width, height = max(1, int(width)), max(1, int(height))
+    pose = _build_pose_data()
+    faces = []
+    for person in pose["persons"]:
+        center = person.get("face_center")
+        if center is None or int(person.get("lost_frames", 0)) != 0:
+            continue
+        faces.append({
+            "track_id": person.get("track_id"),
+            "cx": float(center[0]) / width,
+            "cy": float(center[1]) / height,
+            "bbox": person.get("bbox"),
+            "confidence": float(person.get("face_conf", 0.0)),
+            "lost_frames": 0,
+            "keypoints": person.get("keypoints", []),
+        })
+    people = []
+    for detection in _extract_detections():
+        if detection.get("class_name") != "person":
+            continue
+        x, y = float(detection["x"]), float(detection["y"])
+        w, h = float(detection["w"]), float(detection["h"])
+        people.append({
+            "bbox": [x, y, x + w, y + h],
+            "cx": (x + w / 2.0) / width,
+            "cy": (y + h * 0.28) / height,
+            "confidence": float(detection.get("confidence", 0.0)),
+        })
+    return {
+        "session_id": str(_runtime_cache.get("session_id", "")),
+        "observation_id": _observation_id,
+        "captured_at": time.time() * 1000.0,
+        "frame_size": {"width": width, "height": height},
+        "faces": faces,
+        "persons": people,
+    }
+
+
+async def _publish_vision_observation() -> None:
+    feature = str(_runtime_cache.get("active_feature", "inactive"))
+    if feature not in {"single_face_analysis", "multi_sound_yaw", "meeting_sound_yaw"}:
+        return
+    payload = _build_vision_observation()
+    if not payload["session_id"]:
+        return
+    event = Event.make("vision", "observation", "fastapi_perception", payload=payload)
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
+    _apply_runtime_result(result)
 
 
 def _apply_mediapipe_landmarks5(landmarks5) -> bool:
@@ -972,6 +1036,11 @@ def build_state_snapshot() -> dict:
                 "gimbal_latency_ms": None,
                 "gimbal_connected": bool(_gimbal_tlm.get("connected")),
             },
+            "locked_track_id": _runtime_cache.get("locked_track_id"),
+            "tracking_phase": _runtime_cache.get("tracking_phase", "inactive"),
+            "stop_state": _runtime_cache.get("stop_state", "stopped"),
+            "device_lease": dict(_runtime_cache.get("device_lease") or {}),
+            "face_landmark_mode": _face_landmark_mode,
             "tracking_mode": _tracking_mode,
             "single_track": {"active": _single_track_active},
             "multi_track": {"active": _multi_track_active},
@@ -1194,7 +1263,7 @@ async def state_push_loop():
             if _single_track_active and not _multi_track_active:
                 run_pose = False   # 日常场景：人脸/情绪/专注，跳过 YOLO pose
             elif _multi_track_active and not _single_track_active:
-                run_face = False   # 工作场景：仅 pose，跳过情绪/眼部
+                run_face = True   # Multi-person fusion still needs face candidates.
             # -- Face detection: FaceTrackerV2 (SCRFD + Kalman/ByteTrack), YOLO fallback --
             if video_client:
                 jpeg = video_client.jpeg_bytes
@@ -1208,9 +1277,13 @@ async def state_push_loop():
                             frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                             if frame is not None:
                                 tracks = await loop.run_in_executor(None, _face_tracker.update, frame)
+                                if not tracks:
+                                    _latest_pose_persons.clear()
                                 if tracks:
                                     persons = []
                                     for t in tracks:
+                                        if int(t.get('lost_frames', 0) or 0) != 0:
+                                            continue
                                         x1, y1, x2, y2 = t['bbox']
                                         cx, cy = t['face_center']
                                         kps = []
@@ -1297,7 +1370,7 @@ async def state_push_loop():
                                                for x, y in np.asarray(mp_res.landmarks5)[:, :2]]
                                                if mp_res.landmarks5 is not None else [],
                                 "landmarks_eye": [[round(float(mp_res.landmarks[i][0]), 1), round(float(mp_res.landmarks[i][1]), 1)] for i in [33, 160, 158, 133, 153, 144, 362, 385, 387, 263, 373, 380]],
-                                "landmarks_mesh": [[round(float(mp_res.landmarks[i][0]), 1), round(float(mp_res.landmarks[i][1]), 1)] for i in [10, 152, 234, 454, 0, 17, 61, 291]]}
+                                "landmarks_mesh": [[round(float(p[0]), 1), round(float(p[1]), 1)] for p in np.asarray(mp_res.landmarks)[:, :2]]}
                             em = _eye_tracker.update(landmarks=mp_res.landmarks)
                             _eye_metrics = {"ear_avg": round(float(em.ear_avg), 3),
                                 "blink_rate": float(em.blink_rate), "perclos": round(float(em.perclos), 3),
@@ -1372,6 +1445,9 @@ async def state_push_loop():
                         _llm_quote_text = await loop.run_in_executor(None, _llm_engine.quote, emo_name, lvl)
                     except Exception:
                         pass
+
+            # Publish the same curated candidates used by the overlay.
+            await _publish_vision_observation()
 
             # Observe-only control-plane mirror (FSM/decision-trace; never commands).
             try:
@@ -1630,7 +1706,7 @@ async def _start_feature(feature: str) -> dict:
     session_id = uuid.uuid4().hex
     result = await _emit_ui_event(
         "feature_start",
-        {"feature": feature, "session_id": session_id, "lease_ms": 2500},
+        {"feature": feature, "session_id": session_id, "lease_ms": 1500},
     )
     if result.get("accepted"):
         _ui_session_id = session_id
@@ -1653,7 +1729,7 @@ async def _stop_feature(session_id: str) -> dict:
 async def api_control_heartbeat(payload: dict = Body(default={})):
     return await _emit_ui_event(
         "feature_heartbeat",
-        {"session_id": str(payload.get("session_id", "")), "lease_ms": 2500},
+        {"session_id": str(payload.get("session_id", "")), "lease_ms": 1500},
     )
 
 

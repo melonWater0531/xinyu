@@ -77,7 +77,7 @@ button,input,select{font:inherit}
 .video-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line)}
 .video-wrap{position:relative;min-height:430px;background:#0e1522;display:flex;align-items:center;justify-content:center}
 #videoStream{width:100%;height:100%;object-fit:contain;display:block}
-#overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#overlay,#multiOverlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 .metric{border:1px solid var(--line);border-radius:8px;background:var(--panel-soft);padding:10px;min-height:72px}
 .label{font-size:12px;color:var(--muted);margin-bottom:6px;line-height:1.35}
@@ -200,6 +200,11 @@ button,input,select{font:inherit}
             <strong>摄像头信息源</strong>
             <span class="pill" id="singleTargetText">等待目标</span>
           </div>
+          <div class="controls" style="padding:0 0 10px">
+            <button class="btn" id="landmarkToggle" type="button" aria-pressed="false" onclick="toggleLandmarks()">&#20116;&#28857;&#26174;&#31034;</button>
+            <span class="pill" aria-label="face landmark legend">&#30524;&#30555; &#183; &#40763;&#23574; &#183; &#22068;&#35282;</span>
+            <span class="pill" id="trackingPhaseText">&#31561;&#24453;&#30446;&#26631;</span>
+          </div>
           <div class="video-wrap" id="videoWrap">
             <img id="videoStream" alt="reCamera video stream">
             <canvas id="overlay"></canvas>
@@ -267,11 +272,12 @@ button,input,select{font:inherit}
       <div class="grid layout-2">
         <section class="card video-card">
           <div class="video-head">
-            <strong>摄像头 + 声源信息源</strong>
-            <span class="pill">只自动控制 yaw 轴</span>
+            <strong>DOA + visual fusion</strong>
+            <span class=pill>yaw + pitch</span>
           </div>
-          <div class="video-wrap">
+          <div class="video-wrap" id="multiVideoWrap">
             <img id="multiVideoMirror" alt="reCamera video mirror">
+            <canvas id="multiOverlay"></canvas>
           </div>
         </section>
         <div class="grid">
@@ -405,7 +411,7 @@ button,input,select{font:inherit}
 </div>
 
 <script>
-let state=null,ws=null,wsRetry=null,lastWsAt=0,lastLog='',activePage='single_face_analysis',switching=false,meetingYaw=false,currentSessionId='';
+let state=null,ws=null,wsRetry=null,lastWsAt=0,lastLog='',activePage='single_face_analysis',switching=false,meetingYaw=false,currentSessionId='',landmarkMesh=false;
 const featureActive={
   single_face_analysis:false,
   multi_sound_yaw:false,
@@ -587,6 +593,13 @@ async function heartbeat(){
   const r=await apiPost('/api/control/heartbeat',{session_id:currentSessionId});
   if(!r||!r.accepted){log('控制租约已失效，功能已锁定');clearSession()}
 }
+function toggleLandmarks(){
+  landmarkMesh=!landmarkMesh;
+  const btn=$('landmarkToggle');
+  btn.setAttribute('aria-pressed',String(landmarkMesh));
+  btn.textContent=landmarkMesh?'MediaPipe 468 &#28857;':'&#20116;&#28857;&#26174;&#31034;';
+  if(state)drawOverlay(state);
+}
 
 function renderState(s){
   if(!s)return;
@@ -597,6 +610,8 @@ function renderState(s){
   $('fsmText').textContent=ctrl.fsm_state||'IDLE';
   $('eventBusText').textContent=ctrl.last_event?'active':'waiting';
   $('leaseText').textContent=ctrl.lease_remaining_ms!=null?`${Math.ceil(Number(ctrl.lease_remaining_ms)/100)/10}s`:'--';
+  $('trackingPhaseText').textContent=s.tracking_phase||ctrl.tracking_phase||'waiting_target';
+  if((s.stop_state||ctrl.stop_state)==='hardware_stop_failed')log('Hardware stop failed; check the device bridge');
   const runtimeFeature=ctrl.active_feature||'inactive';
   if(currentSessionId&&ctrl.session_id&&ctrl.session_id!==currentSessionId){log('控制权已被新会话接管');clearSession()}
   if(currentSessionId&&ctrl.session_id===currentSessionId){
@@ -708,11 +723,12 @@ const videoEl=$('videoStream'),multiMirror=$('multiVideoMirror');
 videoEl.src=`${location.origin}/video_feed?t=${Date.now()}`;
 multiMirror.src=videoEl.src;
 videoEl.onerror=()=>{log('video_feed failed; retrying');setTimeout(()=>{const src=`${location.origin}/video_feed?t=${Date.now()}`;videoEl.src=src;multiMirror.src=src},1200)};
-connectWS();loadDeviceConfig();poll();setInterval(poll,350);setInterval(heartbeat,1000);addEventListener('resize',()=>state&&drawOverlay(state));
+connectWS();loadDeviceConfig();poll();setInterval(poll,350);setInterval(heartbeat,500);addEventListener('resize',()=>state&&drawOverlay(state));
 addEventListener('beforeunload',()=>{deactivatePage(activePage,true)});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)deactivatePage(activePage,true);else{featureActive[activePage]=false;updateFeatureLocks();log('页面恢复可见，等待点击“启动功能”')}});
 updateFeatureLocks();
 log('已进入页面，等待点击“启动功能”');
 </script>
+<script src="/static/tracking_overlay.js"></script>
 </body>
 </html>

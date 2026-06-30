@@ -49,7 +49,7 @@ FastAPI = UI Event emitter + perception/recording + runtime telemetry viewer
 | 项目 | 结论 |
 |---|---|
 | 是否存在 hidden bypass | **NO** |
-| 是否 production safe | **YES** |
+| Production safety | **CONDITIONAL** - requires the matching lease/watchdog bridge |
 | apply_command 调用点 | **仅 `main_phase3.py` control runtime** |
 | FastAPI 是否调用 apply_command | **NEVER**（注释确认，代码无调用） |
 | 是否有第二 FSM | **NO**（FastAPI 只查询 main runtime snapshot） |

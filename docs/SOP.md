@@ -466,6 +466,37 @@ usbipd.exe attach --busid <BUSID> --wsl
 lsusb | grep 2886
 ```
 
+### 7.2 查询会议录音的音频设备索引
+
+`RECAMERA_AUDIO_DEVICE` 是 **WSL 中 Python `sounddevice` 枚举出的录音输入设备索引**。
+它不是 `usbipd` 的 `<BUSID>`、ReSpeaker 的 USB VID/PID，也不是 reCamera IP。
+
+ReSpeaker attach 到 WSL 后查询音频设备：
+
+```bash
+python3 -c "import sounddevice as sd; print(sd.query_devices())"
+```
+
+找到名称包含 `ReSpeaker`、`XVF3800` 或 `USB Audio`，并且 `max_input_channels`
+大于 `0` 的条目。例如：
+
+```text
+2 ReSpeaker XVF3800, ALSA (2 in, 2 out)
+```
+
+这里的音频设备索引是 `2`，应配置为：
+
+```bash
+export RECAMERA_AUDIO_DEVICE=2
+python3 -c "import sounddevice as sd; print(sd.query_devices(int('$RECAMERA_AUDIO_DEVICE')))"
+```
+
+第二条命令用于确认所选设备名称和输入通道数。USB 重新 attach、WSL 重启或音频设备增减后，
+索引可能变化；每次部署或录音设备异常时应重新查询，不要长期写死。
+
+该索引只供 `sounddevice` 通过 ReSpeaker USB Audio Class 进行会议录音。
+DOA/VAD 和实体 LED 使用同一 ReSpeaker 的 USB control interface，不使用音频设备索引。
+
 启动 FastAPI：
 
 ```bash
@@ -480,7 +511,7 @@ python3 recamera_fastapi.py --device-ip "$RECAMERA_DEVICE_IP"
 usbipd.exe detach --busid <BUSID>
 ```
 
-### 7.2 TCP DOA
+### 7.3 TCP DOA
 
 FastAPI 默认监听 `0.0.0.0:9999`。查询 WSL 地址：
 
@@ -506,10 +537,9 @@ python3 tools/send_doa_tcp.py --host 127.0.0.1 --mock-angle 35
 {"azimuth_deg":35,"speech":true}
 ```
 
-### 7.3 DOA 验证
+### 7.4 DOA 与 LED 验证
 
 ```bash
-ss -lntp | grep 9999
 curl http://localhost:8001/api/state | python3 -m json.tool
 ```
 
@@ -521,7 +551,12 @@ doa.packet_count > 0
 doa.doa_deg = 35
 doa.has_speech = true
 doa.age < 1
+respeaker.connected = true
+respeaker.led.hardware = true
 ```
+
+USB 生产模式不要求监听 9999；只有 `RECAMERA_DOA_SOURCE=tcp` 时才使用
+`ss -lntp | grep 9999`，且此时 `respeaker.led.hardware=false`。
 
 这些字段证明 ReSpeaker 输入有效；最终硬件闭环还应同时确认 `control.active_feature=multi_sound_yaw`、`gimbal.source=motor_readback` 和 yaw 数值变化。
 
@@ -728,11 +763,15 @@ TCP 模式的 `respeaker.led.hardware=false` 是预期行为。
 ### 10.6 会议录音失败
 
 ```bash
-python3 -c "import sounddevice; print(sounddevice.query_devices())"
+python3 -c "import sounddevice as sd; print(sd.query_devices())"
+python3 -c "import os, sounddevice as sd; i=int(os.environ['RECAMERA_AUDIO_DEVICE']); print(sd.query_devices(i)); print('input channels=', sd.query_devices(i)['max_input_channels'])"
 curl http://localhost:8001/api/conversation/debug
 ```
 
-确认 `RECAMERA_AUDIO_DEVICE` 指向 ReSpeaker。摘要为空时确认存在有效 WAV、语音片段足够长，并已安装 `faster-whisper`。
+确认 `RECAMERA_AUDIO_DEVICE` 是 WSL 中 ReSpeaker 的 `sounddevice` 输入索引，且
+`max_input_channels > 0`。如果环境变量不存在、索引越界或指向输出设备，重新执行
+7.2 节的枚举流程。摘要为空时确认存在有效 WAV、语音片段足够长，并已安装
+`faster-whisper`。
 
 ### 10.7 安全原则
 

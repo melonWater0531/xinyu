@@ -17,7 +17,7 @@ class SafetyLayer:
         enable_real_control: bool = False,
         max_step_deg: float = 2.5,
         max_accel_ratio: float = 0.30,
-        rate_limit_hz: float = 5.0,
+        rate_limit_hz: float = 8.0,
         **_: object,
     ) -> None:
         self._safe_mode = bool(safe_mode)

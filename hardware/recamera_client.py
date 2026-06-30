@@ -35,6 +35,9 @@ class RecameraClient:
         self._fail_count = 0
         self._consecutive_fails = 0
         self._last_latency_ms = 0.0
+        self._session_id = ""
+        self._sequence = 0
+        self._lease_deadline = 0.0
 
     def connect(self, dry_run: bool = False) -> bool:
         if dry_run:
@@ -56,7 +59,15 @@ class RecameraClient:
         if not isinstance(command, ControlCommand):
             raise TypeError("RecameraClient.apply_command requires ControlCommand")
         if command.stop:
-            return self.emergency_stop()
+            return self.emergency_stop(command.session_id or self._session_id)
+        session_id = command.session_id or self._session_id
+        if not session_id or session_id != self._session_id:
+            logger.warning("gimbal command rejected locally: invalid session")
+            return False
+        if time.monotonic() >= self._lease_deadline or time.time() >= command.expires_at:
+            logger.warning("gimbal command rejected locally: expired lease/command")
+            return False
+        self._sequence = max(self._sequence + 1, int(command.sequence or 0))
         payload = {
             "mode": command.mode,
             "yaw": command.yaw,
@@ -64,13 +75,52 @@ class RecameraClient:
             "yaw_speed": command.speed or 180,
             "pitch_speed": command.speed or 180,
             "reason": command.reason,
+            "session_id": session_id,
+            "sequence": self._sequence,
+            "issued_at": command.issued_at,
+            "expires_at": command.expires_at,
         }
         return self._post("command", payload)
 
-    def emergency_stop(self) -> bool:
+    def start_session(self, session_id: str, lease_ms: int = 750) -> bool:
+        if not session_id:
+            return False
+        if self._dry_run:
+            self._session_id = str(session_id)
+            self._lease_deadline = time.monotonic() + lease_ms / 1000.0
+            return True
+        ok = self._post("session/start", {"session_id": str(session_id), "lease_ms": int(lease_ms)})
+        if ok:
+            self._session_id = str(session_id)
+            self._sequence = 0
+            self._lease_deadline = time.monotonic() + lease_ms / 1000.0
+        return ok
+
+    def renew_session(self, session_id: str, lease_ms: int = 750) -> bool:
+        if not session_id or session_id != self._session_id:
+            return False
+        if self._dry_run:
+            self._lease_deadline = time.monotonic() + lease_ms / 1000.0
+            return True
+        ok = self._post("session/heartbeat", {"session_id": session_id, "lease_ms": int(lease_ms)})
+        if ok:
+            self._lease_deadline = time.monotonic() + lease_ms / 1000.0
+        return ok
+
+    def emergency_stop(self, session_id: str = "") -> bool:
+        sid = str(session_id or self._session_id)
         if self._dry_run:
             return True
-        return self._post("stop", {"stop": True})
+        return self._post("stop", {"stop": True, "session_id": sid, "sequence": self._sequence + 1})
+
+    def stop_session(self, session_id: str = "") -> bool:
+        sid = str(session_id or self._session_id)
+        ok = self.emergency_stop(sid)
+        if not self._dry_run:
+            ok = self._post("session/stop", {"session_id": sid}) and ok
+        self._session_id = ""
+        self._lease_deadline = 0.0
+        return ok
 
     def get_status(self) -> Optional[dict]:
         if self._dry_run:
@@ -94,6 +144,9 @@ class RecameraClient:
             "source": str(data.get("source", "motor_readback")),
             "age_ms": max(0, now_ms - sample_ms),
             "timestamp": sample_ms,
+            "device_lease": dict(data.get("device_lease") or {}),
+            "authorized_session": str(data.get("authorized_session", "")),
+            "last_sequence": int(data.get("last_sequence", 0) or 0),
         }
         self._connected = result["connected"] and result["age_ms"] <= 2000
         result["connected"] = self._connected
@@ -101,7 +154,7 @@ class RecameraClient:
 
     def close(self) -> None:
         if not self._dry_run and self._connected:
-            self.emergency_stop()
+            self.stop_session()
         self._connected = False
         self._dry_run = True
 
@@ -158,6 +211,10 @@ class RecameraClient:
     @property
     def last_latency_ms(self) -> float:
         return self._last_latency_ms
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
 
 
 def _optional_float(value) -> Optional[float]:

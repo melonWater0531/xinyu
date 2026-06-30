@@ -113,9 +113,10 @@ class RealVisionSource(VisionDataSource):
             conf = conf / 100.0 if conf > 1.0 else conf
             if conf < self._conf_thresh:
                 continue
+            cx, cy, width, height = map(float, box[:4])
             bboxes.append(BBox(
-                x1=int(box[0]), y1=int(box[1]),
-                x2=int(box[2]), y2=int(box[3]),
+                x1=int(cx - width / 2), y1=int(cy - height / 2),
+                x2=int(cx + width / 2), y2=int(cy + height / 2),
                 class_name="person",
                 confidence=conf,
             ))

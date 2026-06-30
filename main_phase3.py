@@ -94,6 +94,8 @@ class Phase3Runner:
         self._last_block_reason = ""
         self._trace: deque[dict] = deque(maxlen=40)
         self._last_apply_ok: Optional[bool] = None
+        self._stop_state = "stopped"
+        self._external_perception = bool(manual_control)
         self._gimbal_tlm = {
             "connected": False, "yaw": None, "pitch": None,
             "yaw_speed": None, "pitch_speed": None,
@@ -104,16 +106,16 @@ class Phase3Runner:
 
         device_ip = normalize_device_ip(gimbal_ip, required=enable_control)
 
-        # Vision source: real SSCMA when enable_control, mock otherwise.
-        sscma_url = device_sscma_ws_url(device_ip, required=enable_control) if not use_mock else ""
+        local_vision = not self._external_perception and not use_mock
+        sscma_url = device_sscma_ws_url(device_ip, required=enable_control) if local_vision else ""
         self._vision: VisionDataSource = create_vision_source(
-            use_mock=use_mock,
+            use_mock=not local_vision,
             sscma_url=sscma_url,
         )
 
         # Optional face tracker (InsightFace SCRFD — loads lazily)
         self._face_tracker = None
-        if not use_mock:
+        if local_vision:
             try:
                 from vision.face_tracker_v2 import FaceTrackerV2
                 self._face_tracker = FaceTrackerV2()
@@ -162,7 +164,7 @@ class Phase3Runner:
                 self._expire_lease_if_needed()
 
                 signal_bboxes: List[BBox] = []
-                if self._orchestrator.session.mode is ControlMode.SINGLE_FACE_ANALYSIS:
+                if not self._external_perception and self._orchestrator.session.mode is ControlMode.SINGLE_FACE_ANALYSIS:
                     person_bboxes = [
                         b for b in (self._coerce_bbox(r) for r in self._vision.get_bboxes())
                         if b.confidence >= self._person_conf_thresh
@@ -171,7 +173,7 @@ class Phase3Runner:
                     face_bboxes = self._get_face_bboxes()
                     signal_bboxes = face_bboxes if face_bboxes else person_bboxes
 
-                command = self._handle_vision_event(signal_bboxes) if self._orchestrator.session.mode is ControlMode.SINGLE_FACE_ANALYSIS else None
+                command = self._handle_vision_event(signal_bboxes) if not self._external_perception and self._orchestrator.session.mode is ControlMode.SINGLE_FACE_ANALYSIS else None
                 self._print_frame(signal_bboxes, command)
                 if self._max_cycles and self._frame_id >= self._max_cycles:
                     break
@@ -222,6 +224,12 @@ class Phase3Runner:
             return {"command": self._command_dict(command), "applied": False, "reason": self._last_block_reason}
         self._last_command = allowed
         ok = bool(self._hw.apply_command(allowed))
+        if allowed.stop:
+            self._stop_state = "stopped" if ok else "hardware_stop_failed"
+            if allowed.reason in {"feature_stop", "lease_expired", "shutdown", "emergency_stop"}:
+                ok = bool(self._hw.stop_session(allowed.session_id)) and ok
+        elif ok:
+            self._stop_state = "running"
         self._last_apply_ok = ok
         return {"command": self._command_dict(allowed), "applied": ok, "reason": "ok" if ok else "hardware_error"}
 
@@ -242,12 +250,29 @@ class Phase3Runner:
             if event.name == "dpad_move":
                 valid_before = valid_before and before.get("active_feature") == "manual_gimbal_debug"
             self._last_event = event
+            if event.type == "ui" and event.name == "feature_start" and before.get("active"):
+                self._stop_state = "stopping"
+                self._hw.stop_session(str(before.get("session_id", "")))
             command = self._orchestrator.handle_event(event)
+            device_session_ok = True
+            if event.type == "ui" and event.name == "feature_start":
+                candidate = self._orchestrator.runtime_state()
+                sid = str(candidate.get("session_id", ""))
+                device_session_ok = bool(sid and self._hw.start_session(sid, lease_ms=750))
+                if not device_session_ok:
+                    self._orchestrator.session.clear()
+                    self._stop_state = "hardware_stop_failed"
+            elif event.type == "ui" and event.name == "feature_heartbeat" and valid_before:
+                device_session_ok = self._hw.renew_session(requested_session, lease_ms=750)
+                if not device_session_ok:
+                    command = self._orchestrator.handle_event(Event.make("system", "emergency_stop", "device_lease"))
             apply_result = self._apply(command)
             after = self._orchestrator.runtime_state()
             accepted = not session_bound or valid_before
             if event.name == "feature_start":
-                accepted = after.get("session_id") == str(event.payload.get("session_id", ""))
+                accepted = device_session_ok and after.get("session_id") == str(event.payload.get("session_id", ""))
+            elif event.name == "feature_heartbeat":
+                accepted = accepted and device_session_ok
             self._trace.append({
                 "t": time.time(), "event": event.to_dict(),
                 "state": after.get("fsm_state"), "feature": after.get("active_feature"),
@@ -292,6 +317,8 @@ class Phase3Runner:
         return {
             "mode": command.mode, "yaw": command.yaw, "pitch": command.pitch,
             "speed": command.speed, "stop": command.stop, "reason": command.reason,
+            "session_id": command.session_id, "sequence": command.sequence,
+            "issued_at": command.issued_at, "expires_at": command.expires_at,
         }
 
     def runtime_snapshot(self) -> dict:
@@ -304,6 +331,8 @@ class Phase3Runner:
                 "last_apply_ok": self._last_apply_ok,
                 "safety": {**self._safety.stats, "last_block_reason": self._last_block_reason},
                 "gimbal": dict(self._gimbal_tlm),
+                "stop_state": self._stop_state,
+                "device_lease": dict(self._gimbal_tlm.get("device_lease") or {}),
                 "trace": list(self._trace)[-12:],
             }
 
@@ -312,15 +341,19 @@ class Phase3Runner:
 
         def _poll() -> None:
             while self._telemetry_running:
+                session_id = self._orchestrator.session.session_id
+                if session_id:
+                    self._hw.renew_session(session_id, lease_ms=750)
                 status = self._hw.get_status()
                 if status:
                     with self._runtime_lock:
                         self._gimbal_tlm = dict(status)
+                        self._orchestrator.update_gimbal_readback(status.get("yaw"), status.get("pitch"))
                 elif self._gimbal_tlm.get("connected"):
                     with self._runtime_lock:
                         self._gimbal_tlm["connected"] = False
                         self._gimbal_tlm["source"] = "stale"
-                time.sleep(0.5)
+                time.sleep(0.25)
 
         self._telemetry_thread = threading.Thread(target=_poll, daemon=True, name="gimbal-telemetry")
         self._telemetry_thread.start()

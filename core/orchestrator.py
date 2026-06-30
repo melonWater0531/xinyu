@@ -394,3 +394,8 @@ def make_system_command(name: str, source: str = "system") -> Optional[ControlCo
 
 
 _NOT_LIFECYCLE = object()
+
+# The event-driven implementation consumes FastAPI vision/observation events.
+# Keep this module path stable for existing imports and deployments.
+from core.orchestrator_v2 import Orchestrator as EventDrivenOrchestrator
+Orchestrator = EventDrivenOrchestrator

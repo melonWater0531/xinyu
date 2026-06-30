@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f3f1e8">
+  <title>心屿 · 独立体验版</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+
+  <div class="app-shell">
+    <header class="app-header">
+      <button class="brand" type="button" data-go="home" aria-label="返回首页">
+        <span class="brand-mark" aria-hidden="true">屿</span>
+        <span>
+          <strong>心屿</strong>
+          <small>安放此刻的心情</small>
+        </span>
+      </button>
+      <div class="header-meta">
+        <span class="privacy-chip">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V8a5 5 0 0 1 10 0v2m-9 0h8a2 2 0 0 1 2 2v7H6v-7a2 2 0 0 1 2-2Z"/></svg>
+          仅存于本机
+        </span>
+        <span class="today-label" id="today-label"></span>
+      </div>
+    </header>
+
+    <main id="main-content" tabindex="-1">
+      <section class="page page-home active" id="page-home" data-page="home" aria-labelledby="home-title">
+        <div class="home-layout">
+          <article class="island-stage paper-panel">
+            <div class="stage-copy">
+              <p class="eyebrow">WELCOME TO YOUR ISLAND</p>
+              <h1 id="home-title"><span id="greeting-word">下午好</span>，<span id="home-name">心屿用户</span></h1>
+              <p>不用急着解释一切。先看看，此刻的心是什么颜色。</p>
+            </div>
+
+            <div class="island-visual" aria-hidden="true">
+              <span class="island-halo"></span>
+              <img src="../island_cutout.png" alt="">
+              <span class="spark spark-a">✦</span>
+              <span class="spark spark-b">·</span>
+            </div>
+
+            <div class="mode-switch" role="group" aria-label="陪伴模式">
+              <button type="button" class="mode-option active" data-mode="single">私人岛屿<small>留给自己</small></button>
+              <button type="button" class="mode-option" data-mode="multi">同行时刻<small>一起记录</small></button>
+            </div>
+
+            <button class="primary-cta" type="button" data-open-mood>
+              <span>记录此刻</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
+            </button>
+          </article>
+
+          <aside class="home-side" aria-label="今日概览">
+            <article class="today-note paper-panel">
+              <div class="section-heading compact">
+                <div>
+                  <p class="eyebrow">TODAY</p>
+                  <h2>今天的心屿</h2>
+                </div>
+                <button class="text-button" type="button" data-go="diary">查看日记</button>
+              </div>
+              <div class="today-orbs">
+                <button class="summary-orb mood-summary" type="button" data-open-mood aria-label="记录今日心情">
+                  <span class="mini-face" id="today-face" aria-hidden="true">●‿●</span>
+                  <small>今日心情</small>
+                  <strong id="today-mood">还未记录</strong>
+                </button>
+                <button class="summary-orb focus-summary" type="button" data-experience="focus" aria-label="体验专注记录">
+                  <span class="focus-glyph" aria-hidden="true">✦</span>
+                  <small>专注陪伴</small>
+                  <strong id="focus-summary">轻轻开始</strong>
+                </button>
+              </div>
+              <blockquote id="daily-quote">“允许今天只是今天，也是一种温柔。”</blockquote>
+            </article>
+
+            <article class="companion-strip paper-panel">
+              <div class="section-heading compact">
+                <div><p class="eyebrow">COMPANION</p><h2>小屿陪你</h2></div>
+              </div>
+              <div class="feature-list">
+                <button type="button" class="feature-row" data-experience="emotion">
+                  <span class="feature-icon coral">☻</span><span><strong>情绪陪伴</strong><small>看见此刻的变化</small></span><i>›</i>
+                </button>
+                <button type="button" class="feature-row" data-experience="focus">
+                  <span class="feature-icon sage">◎</span><span><strong>专注记录</strong><small>陪你完成一小段时间</small></span><i>›</i>
+                </button>
+                <button type="button" class="feature-row" data-experience="group">
+                  <span class="feature-icon plum">◌</span><span><strong>同行时刻</strong><small>多人交流与记录整理</small></span><i>›</i>
+                </button>
+                <button type="button" class="feature-row" data-experience="chat">
+                  <span class="feature-icon amber">✎</span><span><strong>和小屿聊聊</strong><small>把没有说完的话放在这里</small></span><i>›</i>
+                </button>
+              </div>
+            </article>
+          </aside>
+        </div>
+      </section>
+
+      <section class="page page-diary" id="page-diary" data-page="diary" aria-labelledby="diary-title" hidden>
+        <div class="page-intro">
+          <div><p class="eyebrow">MOOD DIARY</p><h1 id="diary-title">情绪日记</h1><p>每一个被记住的心情，都在慢慢拼成你。</p></div>
+          <button class="round-add" type="button" data-open-mood aria-label="新增情绪记录">＋</button>
+        </div>
+        <div class="diary-layout">
+          <article class="calendar-card paper-panel">
+            <div class="calendar-toolbar">
+              <button type="button" id="calendar-prev" aria-label="上个月">‹</button>
+              <h2 id="calendar-title"></h2>
+              <button type="button" id="calendar-next" aria-label="下个月">›</button>
+            </div>
+            <div class="calendar-week" aria-hidden="true"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
+            <div class="calendar-grid" id="calendar-grid" role="grid" aria-label="情绪日历"></div>
+            <div class="calendar-legend"><span><i class="legend-dot recorded"></i>已有记录</span><span><i class="legend-ring"></i>今天</span></div>
+          </article>
+
+          <article class="entry-detail paper-panel" id="entry-detail">
+            <div class="empty-entry" id="entry-empty">
+              <span class="empty-face" aria-hidden="true">˙ᵕ˙</span>
+              <h2>选一天，看看那时的自己</h2>
+              <p>也可以从今天开始，留下一颗小小的心情种子。</p>
+              <button type="button" class="soft-button" data-open-mood>记录今天</button>
+            </div>
+            <div class="entry-content" id="entry-content" hidden>
+              <div class="entry-topline"><span id="entry-date"></span><span id="entry-weather"></span></div>
+              <div class="entry-mood-line">
+                <span class="detail-face" id="entry-face" aria-hidden="true"></span>
+                <div><small>那天的心情</small><h2 id="entry-mood"></h2></div>
+              </div>
+              <div class="tag-list" id="entry-tags"></div>
+              <p class="entry-note" id="entry-note"></p>
+              <div class="entry-actions">
+                <button type="button" class="soft-button" id="entry-edit">编辑记录</button>
+                <button type="button" class="danger-link" id="entry-delete">删除</button>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="page page-week" id="page-week" data-page="week" aria-labelledby="week-title" hidden>
+        <div class="page-intro">
+          <div><p class="eyebrow">WEEKLY LETTER</p><h1 id="week-title">这一周，辛苦了</h1><p id="week-range"></p></div>
+          <button type="button" class="soft-button" id="refresh-letter">换一句总结</button>
+        </div>
+        <div class="week-layout">
+          <article class="mood-chart-card paper-panel">
+            <div class="section-heading"><div><p class="eyebrow">YOUR RHYTHM</p><h2>七日心情</h2></div><span class="tape-label" id="week-main-mood">平静最多</span></div>
+            <div class="week-chart" id="week-chart" aria-label="近七日心情分布图"></div>
+            <div class="week-summary-row">
+              <div><small>记录天数</small><strong id="week-days">0 天</strong></div>
+              <div><small>平均专注</small><strong id="week-focus">—</strong></div>
+              <div><small>给自己的时间</small><strong id="week-minutes">0 分钟</strong></div>
+            </div>
+          </article>
+          <article class="weekly-letter paper-panel">
+            <span class="letter-stamp" aria-hidden="true">屿</span>
+            <p class="eyebrow">A LETTER FROM XIAOYU</p>
+            <h2>写给这一周的你</h2>
+            <p id="weekly-letter-text"></p>
+            <footer>小屿 · <span id="letter-date"></span></footer>
+          </article>
+          <article class="mood-mix paper-panel">
+            <div class="section-heading compact"><div><p class="eyebrow">MOOD MIX</p><h2>情绪调色盘</h2></div></div>
+            <div id="mood-mix-list"></div>
+          </article>
+          <article class="tiny-actions paper-panel">
+            <div class="section-heading compact"><div><p class="eyebrow">A LITTLE CARE</p><h2>下周的小约定</h2></div></div>
+            <label class="promise"><input type="checkbox" data-promise="rest"><span>给自己留十分钟空白</span></label>
+            <label class="promise"><input type="checkbox" data-promise="water"><span>忙碌时也记得喝水</span></label>
+            <label class="promise"><input type="checkbox" data-promise="journal"><span>至少记录三次心情</span></label>
+          </article>
+        </div>
+      </section>
+
+      <section class="page page-health" id="page-health" data-page="health" aria-labelledby="health-title" hidden>
+        <div class="page-intro">
+          <div><p class="eyebrow">GENTLE CARE</p><h1 id="health-title">健康管理</h1><p>照顾身体，也是照顾情绪的一部分。</p></div>
+        </div>
+        <div class="health-grid">
+          <article class="care-card eye-card paper-panel">
+            <span class="care-illustration" aria-hidden="true">◉</span><small>护眼休息</small><strong class="timer" id="eye-timer">20:00</strong><p>看看远处，让眼睛松一口气。</p><button type="button" class="pill-button" data-timer="eye">开始计时</button>
+          </article>
+          <article class="care-card sit-card paper-panel">
+            <span class="care-illustration" aria-hidden="true">♨</span><small>久坐活动</small><strong class="timer" id="sit-timer">45:00</strong><p>身体动一动，思绪也会更轻。</p><button type="button" class="pill-button" data-timer="sit">开始计时</button>
+          </article>
+          <article class="breath-card paper-panel">
+            <div><p class="eyebrow">4 · 7 · 8</p><h2>和呼吸待一会儿</h2><p id="breath-copy">吸气、停留、呼气。跟着圆圈慢慢来。</p></div>
+            <button class="breath-orb" id="breath-orb" type="button" aria-label="开始呼吸练习"><span id="breath-label">开始</span><small id="breath-seconds">4-7-8</small></button>
+          </article>
+          <article class="stretch-card paper-panel">
+            <div class="section-heading compact"><div><p class="eyebrow">STRETCH</p><h2>三分钟舒展</h2></div><span id="stretch-step-label">准备好了吗</span></div>
+            <div class="stretch-figure" aria-hidden="true"><span class="figure-head"></span><span class="figure-body"></span><span class="figure-arm left"></span><span class="figure-arm right"></span></div>
+            <p id="stretch-guide">从肩颈开始，做几个缓慢、舒服的动作。</p>
+            <button type="button" class="soft-button" id="stretch-button">开始舒展</button>
+          </article>
+          <article class="activity-card paper-panel">
+            <div class="section-heading compact"><div><p class="eyebrow">TODAY</p><h2>今日小目标</h2></div></div>
+            <div class="activity-row"><span class="drop-icon">●</span><div><small>喝水</small><strong id="water-value">0 / 8 杯</strong></div><button type="button" id="add-water" aria-label="记录一杯水">＋</button></div>
+            <div class="mini-progress"><span id="water-progress"></span></div>
+            <div class="activity-row"><span class="step-icon">⌁</span><div><small>步数</small><strong><span id="steps-value">0</span> / <span id="steps-goal-label">6000</span></strong></div><button type="button" id="add-steps" aria-label="增加五百步">＋500</button></div>
+            <div class="mini-progress"><span id="steps-progress"></span></div>
+            <label class="goal-editor">步数目标 <input id="steps-goal" type="number" min="1000" max="50000" step="500" inputmode="numeric"></label>
+          </article>
+        </div>
+      </section>
+
+      <section class="page page-profile" id="page-profile" data-page="profile" aria-labelledby="profile-title" hidden>
+        <div class="page-intro">
+          <div><p class="eyebrow">YOUR ISLAND</p><h1 id="profile-title">我的</h1><p>把这里调整成更适合你的样子。</p></div>
+        </div>
+        <div class="profile-layout">
+          <article class="profile-card paper-panel">
+            <div class="profile-avatar" aria-hidden="true">屿</div>
+            <div><small>岛屿主人</small><h2 id="profile-display-name">心屿用户</h2><p>你的记录只留在这台设备里。</p></div>
+          </article>
+          <form class="settings-card paper-panel" id="settings-form">
+            <div class="field"><label for="profile-name">昵称</label><input id="profile-name" name="profileName" maxlength="20" autocomplete="nickname"></div>
+            <fieldset><legend>默认陪伴模式</legend><label class="radio-row"><input type="radio" name="defaultMode" value="single"><span>私人岛屿<small>适合独处与自我记录</small></span></label><label class="radio-row"><input type="radio" name="defaultMode" value="multi"><span>同行时刻<small>适合对话与多人记录</small></span></label></fieldset>
+            <fieldset><legend>提醒节奏</legend><div class="segmented"><label><input type="radio" name="reminderTone" value="quiet"><span>安静</span></label><label><input type="radio" name="reminderTone" value="gentle"><span>温和</span></label><label><input type="radio" name="reminderTone" value="active"><span>积极</span></label></div></fieldset>
+            <button class="primary-cta compact-cta" type="submit">保存设置</button>
+          </form>
+          <article class="privacy-card paper-panel"><span aria-hidden="true">⌂</span><div><h2>本地体验，安心记录</h2><p>这个体验版不会连接网络，日记、心情和健康记录只保存在当前浏览器。</p></div></article>
+          <button class="reset-button" type="button" id="reset-data">重置体验数据</button>
+        </div>
+      </section>
+    </main>
+
+    <nav class="bottom-nav" aria-label="主要导航">
+      <button type="button" class="nav-item active" data-nav="home" aria-current="page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 11 8-7 8 7v9h-5v-6H9v6H4Z"/></svg><span>首页</span>
+      </button>
+      <button type="button" class="nav-item" data-nav="diary">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm0 0v16m3-12h6m-6 4h6"/></svg><span>日记</span>
+      </button>
+      <button type="button" class="nav-item" data-nav="week">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9m5 10V5m6 14v-7m5 7V3"/></svg><span>周报</span>
+      </button>
+      <button type="button" class="nav-item" data-nav="health">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 11c0 5.6-7 10-7 10Z"/></svg><span>健康</span>
+      </button>
+      <button type="button" class="nav-item nav-profile-mobile" data-nav="profile">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0"/></svg><span>我的</span>
+      </button>
+    </nav>
+  </div>
+
+  <dialog class="mood-dialog" id="mood-dialog" aria-labelledby="mood-dialog-title">
+    <form method="dialog" class="dialog-shell" id="mood-form">
+      <header class="dialog-header"><button type="button" class="icon-button" data-close-dialog aria-label="关闭">×</button><div><p class="eyebrow" id="mood-step-label">STEP 1 OF 2</p><h2 id="mood-dialog-title">亲，今天过得怎么样？</h2></div><span class="dialog-spacer"></span></header>
+      <div class="mood-step" id="mood-step-one">
+        <div class="mood-wheel" id="mood-wheel" role="radiogroup" aria-label="选择一种心情"></div>
+        <p class="mood-hint">没有好坏，只是给此刻一个名字。</p>
+        <button type="button" class="primary-cta dialog-next" id="mood-next" disabled>继续记录</button>
+      </div>
+      <div class="mood-step" id="mood-step-two" hidden>
+        <div class="selected-mood-card"><span class="selected-face" id="selected-face" aria-hidden="true"></span><div><small id="entry-form-date"></small><h3 id="selected-mood-name"></h3></div></div>
+        <fieldset class="choice-field"><legend>今天的天气</legend><div class="weather-options" id="weather-options"></div></fieldset>
+        <fieldset class="choice-field"><legend>什么影响了你的心情？</legend><div class="tag-options" id="tag-options"></div></fieldset>
+        <label class="note-field" for="mood-note">想对今天说什么？<textarea id="mood-note" rows="5" maxlength="500" placeholder="写下一件让你记得的事……"></textarea><small><span id="note-count">0</span> / 500</small></label>
+        <div class="dialog-actions"><button type="button" class="soft-button" id="mood-back">返回</button><button type="submit" class="primary-cta">保存这一天</button></div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="experience-dialog" id="experience-dialog" aria-labelledby="experience-title">
+    <div class="experience-sheet">
+      <button type="button" class="sheet-handle" data-close-experience aria-label="关闭体验面板"><span></span></button>
+      <div id="experience-content"></div>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="./app.js"></script>
+</body>
+</html>
