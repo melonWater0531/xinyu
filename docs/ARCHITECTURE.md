@@ -55,6 +55,8 @@ FastAPI = UI Event emitter + perception/recording + runtime telemetry viewer
 | 是否有第二 FSM | **NO**（FastAPI 只查询 main runtime snapshot） |
 | 孤立 PD 模块 | `core/control_filter.py`（有比例增益代码，但**未被任何生产代码 import**，属于孤立遗留模块） |
 
+控制闭环、session 租约与设备看门狗的整改细节见 [CONTROL_CLOSURE.md](CONTROL_CLOSURE.md)。
+
 ---
 
 ## 2. 单控制平面架构（SINGLE CONTROL PLANE）

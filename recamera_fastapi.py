@@ -336,6 +336,7 @@ _runtime_cache = {
 }
 _led_runtime_mode = ""
 _last_audio_event_active = False
+_last_audio_event_session_id = ""
 
 
 def _device_config_state() -> dict:
@@ -379,8 +380,11 @@ def _restart_video_client(device_ip: str) -> tuple[bool, str]:
     return True, "video_client_restarted"
 
 
-def _audio_event(doa_deg: float, speech: bool, source: str = "doa") -> Event:
-    return Event.make("audio", "speech_detected", source, {"doa_deg": float(doa_deg), "speech": bool(speech)})
+def _audio_event(doa_deg: float, speech: bool, source: str = "doa", session_id: str = "") -> Event:
+    payload = {"doa_deg": float(doa_deg), "speech": bool(speech)}
+    if session_id:
+        payload["session_id"] = session_id
+    return Event.make("audio", "speech_detected", source, payload)
 
 
 def _vision_event(cx: float, cy: float, conf: float, source: str = "vision") -> Event:
@@ -587,25 +591,34 @@ async def runtime_sync_loop() -> None:
 
 
 async def doa_event_loop() -> None:
-    global _last_audio_event_active
+    global _last_audio_event_active, _last_audio_event_session_id
     loop = asyncio.get_running_loop()
     while True:
+        feature = str(_runtime_cache.get("active_feature", "inactive"))
+        session_id = str(_runtime_cache.get("session_id", ""))
+        control_active = feature in {"multi_sound_yaw", "meeting_sound_yaw"} and bool(session_id)
         active = bool(
-            _doa_reader is not None
+            control_active
+            and _doa_reader is not None
             and getattr(_doa_reader, "has_speech", False)
             and float(getattr(_doa_reader, "age", 999.0)) <= 1.0
         )
         if active:
+            _last_audio_event_session_id = session_id
             event = Event.make(
                 "audio", "speech_detected", "respeaker",
-                payload={"doa_deg": float(_doa_reader.doa), "speech": True},
+                payload={"doa_deg": float(_doa_reader.doa), "speech": True, "session_id": session_id},
             )
             result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
             _apply_runtime_result(result)
         elif _last_audio_event_active:
-            event = Event.make("audio", "timeout", "respeaker", payload={"speech": False})
+            event = Event.make(
+                "audio", "timeout", "respeaker",
+                payload={"speech": False, "session_id": session_id or _last_audio_event_session_id},
+            )
             result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
             _apply_runtime_result(result)
+            _last_audio_event_session_id = ""
         _last_audio_event_active = active
         await asyncio.sleep(0.1)
 

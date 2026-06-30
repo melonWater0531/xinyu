@@ -89,7 +89,14 @@ class HardwareAdapterTests(unittest.TestCase):
         path = Path(__file__).parents[1] / "deploy" / "node_red" / "recamera_control_bridge.json"
         flow = json.loads(path.read_text(encoding="utf-8"))
         urls = {node.get("url") for node in flow if node.get("type") == "http in"}
-        self.assertGreaterEqual(len(urls), 6)
+        self.assertTrue({
+            "/recamera-control/v1/session/start",
+            "/recamera-control/v1/session/heartbeat",
+            "/recamera-control/v1/session/stop",
+            "/recamera-control/v1/command",
+            "/recamera-control/v1/stop",
+            "/recamera-control/v1/status",
+        }.issubset(urls))
 
 
 if __name__ == "__main__":
