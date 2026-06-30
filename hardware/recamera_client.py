@@ -115,9 +115,9 @@ class RecameraClient:
 
     def stop_session(self, session_id: str = "") -> bool:
         sid = str(session_id or self._session_id)
-        ok = self.emergency_stop(sid)
+        ok = True
         if not self._dry_run:
-            ok = self._post("session/stop", {"session_id": sid}) and ok
+            ok = self._post("session/stop", {"session_id": sid})
         self._session_id = ""
         self._lease_deadline = 0.0
         return ok

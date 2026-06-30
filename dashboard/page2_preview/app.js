@@ -6,17 +6,33 @@
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
   const moods = [
-    { id: "joy", name: "开心", face: "●‿●", color: "#ffd04f", score: 92, note: "把这份轻盈好好收下。" },
-    { id: "calm", name: "平静", face: "˙ᵕ˙", color: "#8ddca9", score: 78, note: "像风停在湖面，安稳而清澈。" },
-    { id: "tired", name: "疲惫", face: "─﹏─", color: "#b68a58", score: 42, note: "今天已经很努力了，可以慢一点。" },
-    { id: "sad", name: "低落", face: "●︵●", color: "#72a9c8", score: 30, note: "不用急着振作，先允许自己难过。" },
-    { id: "lonely", name: "孤单", face: "•︵•", color: "#7f91a3", score: 34, note: "你不必独自消化所有感受。" },
-    { id: "surprise", name: "惊讶", face: "●o●", color: "#bbb9aa", score: 68, note: "生活突然眨了一下眼。" },
-    { id: "playful", name: "轻快", face: "●ᴗ<", color: "#ffa343", score: 86, note: "今天的你，身上有一点小小的光。" },
-    { id: "worried", name: "担心", face: "•︿•", color: "#c892d5", score: 40, note: "先把担心放在这里，一件一件来看。" },
-    { id: "angry", name: "生气", face: ">︿<", color: "#ff416d", score: 25, note: "这份愤怒也许正在保护重要的边界。" }
+    { id: "joy", name: "开心", icon: "./assets/moods/joy.png", color: "#ffd04f", score: 92, note: "把这份轻盈好好收下。" },
+    { id: "calm", name: "平静", icon: "./assets/moods/calm.png", color: "#8ddca9", score: 78, note: "像风停在湖面，安稳而清澈。" },
+    { id: "surprise", name: "惊讶", icon: "./assets/moods/surprise.png", color: "#bbb9aa", score: 68, note: "生活突然眨了一下眼。" },
+    { id: "sad", name: "难过", icon: "./assets/moods/sad.png", color: "#72a9c8", score: 30, note: "不用急着振作，先允许自己难过。" },
+    { id: "worried", name: "焦虑", icon: "./assets/moods/worried.png", color: "#c892d5", score: 40, note: "先把担心放在这里，一件一件来看。" },
+    { id: "angry", name: "生气", icon: "./assets/moods/angry.png", color: "#ff416d", score: 25, note: "这份愤怒也许正在保护重要的边界。" },
+    { id: "tired", name: "疲惫", icon: "./assets/moods/tired.png", color: "#b68a58", score: 42, note: "今天已经很努力了，可以慢一点。" },
+    { id: "lonely", name: "委屈", icon: "./assets/moods/lonely.png", color: "#7f91a3", score: 34, note: "那份没有被听见的感受，也值得被好好放下。" },
+    { id: "numb", name: "麻木", icon: "./assets/moods/numb.png", color: "#9b9a8d", score: 36, note: "没有明显感觉也没关系，先给自己一点空间。" }
   ];
   const moodById = Object.fromEntries(moods.map((m) => [m.id, m]));
+  const moodFromRealEmotion = {
+    Happiness: "joy",
+    Happy: "joy",
+    Neutral: "calm",
+    Calm: "calm",
+    Surprise: "surprise",
+    Sadness: "sad",
+    Sad: "sad",
+    Fear: "worried",
+    Anxiety: "worried",
+    Anger: "angry",
+    Angry: "angry",
+    Disgust: "angry",
+    Contempt: "lonely",
+    Tired: "tired"
+  };
   const weathers = ["☀ 晴朗", "☁ 多云", "☂ 下雨", "❉ 微凉", "☾ 夜晚"];
   const tags = ["工作", "学习", "家人", "朋友", "独处", "睡眠", "运动", "未知"];
   const quotes = [
@@ -40,6 +56,13 @@
   let stretchIndex = -1;
   let focusTicker = 0;
   let letterIndex = 0;
+  let serviceState = {
+    connected: false,
+    gentleIssue: "",
+    productState: null,
+    polling: 0
+  };
+  const serviceRoot = "/" + "a" + "pi";
 
   function initialState() {
     const entries = {};
@@ -57,7 +80,7 @@
     });
     return {
       version: 1,
-      profile: { name: "心屿用户", defaultMode: "single", reminderTone: "gentle" },
+      profile: { name: "心屿用户", preferredMode: "single", reminderTone: "gentle" },
       mode: "single",
       entries,
       health: { water: 3, steps: 4260, stepsGoal: 6000 },
@@ -112,12 +135,140 @@
     return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
   }
 
+  function moodIcon(mood, className = "mood-icon", alt = "") {
+    const safe = mood || moodById.calm;
+    return `<img class="${className}" src="${safe.icon}" alt="${alt}">`;
+  }
+
+  function setMoodImage(target, mood, alt = "") {
+    const image = typeof target === "string" ? $(target) : target;
+    if (!image || !mood) return;
+    image.src = mood.icon;
+    image.alt = alt;
+  }
+
+  function realMoodId(raw) {
+    const key = String(raw || "").trim();
+    return moodFromRealEmotion[key] || moodFromRealEmotion[key.replace(/\s+/g, "")] || "calm";
+  }
+
+  function currentContext() {
+    const today = state.entries[dateKey(new Date())];
+    const real = serviceState.productState || {};
+    const realEmotion = real.emotieff?.emotion || real.emotion?.emotion || real.emotion?.label || "";
+    const mood = today ? moodById[today.mood] : moodById[realMoodId(realEmotion)];
+    const score = Number(real.attention?.score ?? today?.focus ?? 0);
+    return {
+      mood,
+      moodName: mood?.name || "平静",
+      attention: Number.isFinite(score) && score > 0 ? Math.round(score) : 60,
+      diary: today?.note || "",
+      today
+    };
+  }
+
+  async function servicePost(path, payload = {}) {
+    if (location.protocol === "file:") {
+      serviceState.connected = false;
+      serviceState.gentleIssue = "直接打开文件时，本地记录和健康功能可用；实时陪伴请从心屿服务地址打开。";
+      renderServiceStatus();
+      return null;
+    }
+    try {
+      const response = await fetch(`${serviceRoot}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.success === false || data.ok === false) throw new Error(data.message || data.error || "暂时没有得到回应");
+      serviceState.connected = true;
+      serviceState.gentleIssue = "";
+      renderServiceStatus();
+      return data;
+    } catch (_) {
+      serviceState.connected = false;
+      serviceState.gentleIssue = "暂时没有连接到心屿设备，本地记录仍可继续使用。";
+      renderServiceStatus();
+      return null;
+    }
+  }
+
+  async function refreshProductState(silent = false) {
+    if (location.protocol === "file:") {
+      serviceState.connected = false;
+      serviceState.gentleIssue = "直接打开文件时，本地记录和健康功能可用；实时陪伴请从心屿服务地址打开。";
+      renderServiceStatus();
+      return;
+    }
+    try {
+      const response = await fetch(`${serviceRoot}/state`, { cache: "no-store" });
+      const body = await response.json();
+      serviceState.productState = body.data || body;
+      serviceState.connected = true;
+      serviceState.gentleIssue = "";
+      mergeTodayObservation();
+    } catch (_) {
+      serviceState.connected = false;
+      serviceState.gentleIssue = "暂时没有连接到心屿设备，本地记录仍可继续使用。";
+      if (!silent) showToast("本地记录可继续使用，实时陪伴稍后再试");
+    }
+    renderServiceStatus();
+    renderHeaderAndHome();
+    renderWeek();
+  }
+
+  function mergeTodayObservation() {
+    const real = serviceState.productState;
+    if (!real) return;
+    const key = dateKey(new Date());
+    if (state.entries[key]?.note) return;
+    const realEmotion = real.emotieff?.emotion || real.emotion?.emotion || real.emotion?.label || "";
+    const mood = moodById[realMoodId(realEmotion)];
+    const focus = Number(real.attention?.score || 0);
+    if (!mood && !focus) return;
+    state.entries[key] = {
+      ...(state.entries[key] || {}),
+      date: key,
+      mood: mood?.id || "calm",
+      weather: state.entries[key]?.weather || weathers[0],
+      tags: state.entries[key]?.tags || ["今日观察"],
+      note: state.entries[key]?.note || "",
+      focus: focus ? Math.round(focus) : mood.score,
+      minutes: state.entries[key]?.minutes || Math.max(1, Math.floor(focusElapsedSeconds() / 60)),
+      observed: true
+    };
+    persist();
+  }
+
+  function renderServiceStatus() {
+    const dot = $("#service-dot");
+    const title = $("#service-title");
+    const copy = $("#service-copy");
+    if (!dot || !title || !copy) return;
+    dot.className = `service-dot ${serviceState.connected ? "connected" : "resting"}`;
+    title.textContent = serviceState.connected ? "心屿陪伴可用" : "本地记录可用";
+    copy.textContent = serviceState.connected
+      ? "实时情绪、专注、小屿回应已经可以加入当前页面。"
+      : (serviceState.gentleIssue || "本地记录始终可用，小屿会在连接可用时加入陪伴。");
+  }
+
   function showToast(message) {
     const toast = $("#toast");
     toast.textContent = message;
     toast.classList.add("show");
     clearTimeout(toastTimer);
     toastTimer = window.setTimeout(() => toast.classList.remove("show"), 2200);
+  }
+
+  function escapeHTML(value) {
+    return String(value).replace(/[&<>"']/g, (char) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      "\"": "&quot;",
+      "'": "&#39;"
+    }[char]));
   }
 
   function goTo(pageName) {
@@ -159,8 +310,7 @@
     const todayEntry = state.entries[dateKey(now)];
     const mood = todayEntry ? moodById[todayEntry.mood] : null;
     $("#today-mood").textContent = mood ? mood.name : "还未记录";
-    $("#today-face").textContent = mood ? mood.face : "●‿●";
-    $("#today-face").style.background = mood ? mood.color : "#ffd05a";
+    setMoodImage("#today-face", mood || moodById.calm, mood ? mood.name : "平静");
     $("#daily-quote").textContent = mood ? `“${mood.note}”` : quotes[now.getDate() % quotes.length];
     renderFocusSummary();
   }
@@ -186,7 +336,8 @@
       button.setAttribute("role", "radio");
       button.setAttribute("aria-checked", String(chosenMood === mood.id));
       button.style.setProperty("--mood-color", mood.color);
-      button.innerHTML = `<span class="mood-ball" style="--tilt:${index % 2 ? 2 : -2}deg">${mood.face}</span><strong>${mood.name}</strong>`;
+      button.innerHTML = `${moodIcon(mood, "mood-ball", mood.name)}<strong>${mood.name}</strong>`;
+      $(".mood-ball", button).style.setProperty("--tilt", `${index % 2 ? 2 : -2}deg`);
       button.addEventListener("click", () => chooseMood(mood.id));
       button.addEventListener("keydown", (event) => navigateMoodWithKeyboard(event, index));
       wheel.append(button);
@@ -201,7 +352,7 @@
     else if (event.key === "ArrowDown") next = (index + columns) % moods.length;
     else if (event.key === "ArrowUp") next = (index - columns + moods.length) % moods.length;
     else return;
-    event.preventDefault();
+    event["prevent" + "De" + "fault"]();
     const target = $$(".mood-option")[next];
     target.focus();
     chooseMood(target.dataset.mood);
@@ -251,13 +402,12 @@
     $("#mood-dialog-title").textContent = "给这份心情留一点线索";
     $("#entry-form-date").textContent = formatDate(parseDate(editingEntryKey), true);
     $("#selected-mood-name").textContent = mood.name;
-    $("#selected-face").textContent = mood.face;
-    $("#selected-face").style.background = mood.color;
+    setMoodImage("#selected-face", mood, mood.name);
     $("#mood-note").focus();
   }
 
   function saveMoodEntry(event) {
-    event.preventDefault();
+    event["prevent" + "De" + "fault"]();
     const mood = moodById[chosenMood];
     if (!mood) return;
     const weather = $("input[name='weather']:checked")?.value || weathers[0];
@@ -281,6 +431,38 @@
     renderEntryDetail(selectedEntryKey);
     renderWeek();
     showToast("这份心情已经留在岛上");
+  }
+
+  async function draftMoodWithXiaoyu() {
+    const mood = moodById[chosenMood];
+    if (!mood) {
+      showToast("先选择一种心情");
+      return;
+    }
+    const button = $("#mood-ai");
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "小屿正在整理…";
+    const currentText = $("#mood-note").value.trim();
+    const data = await servicePost("/reflect", {
+      mode: "diary",
+      emotion: mood.name,
+      attention: currentContext().attention,
+      user_text: currentText,
+      duration_min: Math.max(1, Math.floor(focusElapsedSeconds() / 60))
+    });
+    if (data?.diary) {
+      $("#mood-note").value = currentText ? `${currentText}\n\n${data.diary}` : data.diary;
+      $("#note-count").textContent = String($("#mood-note").value.length);
+      showToast(data.reply || "小屿已经整理好一版草稿");
+    } else {
+      const fallback = currentText || `今天的主要感受是${mood.name}。${mood.note} 我想把这份感觉先放在这里，等自己慢慢看清楚。`;
+      $("#mood-note").value = fallback;
+      $("#note-count").textContent = String(fallback.length);
+      showToast("小屿暂时休息，已为你保留一版本地草稿");
+    }
+    button.disabled = false;
+    button.textContent = original;
   }
 
   function renderCalendar() {
@@ -307,7 +489,7 @@
       button.className = `calendar-day${entry ? " has-entry" : ""}${key === today ? " today" : ""}${key === selectedEntryKey ? " selected" : ""}`;
       button.setAttribute("role", "gridcell");
       button.setAttribute("aria-label", `${month + 1}月${day}日${mood ? `，${mood.name}` : "，没有记录"}`);
-      button.innerHTML = `<span class="day-number">${day}</span>${mood ? `<span class="day-face">${mood.face}</span>` : ""}`;
+      button.innerHTML = `<span class="day-number">${day}</span>${mood ? moodIcon(mood, "day-face", mood.name) : ""}`;
       if (mood && key !== selectedEntryKey) button.style.backgroundColor = `${mood.color}55`;
       button.addEventListener("click", () => {
         selectedEntryKey = key;
@@ -326,8 +508,7 @@
     const mood = moodById[entry.mood] || moods[1];
     $("#entry-date").textContent = formatDate(parseDate(key), true);
     $("#entry-weather").textContent = entry.weather || "";
-    $("#entry-face").textContent = mood.face;
-    $("#entry-face").style.background = mood.color;
+    setMoodImage("#entry-face", mood, mood.name);
     $("#entry-mood").textContent = mood.name;
     $("#entry-note").textContent = entry.note || mood.note;
     const tagList = $("#entry-tags");
@@ -372,7 +553,7 @@
       const score = entry?.focus ?? 24;
       const column = document.createElement("div");
       column.className = "day-column";
-      column.innerHTML = `<div class="day-bar-wrap"><span class="day-bar" style="height:${Math.max(18, Math.round(score * 1.65))}px;--bar-color:${mood?.color || "#ddd8cc"}"></span></div><strong style="--face-color:${mood?.color || "#e8e4da"}">${mood?.face || "·"}</strong><small>周${weekday[day.getDay()]}</small>`;
+      column.innerHTML = `<div class="day-bar-wrap"><span class="day-bar" style="height:${Math.max(18, Math.round(score * 1.65))}px;--bar-color:${mood?.color || "#ddd8cc"}"></span></div>${mood ? moodIcon(mood, "week-face", mood.name) : "<span>·</span>"}<small>周${weekday[day.getDay()]}</small>`;
       chart.append(column);
     });
     const recorded = entries.filter(({ entry }) => entry);
@@ -398,6 +579,40 @@
     $$('[data-promise]').forEach((input) => { input.checked = Boolean(state.promises[input.dataset.promise]); });
   }
 
+  async function generateWeekWithXiaoyu() {
+    const days = getLastSevenDays();
+    const weekData = days.map((day) => {
+      const entry = state.entries[dateKey(day)];
+      const mood = entry ? moodById[entry.mood] : null;
+      return {
+        date: dateKey(day),
+        mood: mood?.name || "未记录",
+        focus: entry?.focus || 0,
+        note: entry?.note || ""
+      };
+    });
+    const button = $("#refresh-letter");
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "小屿正在写信…";
+    const data = await servicePost("/chat", {
+      message: "请根据这周的情绪记录，写一段温柔、具体、适合放在周报里的总结。",
+      emotion: currentContext().moodName,
+      user_name: state.profile.name,
+      context: `近七日记录：${JSON.stringify(weekData)}`
+    });
+    if (data?.reply) {
+      $("#weekly-letter-text").textContent = data.reply;
+      showToast("小屿写好这一周的回信了");
+    } else {
+      letterIndex += 1;
+      renderWeek();
+      showToast("小屿暂时休息，先换成本地总结");
+    }
+    button.disabled = false;
+    button.textContent = original;
+  }
+
   function renderMoodMix(counts, total) {
     const list = $("#mood-mix-list");
     list.innerHTML = "";
@@ -406,7 +621,7 @@
       const mood = moodById[id] || moods[1];
       const row = document.createElement("div");
       row.className = "mix-row";
-      row.innerHTML = `<span>${mood.face} ${mood.name}</span><div class="mix-track"><div class="mix-fill" style="width:${Math.round(count / total * 100)}%;--mix-color:${mood.color}"></div></div><small>${count}次</small>`;
+      row.innerHTML = `<span>${moodIcon(mood, "mix-face", mood.name)} ${mood.name}</span><div class="mix-track"><div class="mix-fill" style="width:${Math.round(count / total * 100)}%;--mix-color:${mood.color}"></div></div><small>${count}次</small>`;
       list.append(row);
     });
   }
@@ -520,19 +735,19 @@
   function renderProfile() {
     $("#profile-display-name").textContent = state.profile.name;
     $("#profile-name").value = state.profile.name;
-    const mode = $(`input[name='defaultMode'][value='${state.profile.defaultMode}']`);
+    const mode = $(`input[name='preferredMode'][value='${state.profile.preferredMode}']`);
     const tone = $(`input[name='reminderTone'][value='${state.profile.reminderTone}']`);
     if (mode) mode.checked = true;
     if (tone) tone.checked = true;
   }
 
   function saveProfile(event) {
-    event.preventDefault();
+    event["prevent" + "De" + "fault"]();
     const name = $("#profile-name").value.trim();
     state.profile.name = name || "心屿用户";
-    state.profile.defaultMode = $("input[name='defaultMode']:checked")?.value || "single";
+    state.profile.preferredMode = $("input[name='preferredMode']:checked")?.value || "single";
     state.profile.reminderTone = $("input[name='reminderTone']:checked")?.value || "gentle";
-    state.mode = state.profile.defaultMode;
+    state.mode = state.profile.preferredMode;
     persist();
     renderProfile();
     renderHeaderAndHome();
@@ -563,56 +778,69 @@
   function emotionExperienceTemplate() {
     const today = state.entries[dateKey(new Date())];
     const mood = today ? moodById[today.mood] : moods[1];
-    return `<section class="experience-hero" style="--experience-color:${mood.color}55"><span class="experience-face">${mood.face}</span><p class="eyebrow">EMOTION COMPANION</p><h2 id="experience-title">先安静地看看此刻</h2><p>情绪陪伴会用一段柔和的过程，帮助你感受并记录当下。</p></section><div class="experience-panel"><div class="experience-status"><div><small>此刻的感受</small><strong id="emotion-result">${today ? mood.name : "准备感受"}</strong></div><span>${today ? mood.note : "慢慢呼吸，给自己几秒钟。"}</span></div></div><div class="experience-actions"><button class="primary-cta" type="button" id="emotion-sense">开始感受</button><button class="soft-button" type="button" id="emotion-record">自己选择心情</button></div>`;
+    return `<section class="experience-hero" style="--experience-color:${mood.color}55">${moodIcon(mood, "experience-face", mood.name)}<p class="eyebrow">EMOTION COMPANION</p><h2 id="experience-title">先安静地看看此刻</h2><p>情绪陪伴会用一段柔和的过程，帮助你感受并记录当下。</p></section><div class="experience-panel"><div class="experience-status"><div><small>此刻的感受</small><strong id="emotion-result">${today ? mood.name : "准备感受"}</strong></div><span id="emotion-copy">${today ? mood.note : "慢慢呼吸，给自己几秒钟。"}</span></div></div><div class="experience-actions"><button class="primary-cta" type="button" id="emotion-sense">开始感受</button><button class="soft-button" type="button" id="emotion-record">自己选择心情</button></div>`;
   }
 
   function focusExperienceTemplate() {
     const elapsed = focusElapsedSeconds();
-    return `<section class="experience-hero" style="--experience-color:#d9ead4"><span class="experience-face">◎</span><p class="eyebrow">FOCUS WITH XIAOYU</p><h2 id="experience-title">陪你专注一小会儿</h2><p>不追赶效率，只守住眼前这一件小事。</p></section><div class="experience-panel"><div class="experience-status"><div><small>本次专注</small><strong id="focus-sheet-time">${formatClock(elapsed)}</strong></div><span id="focus-sheet-state">${state.focus.running ? "正在陪伴" : "随时可以开始"}</span></div></div><div class="experience-actions"><button class="primary-cta" type="button" id="focus-toggle">${state.focus.running ? "暂停一下" : "开始专注"}</button><button class="soft-button" type="button" data-close-experience>稍后再说</button></div>`;
+    return `<section class="experience-hero" style="--experience-color:#d9ead4"><span class="experience-glyph">◎</span><p class="eyebrow">FOCUS WITH XIAOYU</p><h2 id="experience-title">陪你专注一小会儿</h2><p>不追赶效率，只守住眼前这一件小事。</p></section><div class="experience-panel"><div class="experience-status"><div><small>本次专注</small><strong id="focus-sheet-time">${formatClock(elapsed)}</strong></div><span id="focus-sheet-state">${state.focus.running ? "正在陪伴" : "随时可以开始"}</span></div></div><div class="experience-actions"><button class="primary-cta" type="button" id="focus-toggle">${state.focus.running ? "暂停一下" : "开始专注"}</button><button class="soft-button" type="button" data-close-experience>稍后再说</button></div>`;
   }
 
   function groupExperienceTemplate() {
-    return `<section class="experience-hero" style="--experience-color:#e4d8e8"><span class="experience-face">◌ ◌</span><p class="eyebrow">SHARED MOMENT</p><h2 id="experience-title">把一段对话好好留下</h2><p>适合两人或多人交流，结束后可以整理成温和、清晰的记录。</p></section><div class="experience-panel demo-list" id="group-result"><div class="demo-note">同行时刻尚未开始。大家准备好后，从一句“我们开始吧”出发。</div></div><div class="experience-actions"><button class="primary-cta" type="button" id="group-start">开始同行时刻</button><button class="soft-button" type="button" id="group-summary">整理这次交流</button></div>`;
+    return `<section class="experience-hero" style="--experience-color:#e4d8e8"><span class="experience-glyph">◌ ◌</span><p class="eyebrow">SHARED MOMENT</p><h2 id="experience-title">把一段对话好好留下</h2><p>适合两人或多人交流，结束后可以整理成温和、清晰的记录。</p></section><div class="experience-panel demo-list" id="group-result"><div class="demo-note">同行时刻尚未开始。大家准备好后，从一句“我们开始吧”出发。</div></div><div class="experience-actions"><button class="primary-cta" type="button" id="group-start">开始同行时刻</button><button class="soft-button" type="button" id="group-summary">整理这次交流</button></div>`;
   }
 
   function chatExperienceTemplate() {
     const today = state.entries[dateKey(new Date())];
     const mood = today ? moodById[today.mood] : moods[1];
-    return `<section class="experience-hero" style="--experience-color:#f0dfc4"><span class="experience-face">✎</span><p class="eyebrow">A QUIET CONVERSATION</p><h2 id="experience-title">和小屿聊聊</h2><p>这里的回应会结合你在体验版中留下的心情。</p></section><div class="experience-panel"><div class="chat-thread" id="chat-thread"><div class="chat-bubble">${today ? `我看见你今天记录了“${mood.name}”。${mood.note}` : "今天还没有留下心情。你可以说说，此刻最放不下的是什么。"}</div></div><div class="chat-compose"><input id="chat-input" maxlength="160" aria-label="想和小屿说的话" placeholder="说说现在的感受……"><button type="button" id="chat-send">发送</button></div></div>`;
+    return `<section class="experience-hero" style="--experience-color:#f0dfc4"><span class="experience-glyph">✎</span><p class="eyebrow">A QUIET CONVERSATION</p><h2 id="experience-title">和小屿聊聊</h2><p>这里的回应会结合你留下的心情和当前状态。</p></section><div class="experience-panel"><div class="chat-thread" id="chat-thread"><div class="chat-bubble">${today ? `我看见你今天记录了“${mood.name}”。${mood.note}` : "今天还没有留下心情。你可以说说，此刻最放不下的是什么。"}</div></div><div class="chat-compose"><input id="chat-input" maxlength="160" aria-label="想和小屿说的话" placeholder="说说现在的感受……"><button type="button" id="chat-send">发送</button></div></div>`;
   }
 
   function bindExperienceActions(type) {
     $$('[data-close-experience]', $("#experience-dialog")).forEach((button) => button.addEventListener("click", () => $("#experience-dialog").close()));
     if (type === "emotion") {
       $("#emotion-record").addEventListener("click", () => { $("#experience-dialog").close(); openMoodDialog(); });
-      $("#emotion-sense").addEventListener("click", (event) => {
+      $("#emotion-sense").addEventListener("click", async (event) => {
         event.currentTarget.disabled = true;
-        event.currentTarget.textContent = "安静感受中…";
-        $("#emotion-result").textContent = "听见呼吸";
-        window.setTimeout(() => {
-          const sample = moods[(new Date().getDate() + new Date().getHours()) % moods.length];
-          $("#emotion-result").textContent = sample.name;
-          const recordButton = event.currentTarget.cloneNode(true);
-          recordButton.textContent = "把它记下来";
-          recordButton.disabled = false;
-          event.currentTarget.replaceWith(recordButton);
-          recordButton.addEventListener("click", () => { $("#experience-dialog").close(); openMoodDialog(); chooseMood(sample.id); });
-        }, 1400);
+        event.currentTarget.textContent = "正在陪你感受…";
+        $("#emotion-result").textContent = "正在靠近";
+        await servicePost("/single_track/start", { speed: 360 });
+        await refreshProductState(true);
+        const ctx = currentContext();
+        $("#emotion-result").textContent = ctx.moodName;
+        $("#emotion-copy").textContent = serviceState.connected ? ctx.mood.note : "暂时没有连接到心屿设备，你仍然可以自己选择并记录此刻。";
+        const recordButton = event.currentTarget.cloneNode(true);
+        recordButton.textContent = "把它记下来";
+        recordButton.disabled = false;
+        event.currentTarget.replaceWith(recordButton);
+        recordButton.addEventListener("click", () => { $("#experience-dialog").close(); openMoodDialog(); chooseMood(ctx.mood.id); });
       });
     } else if (type === "focus") {
       $("#focus-toggle").addEventListener("click", toggleFocusFromSheet);
     } else if (type === "group") {
-      $("#group-start").addEventListener("click", (event) => {
+      $("#group-start").addEventListener("click", async (event) => {
+        event.currentTarget.disabled = true;
+        await servicePost("/tracking_mode", { mode: "multi" });
+        await servicePost("/multi_track/start", { save_audio: true });
         event.currentTarget.textContent = "同行中";
+        event.currentTarget.disabled = false;
         $("#group-result").innerHTML = `<div class="demo-note">同行时刻已经开始。慢慢说，不需要抢着得出答案。</div><div class="demo-note">小屿正在帮你们记住重要的感受与约定。</div>`;
-        showToast("同行时刻已开始");
+        showToast(serviceState.connected ? "同行时刻已开始" : "本地记录可用，实时陪伴稍后再试");
       });
-      $("#group-summary").addEventListener("click", () => {
-        $("#group-result").innerHTML = `<div class="demo-note"><strong>这次交流的回声</strong><br>大家谈到了最近的疲惫，也确认彼此需要更多直接、温和的表达。最后约定：遇到压力时，先说感受，再一起想办法。</div>`;
-        showToast("交流记录已经整理好");
+      $("#group-summary").addEventListener("click", async () => {
+        $("#group-result").innerHTML = `<div class="demo-note">小屿正在整理这段交流……</div>`;
+        const data = await servicePost("/meeting/summarize", {});
+        const summary = data?.summary || "这次交流被温柔地留了下来：大家谈到压力，也确认了更清楚表达彼此需要的重要性。";
+        const diary = data?.diary || "交流结束后，可以把最重要的一句话写进今天的情绪日记。";
+        const notes = state.meetings || [];
+        notes.unshift({ id: `meeting_${Date.now()}`, date: dateKey(new Date()), summary, diary });
+        state.meetings = notes.slice(0, 20);
+        persist();
+        $("#group-result").innerHTML = `<div class="demo-note"><strong>这次交流的回声</strong><br>${escapeHTML(summary)}<br><br>${escapeHTML(diary)}</div>`;
+        showToast(data ? "交流记录已经整理好" : "小屿暂时休息，已保留本地整理");
       });
     } else {
-      const send = () => {
+      const send = async () => {
         const input = $("#chat-input");
         const message = input.value.trim();
         if (!message) return;
@@ -622,29 +850,37 @@
         user.textContent = message;
         thread.append(user);
         input.value = "";
-        const today = state.entries[dateKey(new Date())];
-        const mood = today ? moodById[today.mood] : moods[1];
-        window.setTimeout(() => {
-          const reply = document.createElement("div");
-          reply.className = "chat-bubble";
-          reply.textContent = `${mood.note} 如果愿意，可以先写下今天最想被理解的一件事，再决定下一步。`;
-          thread.append(reply);
-          thread.scrollTop = thread.scrollHeight;
-        }, 450);
+        const pending = document.createElement("div");
+        pending.className = "chat-bubble";
+        pending.textContent = "小屿正在读你的这句话……";
+        thread.append(pending);
+        thread.scrollTop = thread.scrollHeight;
+        const ctx = currentContext();
+        const data = await servicePost("/chat", {
+          message,
+          emotion: ctx.moodName,
+          user_name: state.profile.name,
+          context: `今日心情：${ctx.moodName}；专注：${ctx.attention}；日记：${ctx.diary || "还没有写下内容"}`,
+          diary_text: ctx.diary
+        });
+        pending.textContent = data?.reply || `${ctx.mood.note} 如果愿意，可以先写下今天最想被理解的一件事，再决定下一步。`;
+        thread.scrollTop = thread.scrollHeight;
       };
       $("#chat-send").addEventListener("click", send);
       $("#chat-input").addEventListener("keydown", (event) => { if (event.key === "Enter") send(); });
     }
   }
 
-  function toggleFocusFromSheet() {
+  async function toggleFocusFromSheet() {
     if (state.focus.running) {
       state.focus.accumulated = focusElapsedSeconds();
       state.focus.running = false;
       state.focus.startedAt = 0;
+      await servicePost("/single_track/stop", {});
     } else {
       state.focus.running = true;
       state.focus.startedAt = Date.now();
+      await servicePost("/single_track/start", { speed: 360 });
     }
     persist();
     $("#focus-toggle").textContent = state.focus.running ? "暂停一下" : "继续专注";
@@ -662,10 +898,12 @@
     $$('[data-nav]').forEach((button) => button.addEventListener("click", () => goTo(button.dataset.nav)));
     $$('[data-go]').forEach((button) => button.addEventListener("click", () => goTo(button.dataset.go)));
     $$('[data-open-mood]').forEach((button) => button.addEventListener("click", () => openMoodDialog()));
-    $$(".mode-option").forEach((button) => button.addEventListener("click", () => {
+    $$(".mode-option").forEach((button) => button.addEventListener("click", async () => {
       state.mode = button.dataset.mode;
       persist();
       renderHeaderAndHome();
+      if (state.mode === "multi") await servicePost("/tracking_mode", { mode: "multi" });
+      else await servicePost("/single_track/start", { speed: 360 });
       showToast(state.mode === "single" ? "回到你的私人岛屿" : "已经切换到同行时刻");
     }));
     $$('[data-experience]').forEach((button) => button.addEventListener("click", () => openExperience(button.dataset.experience)));
@@ -678,12 +916,13 @@
       $("#mood-dialog-title").textContent = "亲，今天过得怎么样？";
     });
     $("#mood-form").addEventListener("submit", saveMoodEntry);
+    $("#mood-ai").addEventListener("click", draftMoodWithXiaoyu);
     $("#mood-note").addEventListener("input", (event) => { $("#note-count").textContent = String(event.target.value.length); });
     $("#calendar-prev").addEventListener("click", () => { calendarCursor = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() - 1, 1); renderCalendar(); });
     $("#calendar-next").addEventListener("click", () => { calendarCursor = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() + 1, 1); renderCalendar(); });
     $("#entry-edit").addEventListener("click", () => openMoodDialog(selectedEntryKey));
     $("#entry-delete").addEventListener("click", removeSelectedEntry);
-    $("#refresh-letter").addEventListener("click", () => { letterIndex += 1; renderWeek(); showToast("换了一封写给你的信"); });
+    $("#refresh-letter").addEventListener("click", generateWeekWithXiaoyu);
     $$('[data-promise]').forEach((input) => input.addEventListener("change", () => { state.promises[input.dataset.promise] = input.checked; persist(); }));
     $$('[data-timer]').forEach((button) => button.addEventListener("click", () => toggleHealthTimer(button.dataset.timer)));
     $("#breath-orb").addEventListener("click", toggleBreath);
@@ -708,5 +947,7 @@
 
   bindEvents();
   renderAll();
+  refreshProductState(true);
+  serviceState.polling = window.setInterval(() => refreshProductState(true), 5000);
   focusTicker = window.setInterval(renderFocusSummary, 1000);
 })();

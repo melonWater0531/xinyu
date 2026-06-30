@@ -411,7 +411,7 @@ button,input,select{font:inherit}
 </div>
 
 <script>
-let state=null,ws=null,wsRetry=null,lastWsAt=0,lastLog='',activePage='single_face_analysis',switching=false,meetingYaw=false,currentSessionId='',landmarkMesh=false;
+let state=null,ws=null,wsRetry=null,lastWsAt=0,lastLog='',lastStopState='',activePage='single_face_analysis',switching=false,meetingYaw=false,currentSessionId='',landmarkMesh=false;
 const featureActive={
   single_face_analysis:false,
   multi_sound_yaw:false,
@@ -611,7 +611,9 @@ function renderState(s){
   $('eventBusText').textContent=ctrl.last_event?'active':'waiting';
   $('leaseText').textContent=ctrl.lease_remaining_ms!=null?`${Math.ceil(Number(ctrl.lease_remaining_ms)/100)/10}s`:'--';
   $('trackingPhaseText').textContent=s.tracking_phase||ctrl.tracking_phase||'waiting_target';
-  if((s.stop_state||ctrl.stop_state)==='hardware_stop_failed')log('Hardware stop failed; check the device bridge');
+  const stopState=s.stop_state||ctrl.stop_state||'';
+  if(stopState==='hardware_stop_failed'&&lastStopState!==stopState)log('Hardware stop failed; check the device bridge');
+  lastStopState=stopState;
   const runtimeFeature=ctrl.active_feature||'inactive';
   if(currentSessionId&&ctrl.session_id&&ctrl.session_id!==currentSessionId){log('控制权已被新会话接管');clearSession()}
   if(currentSessionId&&ctrl.session_id===currentSessionId){

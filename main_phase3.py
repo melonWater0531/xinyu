@@ -223,13 +223,16 @@ class Phase3Runner:
             self._last_apply_ok = False
             return {"command": self._command_dict(command), "applied": False, "reason": self._last_block_reason}
         self._last_command = allowed
-        ok = bool(self._hw.apply_command(allowed))
         if allowed.stop:
-            self._stop_state = "stopped" if ok else "hardware_stop_failed"
             if allowed.reason in {"feature_stop", "lease_expired", "shutdown", "emergency_stop"}:
-                ok = bool(self._hw.stop_session(allowed.session_id)) and ok
-        elif ok:
-            self._stop_state = "running"
+                ok = bool(self._hw.stop_session(allowed.session_id))
+            else:
+                ok = bool(self._hw.emergency_stop(allowed.session_id))
+            self._stop_state = "stopped" if ok else "hardware_stop_failed"
+        else:
+            ok = bool(self._hw.apply_command(allowed))
+            if ok:
+                self._stop_state = "running"
         self._last_apply_ok = ok
         return {"command": self._command_dict(allowed), "applied": ok, "reason": "ok" if ok else "hardware_error"}
 
