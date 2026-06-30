@@ -311,7 +311,13 @@ _llm_diary_entry = {"time": "", "emotion": "", "text": ""}
 _llm_quote_text = ""
 _mp_face = None
 _eye_tracker = None
+_gaze_estimator = None
+_gesture_detector = None
+_emotion_intervention = None
 _mp_face_result = {"success": False, "ear_avg": 0.3, "eye_open": True, "head_yaw": 0, "head_pitch": 0}
+_gaze_result = {"available": False, "state": "unknown", "x_offset": 0.0, "y_offset": 0.0, "confidence": 0.0}
+_gesture_result = {"available": False, "name": "", "confidence": 0.0, "handedness": "", "stable_frames": 0, "intent": "", "intent_ready": False}
+_proactive_intervention = {"active": False, "type": "", "reason": "", "message": "", "cooldown_remaining_sec": 0}
 _mp_landmarks5 = None
 _observation_id = 0
 _face_landmark_mode = "five"
@@ -1039,6 +1045,9 @@ def build_state_snapshot() -> dict:
             "llm_quote": _llm_quote_text,
             "mp_face": _mp_face_result,
             "eye_metrics": _eye_metrics,
+            "gaze": _gaze_result,
+            "gesture": _gesture_result,
+            "proactive_intervention": _proactive_intervention,
             # Observe-only control-plane mirror (FSM / decision / authority / safety).
             "control": dict(_control_obs),
             "trace": list(_decision_trace)[-12:],
@@ -1116,9 +1125,21 @@ async def lifespan(app: FastAPI):
         _llm_engine = None
 
     # MediaPipe + Eye Metrics
-    global _mp_face, _eye_tracker
+    global _mp_face, _eye_tracker, _gaze_estimator, _gesture_detector, _emotion_intervention
     _mp_face = None
     _eye_tracker = None
+    try:
+        from vision.gaze_estimator import GazeEstimator
+        from vision.gesture_detector import GestureDetector
+        from core.emotion_intervention import EmotionInterventionPolicy
+        _gaze_estimator = GazeEstimator()
+        _gesture_detector = GestureDetector()
+        _emotion_intervention = EmotionInterventionPolicy()
+    except Exception as e:
+        logger.warning("Companion perception policy init skipped: %s", e)
+        _gaze_estimator = None
+        _gesture_detector = None
+        _emotion_intervention = None
 
     # EmotiEffLib adapter
     from vision.emotieff_adapter import get_emotieff_adapter
@@ -1262,6 +1283,7 @@ async def state_push_loop():
     """Run perception and push UI snapshots. Contains NO gimbal control."""
     global _attn_result, _emotion_result, _emotieff_result, _eye_metrics
     global _mp_face, _eye_tracker, _mp_face_result, _mp_landmarks5
+    global _gaze_result, _gesture_result, _proactive_intervention
     global _llm_engine, _llm_diary_entry, _llm_quote_text, _last_llm_diary_time
     pose_est = None
     pose_frame_count = 0
@@ -1353,6 +1375,7 @@ async def state_push_loop():
                             landmarks, nose_xy,
                             img_w=int(res[0]), img_h=int(res[1]),
                             eye_metrics=_eye_metrics,
+                            gaze=_gaze_result,
                         )
                         break
                 else:
@@ -1376,6 +1399,8 @@ async def state_push_loop():
                         if mp_res.success:
                             _mp_landmarks5 = mp_res.landmarks5
                             _apply_mediapipe_landmarks5(_mp_landmarks5)
+                            if _gaze_estimator is not None:
+                                _gaze_result = _gaze_estimator.update(mp_res.landmarks)
                             _mp_face_result = {"success": True, "ear_avg": round(float(mp_res.ear_avg), 3),
                                 "eye_open": bool(mp_res.eye_open),
                                 "landmarks_count": int(mp_res.landmarks.shape[0]) if mp_res.landmarks is not None else 468,
@@ -1389,8 +1414,22 @@ async def state_push_loop():
                                 "blink_rate": float(em.blink_rate), "perclos": round(float(em.perclos), 3),
                                 "focus_score": int(em.focus_score), "blink_count": int(em.blink_count),
                                 "eye_open": bool(em.eye_open)}
+                        else:
+                            _gaze_result = {"available": False, "state": "unknown", "x_offset": 0.0, "y_offset": 0.0, "confidence": 0.0}
                     except Exception as e:
                         logger.warning(f"MediaPipe: {e}")
+                        _gaze_result = {"available": False, "state": "unknown", "x_offset": 0.0, "y_offset": 0.0, "confidence": 0.0}
+
+            # -- Gesture recognition (companionship intents only; no control events) --
+            if pose_frame_count % 3 == 0 and run_face:
+                jpeg = video_client.jpeg_bytes if video_client else None
+                if jpeg and _gesture_detector is not None:
+                    try:
+                        frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+                        loop = asyncio.get_event_loop()
+                        _gesture_result = await loop.run_in_executor(None, _gesture_detector.detect, frame)
+                    except Exception as e:
+                        _gesture_result = {"available": False, "name": "", "confidence": 0.0, "handedness": "", "stable_frames": 0, "intent": "", "intent_ready": False, "reason": str(e)[:80]}
 
             # -- Emotion recognition (EmotiEffLib) --
             jpeg = video_client.jpeg_bytes if (video_client and run_face) else None
@@ -1425,6 +1464,15 @@ async def state_push_loop():
                                 "source": "emotiefflib_raw_max",
                             }
                             _emotion_result = _emotieff_result
+
+            # -- Proactive intervention policy (state only; UI decides notification) --
+            if _emotion_intervention is not None:
+                try:
+                    _proactive_intervention = _emotion_intervention.update(
+                        _emotieff_result, _attn_result, _eye_metrics, _gaze_result
+                    )
+                except Exception as e:
+                    _proactive_intervention = {"active": False, "type": "", "reason": str(e)[:80], "message": "", "cooldown_remaining_sec": 0}
 
             # -- LLM diary: trigger on emotion change --
             if not hasattr(state_push_loop, '_last_llm_emo'):

@@ -411,7 +411,8 @@ class AttentionEngine:
     def update(self, landmarks: Optional[List[Tuple[float, float]]],
                nose_xy: Optional[Tuple[float, float]] = None,
                img_w: int = 640, img_h: int = 640,
-               eye_metrics: dict = None) -> dict:
+               eye_metrics: dict = None,
+               gaze: dict = None) -> dict:
         if landmarks is None or len(landmarks) < 5:
             return {"has_face": False}
 
@@ -450,7 +451,25 @@ class AttentionEngine:
                 p *= 0.7
                 warnings.append("Abnormal Blink Rate")
             eye_raw = ef * p
-        fused = 0.45 * orient_score + 0.35 * eye_raw + 0.20 * stability_score
+        gaze_raw = 70.0
+        if gaze and gaze.get("available"):
+            state = str(gaze.get("state") or "unknown")
+            conf = float(gaze.get("confidence") or 0.0)
+            if state == "center":
+                gaze_raw = 100.0
+                evidence.append("Gaze Centered")
+            elif state in {"left", "right"}:
+                gaze_raw = 68.0
+                evidence.append("Gaze Slightly Aside")
+            elif state == "down":
+                gaze_raw = 45.0
+                warnings.append("Gaze Down")
+            elif state == "away":
+                gaze_raw = 50.0
+                warnings.append("Gaze Away")
+            gaze_raw = 70.0 * (1.0 - conf) + gaze_raw * conf
+
+        fused = 0.40 * orient_score + 0.30 * eye_raw + 0.15 * stability_score + 0.15 * gaze_raw
         if eye_metrics and eye_metrics.get("ear_avg", 0.3) < 0.15:
             fused = min(fused, 40)
 
@@ -467,7 +486,8 @@ class AttentionEngine:
                 "orientation": int(round(orient_score)),
                 "eye": int(round(eye_raw)),
                 "stability": int(round(stability_score)),
-                "weights": {"orientation": 0.45, "eye": 0.35, "stability": 0.20},
+                "gaze": int(round(gaze_raw)),
+                "weights": {"orientation": 0.40, "eye": 0.30, "stability": 0.15, "gaze": 0.15},
             },
             "calibrated": self._baseline.calibrated,
             "baseline_yaw": round(self._baseline.baseline_yaw, 1),

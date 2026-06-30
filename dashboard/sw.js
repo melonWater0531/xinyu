@@ -1,4 +1,4 @@
-const CACHE_NAME = "xinyu-pwa-v7";
+const CACHE_NAME = "xinyu-pwa-v8";
 const APP_SHELL = [
   "/home",
   "/manifest.webmanifest",
@@ -60,4 +60,20 @@ self.addEventListener("fetch", event => {
       }))
     );
   }
+});
+
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+  const target = event.notification.data?.url || "/home";
+  event.waitUntil(
+    self.clients.matchAll({type: "window", includeUncontrolled: true}).then(clients => {
+      for (const client of clients) {
+        if ("focus" in client) {
+          client.navigate(target);
+          return client.focus();
+        }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(target);
+    })
+  );
 });

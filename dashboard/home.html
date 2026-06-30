@@ -247,6 +247,20 @@
               </div>
             </div>
           </article>
+
+          <article class="feature-card">
+            <div class="feature-top">
+              <div class="feature-title"><i>🖐️</i><span>手势陪伴</span></div>
+              <span class="status-badge" id="gestureStatusBadge">待识别</span>
+            </div>
+            <p class="feature-copy">张手唤起小屿，握拳暂停提醒，点赞/点踩反馈建议，剪刀手记录一个积极瞬间。</p>
+            <div class="feature-state">
+              <div class="state-cell"><span>当前手势</span><b id="gestureNameValue">--</b></div>
+              <div class="state-cell"><span>陪伴动作</span><b id="gestureIntentValue">--</b></div>
+              <div class="state-cell"><span>视线趋势</span><b id="gazeStateValue">--</b></div>
+              <div class="state-cell"><span>主动关心</span><b id="interventionValue">待观察</b></div>
+            </div>
+          </article>
         </div>
       </div>
 
@@ -365,6 +379,15 @@
         <div class="control-grid"><button class="btn" onclick="addWater()">喝了一杯水</button><button class="btn" onclick="addSteps()">记录 500 步</button></div>
       </div>
       <div class="card">
+        <h3>本地提醒</h3>
+        <div class="list">
+          <div class="row"><span>PWA 通知</span><b id="notifyStatus">未开启</b></div>
+          <div class="row"><span>安静时段</span><b>22:30 - 08:30</b></div>
+          <div class="row"><span>提醒内容</span><b>健康 + 情绪</b></div>
+        </div>
+        <div class="control-grid"><button class="btn primary" id="notifyBtn" onclick="toggleNotifications()">开启提醒</button><button class="btn" onclick="testNotification()">测试提醒</button></div>
+      </div>
+      <div class="card">
         <h3>健康建议</h3>
         <div class="timeline insight" id="healthInsight">今天已经保持了一段稳定专注。记得每 20 分钟看远处，肩颈也需要一点轻轻的活动。</div>
       </div>
@@ -411,6 +434,15 @@
     let sitOn = false, sitTimerId = null, sitSecLeft = 2700;
     let waterCount = Number(localStorage.getItem("xinyu_water_count") || 3);
     let stepsNow = Number(localStorage.getItem("xinyu_steps_now") || 4260);
+    let notifyEnabled = localStorage.getItem("xinyu_notify_enabled") === "true";
+    if(!localStorage.getItem("xinyu_water_last_at")) localStorage.setItem("xinyu_water_last_at", String(Date.now()));
+    if(!localStorage.getItem("xinyu_water_goal")) localStorage.setItem("xinyu_water_goal", "8");
+    if(!localStorage.getItem("xinyu_notify_quiet_hours")) localStorage.setItem("xinyu_notify_quiet_hours", JSON.stringify({start:"22:30", end:"08:30"}));
+    if(!localStorage.getItem("xinyu_notify_cooldowns")) localStorage.setItem("xinyu_notify_cooldowns", JSON.stringify({default:30, emotion_care:60}));
+    let lastGestureIntentAt = 0;
+    let fatigueStartAt = 0;
+    let lowFocusStartAt = 0;
+    let emotionCareShownAt = 0;
     let calDate = new Date();
     let selectedDayKey = "";
     // DEMO / APP PAGE — mock data only. No real camera, no control path, no hardware.
@@ -436,6 +468,9 @@
         gimbal:{connected:true,dry_run:true,yaw:Math.round(180+30*Math.sin(t/7)),pitch:90,mode:"demo"},
         emotion:{emotion:emo, confidence:0.7 + 0.2*Math.abs(Math.sin(t/3))},
         attention:{has_face:true, score},
+        gaze:{available:true,state:Math.sin(t/8) > 0.65 ? "down" : "center",confidence:0.78},
+        gesture:{available:false,name:"",intent:"",intent_ready:false},
+        proactive_intervention:{active:false,type:"",message:"",cooldown_remaining_sec:0},
         face_lock:{locked:true},
         pose:{count:1},
         doa:{available:true, doa_deg:Math.round(180+60*Math.sin(t/9)), has_speech:(Math.floor(t/4)%2===0)},
@@ -487,6 +522,55 @@
     function log(text){ console.debug("[xinyu]", text); }
     function setText(id, text){ const el=$(id); if(el) el.textContent=text; }
     function setHTML(id, html){ const el=$(id); if(el) el.innerHTML=html; }
+    const notifyLastSent = () => JSON.parse(localStorage.getItem("xinyu_notify_last_sent_by_type") || "{}");
+    function saveNotifyLastSent(data){ localStorage.setItem("xinyu_notify_last_sent_by_type", JSON.stringify(data)); }
+    function isQuietHours(){
+      const quiet = JSON.parse(localStorage.getItem("xinyu_notify_quiet_hours") || '{"start":"22:30","end":"08:30"}');
+      const now = new Date();
+      const mins = now.getHours() * 60 + now.getMinutes();
+      const parse = value => {
+        const [h,m] = String(value || "00:00").split(":").map(Number);
+        return (h || 0) * 60 + (m || 0);
+      };
+      const start = parse(quiet.start);
+      const end = parse(quiet.end);
+      return start > end ? (mins >= start || mins < end) : (mins >= start && mins < end);
+    }
+    async function sendLocalNotification(type, title, body, page="health", cooldownMin=null){
+      const last = notifyLastSent();
+      const now = Date.now();
+      const cooldowns = JSON.parse(localStorage.getItem("xinyu_notify_cooldowns") || '{"default":30,"emotion_care":60}');
+      const cooldown = Number(cooldownMin ?? cooldowns[type] ?? cooldowns.default ?? 30);
+      if(!notifyEnabled || isQuietHours()) return false;
+      if(last[type] && now - Number(last[type]) < cooldown * 60000) return false;
+      last[type] = now; saveNotifyLastSent(last);
+      if(!("Notification" in window)){ showToast(body); return false; }
+      if(Notification.permission !== "granted"){ showToast(body); return false; }
+      try{
+        const opts = {body, tag:`xinyu-${type}`, data:{url:`/home#${page}`}, icon:"/static/icons/icon-192.png", badge:"/static/icons/icon-192.png"};
+        if(navigator.serviceWorker?.ready) (await navigator.serviceWorker.ready).showNotification(title, opts);
+        else new Notification(title, opts);
+      }catch(e){ showToast(body); }
+      return true;
+    }
+    async function toggleNotifications(){
+      if(!notifyEnabled){
+        if("Notification" in window && Notification.permission === "default"){
+          await Notification.requestPermission();
+        }
+        notifyEnabled = !("Notification" in window) || Notification.permission === "granted";
+        if(!notifyEnabled){ showToast("浏览器未授权通知，先保留站内提醒"); }
+      }else{
+        notifyEnabled = false;
+      }
+      localStorage.setItem("xinyu_notify_enabled", notifyEnabled);
+      renderHealth();
+    }
+    function testNotification(){
+      sendLocalNotification("test", "心屿提醒", "本地提醒已准备好。", "health", 0).then(sent => {
+        if(!sent) showToast("本地提醒会以站内提示显示");
+      });
+    }
     function showPage(name, btn){
       document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
       $("page-" + name).classList.add("active");
@@ -727,6 +811,7 @@
       const fl = focusLevel(attn.score, !!attn.has_face);
       $("attentionLabel").textContent = fl[0]; $("attentionNote").textContent = fl[1];
       setText("focusScoreValue", attn.score != null ? Math.round(Number(attn.score)) : "--");
+      renderCompanionSignals(s);
       const locked = !!(s.face_lock && s.face_lock.locked);
       const hasPerson = !!(s.pose && s.pose.count > 0);
       const doa = s.doa || {}, follow = s.sound_follow || {};
@@ -746,6 +831,81 @@
         localStorage.setItem("xinyu_emotion_calendar", JSON.stringify(cal));
       }
       updateProductRuntime();
+      evaluateLocalNotifications(s);
+    }
+    function gestureIntentLabel(intent){
+      return {
+        summon_xinyu:"唤起心屿",
+        pause_or_mute:"暂停提醒",
+        feedback_positive:"有帮助",
+        feedback_negative:"无帮助",
+        capture_positive_moment:"积极瞬间"
+      }[intent] || "--";
+    }
+    function gazeLabel(state){
+      return {center:"居中",left:"偏左",right:"偏右",down:"向下",away:"偏离",unknown:"未知"}[state] || "--";
+    }
+    function renderCompanionSignals(s){
+      const g = s.gesture || {};
+      const gaze = s.gaze || {};
+      const intervention = s.proactive_intervention || {};
+      const name = g.name ? g.name.replaceAll("_", " ") : (g.available ? "未识别" : "未启用");
+      setText("gestureNameValue", name);
+      setText("gestureIntentValue", gestureIntentLabel(g.intent));
+      setText("gazeStateValue", gaze.available ? gazeLabel(gaze.state) : "--");
+      setText("interventionValue", intervention.active ? "正在关心" : "待观察");
+      setBadge("gestureStatusBadge", g.intent_ready ? "已触发" : g.available ? "识别中" : "未启用", g.intent_ready ? "ok" : "");
+      if(g.intent_ready && g.updated_at && g.updated_at !== lastGestureIntentAt){
+        lastGestureIntentAt = g.updated_at;
+        handleGestureIntent(g.intent);
+      }
+      if(intervention.active && intervention.message && Date.now() - emotionCareShownAt > 60000){
+        emotionCareShownAt = Date.now();
+        showToast(intervention.message);
+      }
+    }
+    function handleGestureIntent(intent){
+      localStorage.setItem("xinyu_gesture_feedback", JSON.stringify({intent, ts:Date.now()}));
+      if(intent === "summon_xinyu"){
+        addChatBubble("assistant", "我在听。你可以慢慢说，也可以先写下一点点。");
+        showToast("小屿在听");
+      }else if(intent === "pause_or_mute"){
+        showToast("已收起当前提醒");
+      }else if(intent === "feedback_positive"){
+        showToast("已标记：这条建议有帮助");
+      }else if(intent === "feedback_negative"){
+        showToast("已标记：下次换一种说法");
+      }else if(intent === "capture_positive_moment"){
+        const draft = "刚才有一个轻松的小瞬间，我想把它留在今天。";
+        const current = $("todayQuickDiary")?.value?.trim();
+        $("todayQuickDiary").value = current ? `${current}\n${draft}` : draft;
+        showToast("已生成积极瞬间草稿");
+      }
+    }
+    function evaluateLocalNotifications(s){
+      const now = Date.now();
+      const gaze = s.gaze || {};
+      const attn = s.attention || {};
+      const eyes = s.eye_metrics || {};
+      const intervention = s.proactive_intervention || {};
+      const hour = new Date().getHours();
+      const waterGoal = Number(localStorage.getItem("xinyu_water_goal") || 8);
+      const lastWater = Number(localStorage.getItem("xinyu_water_last_at") || now);
+      if(hour >= 9 && hour < 22 && waterCount < waterGoal && now - lastWater > 90 * 60000){
+        sendLocalNotification("water", "喝水提醒", "喝一点水吧，别让身体一直等你想起来。", "health");
+      }
+      const tired = Number(eyes.perclos || 0) > 0.2 || Number(eyes.blink_rate || 15) < 3 || Number(eyes.blink_rate || 15) > 30 || gaze.state === "down";
+      if(tired && Number(attn.score || 100) < 60) fatigueStartAt ||= now; else fatigueStartAt = 0;
+      if(fatigueStartAt && now - fatigueStartAt > 5 * 60000){
+        sendLocalNotification("fatigue", "疲劳提醒", "状态有点疲惫了，先休息两分钟也算前进。", "health");
+      }
+      if(focusMonitoring && Number(attn.score || 100) < 50) lowFocusStartAt ||= now; else lowFocusStartAt = 0;
+      if(lowFocusStartAt && now - lowFocusStartAt > 10 * 60000){
+        sendLocalNotification("low_focus", "专注提醒", "注意力有点散，要不要换成 10 分钟轻专注？", "health");
+      }
+      if(intervention.active && intervention.message){
+        sendLocalNotification("emotion_care", "心屿在这儿", intervention.message, "home", 60);
+      }
     }
     async function refreshState(){
       if(isFilePreview){
@@ -902,6 +1062,7 @@
       eyeSecLeft--;
       if(eyeSecLeft < 0){
         showToast("护眼时间：看向远处 20 秒");
+        sendLocalNotification("eye", "护眼提醒", "看远处 20 秒吧，眼睛也需要换口气。", "health");
         $("healthInsight").textContent = "四处看看，让眼睛放松一下。尽量看向远处，让眼睛休息 20 秒。";
         eyeSecLeft = 1200;
       }
@@ -918,6 +1079,7 @@
       sitSecLeft--;
       if(sitSecLeft < 0){
         showToast("该站起来活动一下了");
+        sendLocalNotification("sit", "久坐提醒", "起来走两步，肩颈会轻一点。", "health");
         startStretchGuide();
         sitSecLeft = 2700;
       }
@@ -940,7 +1102,7 @@
       $("healthInsight").textContent = "身体已经重新动起来了。接下来保持轻一点的节奏，会更容易稳定专注。";
     }
     function saveStepGoal(){ localStorage.setItem("xinyu_steps_goal", $("stepsGoal").textContent.trim() || "6000"); renderHealth(); }
-    function addWater(){ waterCount = Math.min(8, waterCount + 1); localStorage.setItem("xinyu_water_count", waterCount); renderHealth(); showToast("已记录一杯水"); }
+    function addWater(){ waterCount = Math.min(8, waterCount + 1); localStorage.setItem("xinyu_water_count", waterCount); localStorage.setItem("xinyu_water_last_at", String(Date.now())); renderHealth(); showToast("已记录一杯水"); }
     function addSteps(){ stepsNow += 500; localStorage.setItem("xinyu_steps_now", stepsNow); renderHealth(); showToast("已记录 500 步"); }
     function renderHealth(){
       const goal = Number(localStorage.getItem("xinyu_steps_goal") || $("stepsGoal")?.textContent || 6000);
@@ -948,6 +1110,9 @@
       $("stepsNow").textContent = String(stepsNow);
       $("waterCount").textContent = `${waterCount} / 8 杯`;
       $("stepsProgress").style.width = `${Math.min(100, Math.round(stepsNow / goal * 100))}%`;
+      setText("notifyStatus", notifyEnabled ? "已开启" : "未开启");
+      const nb = $("notifyBtn");
+      if(nb){ nb.textContent = notifyEnabled ? "关闭提醒" : "开启提醒"; nb.classList.toggle("primary", !notifyEnabled); }
     }
 
     function toggleBreath(){ breathRunning ? stopBreath() : startBreath(); }
