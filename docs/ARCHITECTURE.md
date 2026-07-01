@@ -392,3 +392,116 @@ main_phase3 runtime snapshot ──> EventBus ──> FastAPI ──> Dashboard
 - reCamera 自带麦克风、扬声器和补光灯不参与当前业务闭环。
 
 配套设备 Flow 位于 `deploy/node_red/recamera_control_bridge.json`，暴露 command、stop、status 三个版本化 endpoint。Bridge 不可达时 `--enable-control` fail closed。
+
+---
+
+## 12. 健康陪伴感知与本地提醒架构（2026-06-30）
+
+### 12.1 新增组件职责
+
+| 组件 | 所在位置 | 输入 | 输出与边界 |
+|---|---|---|---|
+| `GazeEstimator` | `vision/gaze_estimator.py` | MediaPipe Face Landmarker 虹膜/眼角点 | 粗粒度 `gaze`；只辅助 attention，不控制云台 |
+| `GestureDetector` | `vision/gesture_detector.py` | BGR 视频帧 + MediaPipe Gesture Recognizer | 稳定手势与陪伴 intent；不产生任何控制事件 |
+| `EmotionInterventionPolicy` | `core/emotion_intervention.py` | `emotieff`、`attention`、`eye_metrics`、`gaze` | `proactive_intervention`；只产生陪伴状态和文案 |
+| 本地通知调度器 | `dashboard/home.html` | 前端计时、实时状态、localStorage | Notification/Service Worker 或站内 toast |
+
+### 12.2 感知循环数据流
+
+```text
+SSCMA JPEG
+  -> FaceTrackerV2 / YOLO pose
+  -> MediaPipe Face Landmarker
+       -> EyeMetricTracker
+       -> GazeEstimator
+  -> AttentionEngine
+       orientation 40% + eye 30% + stability 15% + gaze 15%
+  -> EmotiEff
+  -> EmotionInterventionPolicy (180s window, confidence gate, cooldown)
+
+SSCMA JPEG (每 3 个感知循环)
+  -> GestureDetector
+  -> 置信度 >= 0.6 + 连续 4 帧 + intent 3s 冷却
+  -> gesture state only
+
+聚合状态
+  -> build_state_snapshot()
+  -> GET /api/state + WebSocket /ws
+  -> /home renderCompanionSignals() + evaluateLocalNotifications()
+```
+
+当 Face Landmarker 无结果时，`gaze.available=false`；当手势模型缺失时，`gesture.available=false` 并提供 `reason`。这些降级不会阻断情绪、专注、视频或控制主链路。
+
+### 12.3 Attention 的 gaze 融合
+
+`AttentionEngine.update(..., gaze=...)` 保留原头姿、眼部和稳定性证据，并增加 gaze 辅助项：居中 100、左右 68、向下 45、偏离 50，再按 gaze confidence 与默认 70 插值。最终融合权重为 0.40 / 0.30 / 0.15 / 0.15。
+
+该结果表达“视线趋势”，不是精确眼动轨迹，不应用于身份识别、医疗诊断或硬件强控制。
+
+### 12.4 新增状态接口
+
+`/api/state` 与 `/ws` 增加三个状态块：
+
+```json
+{
+  "gaze": {
+    "available": true,
+    "state": "center",
+    "x_offset": 0.02,
+    "y_offset": 0.05,
+    "confidence": 0.96
+  },
+  "gesture": {
+    "available": false,
+    "name": "",
+    "confidence": 0.0,
+    "handedness": "",
+    "stable_frames": 0,
+    "intent": "",
+    "intent_ready": false,
+    "updated_at": 0.0,
+    "reason": "model_missing:models/gesture_recognizer.task"
+  },
+  "proactive_intervention": {
+    "active": false,
+    "type": "",
+    "reason": "collecting",
+    "message": "",
+    "cooldown_remaining_sec": 0
+  }
+}
+```
+
+### 12.5 手势 intent 边界
+
+| Gesture Recognizer 类别 | intent | 消费方 |
+|---|---|---|
+| `Open_Palm` | `summon_xinyu` | `/home` 聊天区与 toast |
+| `Closed_Fist` | `pause_or_mute` | `/home` 当前提醒状态 |
+| `Thumb_Up` | `feedback_positive` | localStorage 轻量反馈 |
+| `Thumb_Down` | `feedback_negative` | localStorage 轻量反馈 |
+| `Victory` | `capture_positive_moment` | `/home` 日记草稿 |
+
+这五种 intent 均不进入 EventBus，不调用 Orchestrator，也不产生 `gimbal_*`、`feature_*` 或 `dpad_*`。
+
+### 12.6 PWA 本地通知数据流
+
+```text
+前端健康计时（护眼/久坐/喝水）
+后端实时状态（疲劳/低专注/情绪关心）
+  -> evaluateLocalNotifications()
+  -> enabled + quiet hours + per-type cooldown
+  -> ServiceWorkerRegistration.showNotification()
+     -> notificationclick
+     -> /home#health 或 /home#home
+```
+
+配置和发送记录保存在 localStorage。默认安静时段 22:30-08:30；普通类型冷却 30 分钟，情绪关心 60 分钟。浏览器不支持或未授权时只显示站内提示。该架构不是服务器 Web Push：页面关闭或被移动系统冻结后，不保证继续调度。
+
+### 12.7 安全与隐私边界
+
+- 通知不包含截图、日记正文、会议原文或敏感内容。
+- 主动情绪干预不做心理诊断，不自动外发数据。
+- 手势只做低风险陪伴动作，不控制云台、不自动录音。
+- gaze 只作为 attention 辅助证据，缺失时保持原评分链可用。
+- ntfy、Telegram、MQTT、跌倒检测、声音事件检测均不在当前主链路。

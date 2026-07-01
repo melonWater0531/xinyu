@@ -1,322 +1,239 @@
-# reCamera Multimodal 现有功能整合说明
+# 心屿功能总览与使用指南
 
-> 本文档梳理当前代码库中已经具备的功能、模块边界和主要运行链路。内容基于 `recamera_fastapi.py`、`main_phase3.py`、`core/`、`vision/`、`audio/`、`hardware/`、`dashboard/` 以及现有 `docs/` 文档整理。
+> 基准：`origin/main` / `e607758`，2026-06-30。本文是新旧功能统一的权威清单。这里的“部署”表示代码已接入主链路，不等同于真实设备、浏览器或模型效果已经验收。
 
-## 1. 系统定位
+## 1. 系统定位与边界
 
-本项目是一个基于 reCamera 与 ReSpeaker XVF3800 的多模态情绪陪伴与智能跟随系统。系统同时处理视觉、音频、云台控制和 LLM 对话能力，面向两类核心场景：
+心屿是基于 reCamera、ReSpeaker XVF3800、FastAPI 和浏览器 PWA 的多模态健康陪伴系统，覆盖单人情绪/专注观察、多人声源跟随、会议记录、陪伴交互与云台控制。
 
-| 场景 | 目标 | 主要能力 |
-|---|---|---|
-| 单人学习 / 工作 | 观察用户状态并提供陪伴反馈 | 人脸追踪、情绪识别、专注评分、眼部指标、日记反思、健康建议 |
-| 多人会议 / 讨论 | 根据声源方向辅助跟随并生成会议记录 | 声源定位、人体/人数感知、会议录音、语音转写、会议摘要、DOA yaw 跟随 |
-
-整体架构可以理解为三层：
+系统坚持单控制平面：`main_phase3.py` 是唯一真实云台控制进程；`recamera_fastapi.py` 只负责感知、录音、状态聚合、页面和 UI Event，不直接调用 `RecameraClient.apply_command()`。手势、注视和主动情绪干预只产生状态或前端动作，不进入云台控制链。
 
 ```text
-硬件层
-  reCamera 摄像头 / 云台
-  ReSpeaker XVF3800 麦克风阵列
+reCamera / ReSpeaker
+  -> FastAPI 感知循环
+     -> face / pose / emotion / eye / gaze / gesture
+     -> EmotionInterventionPolicy
+     -> /api/state + /ws
+        -> /home 陪伴交互与 PWA 本地提醒
 
-服务层
-  recamera_fastapi.py：视频、感知、音频、Web API、前端页面、状态推送
-  main_phase3.py：唯一控制平面，负责 FSM、决策、安全门控、云台硬件调用
-  EventBus：连接 FastAPI 事件输入与 main_phase3 控制运行时
-
-前端层
-  /control 或 /v2：开发调试控制台
-  /home：心屿产品界面
-```
-
-## 2. 核心运行边界
-
-当前系统的一个关键设计是“单控制平面”：
-
-- `main_phase3.py` 是唯一真实云台控制进程。
-- `RecameraClient.apply_command()` 只应由 `main_phase3.py` 控制链路调用。
-- `recamera_fastapi.py` 负责感知、录音、页面和状态展示，不直接控制硬件云台。
-- Dashboard 发起的是 UI Event，最终需要经过 EventBus、FSM、Orchestrator 和 SafetyLayer 后才会变成硬件命令。
-- 每个控制功能由 `session_id + 2.5s lease` 维护控制权，页面切换、浏览器失联或租约过期都会停止控制。
-
-控制闭环：
-
-```text
-Dashboard UI
-  -> FastAPI UI Event
+Dashboard UI Event
   -> EventBus
   -> main_phase3.py
-  -> Orchestrator + FSM
-  -> SafetyLayer
+  -> FSM + Orchestrator + SafetyLayer
   -> RecameraClient
-  -> Node-RED HTTP bridge
-  -> reCamera CAN yaw/pitch motors
+  -> Node-RED bridge
+  -> reCamera yaw / pitch
 ```
 
-## 3. 视觉感知功能
+## 2. 部署状态定义
 
-| 功能 | 当前实现 |
+| 状态 | 含义 |
 |---|---|
-| reCamera 视频接入 | `SSCMAVideoClient` 连接 `ws://<device>:8090/`，读取 JPEG 帧和 SSCMA 检测数据 |
-| MJPEG 推流 | `GET /video_feed` 将最新帧编码为 MJPEG，供前端 `<img>` 直接展示 |
-| 检测框解析 | 支持 SSCMA 输出的 `[cx, cy, w, h, conf, cls]` 格式 |
-| 人脸追踪 | `vision/face_tracker_v2.py` 使用 SCRFD、Kalman、ByteTrack、ArcFace 做多脸检测与跨帧跟踪 |
-| 人体姿态 | `vision/pose_estimator.py` 使用 YOLO11 pose，输出人体框与 17 个 COCO 关键点 |
-| 面部关键点 | `vision/mediapipe_face.py` 支持 MediaPipe Face Landmarker 468 点 |
-| 人脸裁剪 | `vision/face_crop.py` 为情绪识别提取人脸区域 |
-| 视觉连续性 | 使用 `vision_lost_frames` 和 debounce，避免短时遮挡导致控制抖动 |
-| Mock 数据 | `vision/mock_data_generator.py` 和 `vision/data_source.py` 提供演示/测试数据源 |
+| 已部署 | 代码已接入当前主链路；是否通过真实环境验收另行记录 |
+| 已部署（资源待补） | 主链路和降级逻辑已接入，但缺模型、密钥或外部资源 |
+| 部分部署 | 已有模块、页面或接口，但尚未形成完整主链路 |
+| 未部署 | 当前仓库没有可用主链路实现 |
+| 未部署（暂不计划） | 已明确不在当前阶段范围内 |
 
-## 4. 情绪、专注与健康指标
+## 3. 当前总体架构
 
-| 功能 | 当前实现 |
-|---|---|
-| 情绪识别 | `vision/emotieff_adapter.py` 封装 EmotiEffLib，输出 8 类情绪、置信度和概率分布 |
-| 情绪前端展示 | WebSocket 状态快照包含 `emotieff`，前端显示中文情绪和置信度 |
-| 专注评分 | `vision/attention_engine.py` 基于头部姿态、稳定性、个人基线和 EMA 输出 0-100 分 |
-| 眼部指标 | `vision/eye_metrics.py` 输出 EAR、PERCLOS、眨眼率等指标 |
-| 专注时长 | 前端在检测到有效状态后累计展示本次专注持续时间 |
-| 健康建议 | `/api/chat` 和 `/api/reflect` 可结合情绪、专注、日记上下文生成建议或回复 |
+| 层级 | 主要组件 | 职责 |
+|---|---|---|
+| 硬件 | reCamera、云台、ReSpeaker XVF3800 | 视频、检测数据、DOA/VAD、音频和机械运动 |
+| 感知 | `vision/`、`audio/` | 人脸/人体、情绪、眼部、注视、手势、录音和转写 |
+| 策略 | `EmotionInterventionPolicy`、`AttentionEngine` | 滑动窗口干预、注视辅助融合、健康状态判断 |
+| 控制 | EventBus、FSM、Orchestrator、SafetyLayer | 控制权、决策、租约、限幅和故障关闭 |
+| 服务 | `recamera_fastapi.py`、`main_phase3.py` | Web/API/状态推送与唯一硬件控制运行时 |
+| 产品 | `/home`、`/control`、PWA | 陪伴界面、调试台、本地提醒和离线壳 |
 
-## 5. 音频与声源定位
+## 4. 已部署功能
 
-| 功能 | 当前实现 |
-|---|---|
-| ReSpeaker DOA/VAD | 生产路径使用 ReSpeaker XVF3800 USB control 读取 DOA/VAD，最高约 10Hz |
-| TCP DOA 备用输入 | `audio/network_doa.py` 监听 `0.0.0.0:9999`，支持纯角度、JSON、xvf_host 文本 |
-| DOA 解析抽象 | `audio/doa.py` 提供 DOA line parser 和可插拔 DOA source |
-| speech hold | 有效 DOA 包会刷新语音保持状态，避免短瞬静音造成状态闪烁 |
-| DOA 过期保护 | 维护 DOA age，过期数据不会继续驱动控制 |
-| ReSpeaker LED | 音频功能可设置 ReSpeaker 12 LED DOA 灯效；TCP 备用模式不控制本机实体 LED |
-| 会议录音 | `audio/conversation_recorder.py` 通过 USB Audio 录制 16kHz 单声道音频，并按 VAD 分段 |
-| 语音转写 | `audio/transcriber.py` 封装 faster-whisper，可对 WAV 片段做本地转写 |
-| 唤醒词 | `audio/wake_word.py` 存在可选唤醒词检测模块，当前不是主链路核心能力 |
+### 4.1 视觉感知
 
-## 6. 云台控制与安全
+| 功能 | 实现与入口 | 状态 | 使用要点 |
+|---|---|---|---|
+| reCamera 视频接入 | `SSCMAVideoClient` 连接 `ws://<IP>:8090/` | 已部署 | 配置设备 IP 后查看 `/video_feed` |
+| MJPEG 推流 | `GET /video_feed` | 已部署 | 浏览器 `<img>` 可直接显示 |
+| SSCMA 检测框解析 | `[cx, cy, w, h, conf, cls]` | 已部署 | 用于目标候选和叠层 |
+| 人脸检测与跨帧跟踪 | `vision/face_tracker_v2.py` | 已部署 | SCRFD/跟踪依赖缺失时可降级 |
+| 人体姿态与人数 | `vision/pose_estimator.py`，YOLO11 pose | 已部署 | 输出人体框与 COCO-17 关键点 |
+| 面部关键点 | `vision/mediapipe_face.py` | 已部署 | 眼部、注视和面部指标的输入 |
+| 情绪识别 | `vision/emotieff_adapter.py` | 已部署 | 8 类情绪、置信度、概率分布 |
+| 眼部指标 | `vision/eye_metrics.py` | 已部署 | EAR、PERCLOS、眨眼率、眼部专注分 |
+| 专注评分 | `vision/attention_engine.py` | 已部署 | 头姿 40%、眼部 30%、稳定性 15%、注视 15% |
+| 注视方向估计 | `vision/gaze_estimator.py` | 已部署 | 仅为“视线趋势”，不是精确眼动追踪 |
+| 手势识别 A 版 | `vision/gesture_detector.py` | 已部署（资源待补） | 缺 `models/gesture_recognizer.task` 时返回 `model_missing` |
+| 视频/跟踪叠层 | `/control`、`tracking_overlay.js` | 已部署 | 展示框、状态、控制遥测和决策轨迹 |
+| 当前帧快照 | `GET /api/snapshot` | 已部署 | 手动获取 JPEG；事件自动截图仍未完成 |
 
-控制进程位于 `main_phase3.py`，核心模块在 `core/` 与 `hardware/`。
+### 4.2 情绪、健康与陪伴
 
-| 模块 | 职责 |
-|---|---|
-| `core/event.py` | 定义 `Event`、`BBox`、`ControlCommand` 等数据结构 |
-| `core/fsm.py` | 5 状态 FSM：`IDLE`、`AUDIO_SEARCH`、`VISION_TRACK`、`FUSED_TRACK`、`LOST` |
-| `core/orchestrator.py` | 多源融合决策，按视觉、音频、融合策略生成控制命令 |
-| `core/control_session.py` | 控制模式和会话租约管理 |
-| `core/safety_layer.py` | 对命令做频率、步长、范围、速度等硬安全门控 |
-| `core/event_bus.py` | FastAPI 与 main 控制运行时之间的事件和快照通信 |
-| `hardware/recamera_client.py` | 唯一云台硬件出口，调用 Node-RED HTTP bridge 的 command、stop、status |
+| 功能 | 实现与入口 | 状态 | 使用要点 |
+|---|---|---|---|
+| 主动情绪干预 | `core/emotion_intervention.py` | 已部署 | 负面情绪窗口或疲劳/低专注组合触发，30 分钟冷却 |
+| 情绪日记 | `/home`、`POST /api/reflect` | 已部署 | 本地保存日记，LLM 可生成温和回应 |
+| 专注记录 | `/home`、`attention` | 已部署 | 开启专注记录后累计时长和趋势 |
+| 周趋势 | `/home` 趋势页 | 已部署 | 汇总本地情绪与专注记录 |
+| 护眼计时 | `/home` 健康页 | 已部署 | 手动开启 20 分钟循环 |
+| 久坐计时 | `/home` 健康页 | 已部署 | 手动开启 45 分钟循环 |
+| 饮水与步数记录 | `/home` 健康页 | 已部署 | 数据保存在 localStorage |
+| 呼吸与拉伸 | `/home` 健康页 | 已部署 | 4-7-8 呼吸和快速拉伸引导 |
+| 健康建议 | `/api/chat` + 本地模板 | 已部署 | DeepSeek 未配置时降级为本地建议 |
 
-已实现控制能力：
+### 4.3 音频与会议
 
-- 单人视觉追踪：检测到人脸/目标后，云台 yaw/pitch 对准画面中心。
-- 多人声源 yaw 跟随：ReSpeaker DOA 驱动 yaw 方向搜索或跟随，pitch 不由音频控制。
-- 视觉 + 音频融合：同时存在视觉和语音信号时，Orchestrator 进入融合策略。
-- 目标丢失处理：使用丢帧计数和 LOST 状态，避免短时丢失立即停止或乱扫。
-- 手动云台调试：Dashboard D-Pad/home 通过 session 授权后发出手动事件。
-- 安全退出：进程退出时通过 atexit 发送 stop，避免云台持续运动。
-- fail closed：Node-RED bridge 不可达或租约失效时，控制链路不继续放行。
+| 功能 | 实现与入口 | 状态 | 使用要点 |
+|---|---|---|---|
+| ReSpeaker DOA/VAD | `audio/respeaker_doa.py` | 已部署 | USB 控制读取声源角度与语音状态 |
+| TCP DOA 备用输入 | `audio/network_doa.py`，端口 9999 | 已部署 | 无 USB 时可注入角度/JSON；不控制实体 LED |
+| ReSpeaker LED | ReSpeaker 适配器 | 已部署 | 多人/会议功能期间显示 DOA 灯效 |
+| 会议录音与 VAD 分段 | `audio/conversation_recorder.py` | 已部署 | 16 kHz 单声道；音频设备需现场确认 |
+| 本地语音转写 | `audio/transcriber.py` | 已部署（资源待补） | 需额外安装 `faster-whisper` 并下载模型 |
+| 会议摘要/写入日记 | `POST /api/meeting/summarize` | 已部署 | 依赖转写结果和可选 DeepSeek |
+| 唤醒词模块 | `audio/wake_word.py` | 部分部署 | 文件存在，未接入常驻主链路 |
 
-## 7. 后端接口能力
+### 4.4 控制与安全
 
-主要服务入口是 `recamera_fastapi.py`，默认 FastAPI 端口为 `8001`。
+| 功能 | 实现与入口 | 状态 | 使用要点 |
+|---|---|---|---|
+| 单控制平面 | `main_phase3.py` | 已部署 | 唯一允许调用硬件控制客户端的进程 |
+| 五态 FSM | `core/fsm.py` | 已部署 | IDLE、AUDIO_SEARCH、VISION_TRACK、FUSED_TRACK、LOST |
+| 单人视觉跟踪 | `/api/single_track/start` | 已部署 | 视觉目标驱动 yaw/pitch |
+| 多人声源 yaw 跟随 | `/api/multi_track/start` | 已部署 | DOA 只驱动 yaw，避免音频误控 pitch |
+| 会议 yaw 跟随 | `/api/meeting/yaw/start` | 已部署 | 会议场景独立功能租约 |
+| 手动云台调试 | `/control` | 已部署 | 需有效 session 和 heartbeat |
+| 控制会话与 2.5 秒租约 | `core/control_session.py` | 已部署 | 页面离开/失联/租约过期会停机 |
+| SafetyLayer | `core/safety_layer.py` | 已部署 | 限频、限步长、限范围、速度门控 |
+| EventBus | `core/event_bus.py`，端口 8765 | 已部署 | FastAPI 与控制进程之间传递事件/快照 |
+| Node-RED bridge | `deploy/node_red/recamera_control_bridge.json` | 已部署 | 设备侧部署后提供 command/stop/status |
+| 安全退出与 fail closed | 主控制运行时 | 已部署 | 退出、桥不可达或租约失效时发送 stop |
 
-| 接口 | 功能 |
-|---|---|
-| `GET /` | 重定向或返回产品首页 |
-| `GET /home` | 心屿产品界面 |
-| `GET /control`、`GET /v2` | 实时调试控制台 |
-| `GET /video_feed` | MJPEG 视频流 |
-| `WebSocket /ws` | 每约 200ms 推送完整状态快照 |
-| `GET /api/state` | 当前状态快照 |
-| `GET /api/device/config` | 读取设备地址配置 |
-| `POST /api/device/config` | 更新视频/感知设备地址 |
-| `GET /api/gimbal/state` | 云台遥测状态 |
-| `POST /api/gimbal/move` | 手动相对移动云台 |
-| `POST /api/gimbal/home` | 云台回中/home |
-| `POST /api/single_track/start`、`/stop` | 单人追踪功能启动/停止 |
-| `POST /api/multi_track/start`、`/stop` | 多人声源跟随功能启动/停止 |
-| `POST /api/meeting/yaw/start`、`/stop` | 会议场景 yaw 跟随启动/停止 |
-| `POST /api/control/manual/start`、`/stop` | 手动控制会话启动/停止 |
-| `POST /api/control/heartbeat` | 控制会话租约续期 |
-| `GET /api/control/runtime` | 查询 main 控制运行时快照 |
-| `POST /api/control/config` | 更新控制相关配置 |
-| `GET /api/respeaker/state` | ReSpeaker 状态 |
-| `GET /api/conversation/state` | 会议录音状态 |
-| `GET /api/conversation/debug` | 会议录音调试状态 |
-| `POST /api/conversation/start`、`/stop`、`/save` | 录音会话开始、停止、保存 |
-| `POST /api/meeting/summarize` | 会议转写与 LLM 摘要生成 |
-| `POST /api/reflect` | 情绪日记反思生成 |
-| `POST /api/chat` | LLM 陪伴对话 |
-| `GET /api/chat/status` | LLM/DeepSeek 配置状态 |
-| `GET /api/snapshot` | 当前帧 JPEG 快照 |
-| `GET /api/debug/video` | 视频调试信息 |
-| `GET /api/health` | 健康检查 |
-| `GET /manifest.webmanifest`、`GET /sw.js` | PWA 资源 |
+### 4.5 服务、前端与 LLM
 
-## 8. WebSocket 状态快照
+| 功能 | 入口 | 状态 | 使用要点 |
+|---|---|---|---|
+| REST API 与健康检查 | `/api/*`、`/api/health` | 已部署 | FastAPI 默认端口 8001 |
+| WebSocket 状态推送 | `/ws` | 已部署 | 约每 200 ms 推送状态快照 |
+| 当前状态查询 | `/api/state` | 已部署 | 与 `/ws` 使用同一状态结构 |
+| 设备地址配置 | `/api/device/config` | 已部署 | 只重连视频/感知，不创建硬件控制客户端 |
+| 产品首页 | `/home` | 已部署 | 情绪、专注、日记、趋势、健康和手势陪伴 |
+| 调试控制台 | `/control`、`/v2` | 已部署 | 面向开发与硬件联调 |
+| Page 2 预览 | `dashboard/page2_preview/` | 部分部署 | 独立静态预览，尚未替换 `/home` 主页面 |
+| PWA 壳与缓存 | manifest + `sw.js` | 已部署 | HTTPS 或 localhost 下注册 Service Worker |
+| DeepSeek 陪伴对话 | `POST /api/chat` | 已部署（资源待补） | 需 `DEEPSEEK_API_KEY`；否则本地 fallback |
+| LLM 日记反思 | `POST /api/reflect` | 已部署（资源待补） | 未配置 LLM 时保留本地日记能力 |
 
-`/ws` 推送的 `state_snapshot` 聚合了前端所需的大部分运行状态，典型内容包括：
+## 5. 四项健康陪伴新功能
+
+### 5.1 #4 主动情绪干预
+
+数据流：`emotieff + attention + eye_metrics + gaze -> EmotionInterventionPolicy -> proactive_intervention -> /home toast/PWA`。
+
+默认策略：维护 180 秒滑动窗口；至少收集 20 个样本；高置信样本比例足够后，负面情绪样本比例不低于 0.6 且平均置信度不低于 0.65时触发。负面范围为 Sadness、Anger、Fear、Disgust、Contempt。另一条疲劳路径为平均专注低于 45，且 PERCLOS 或视线向下比例达到阈值。触发后 1800 秒冷却。
+
+状态结构：
+
+```json
+{"active":false,"type":"","reason":"collecting","message":"","cooldown_remaining_sec":0}
+```
+
+使用：打开 `/home` 并保持情绪/专注数据输入。触发时页面显示陪伴式提示；开启本地通知后可发送“情绪关心”。无人脸、置信度不足或样本不足时不触发，不进行心理诊断。
+
+### 5.2 #8 手势识别陪伴交互 A 版
+
+识别框架是 MediaPipe Gesture Recognizer，不使用 YOLO-pose 手势规则。默认置信度阈值 0.6、连续稳定 4 帧、同 intent 冷却 3 秒；每 3 个感知循环执行一次。识别器只返回状态，绝不发送 `gimbal_*`、`feature_*` 或 `dpad_*` 事件。
+
+| 手势 | intent | 当前动作 |
+|---|---|---|
+| Open Palm / 张手 | `summon_xinyu` | 显示“我在听”并在聊天区加入陪伴回应 |
+| Closed Fist / 握拳 | `pause_or_mute` | 收起当前提醒；当前版本没有 TTS 可静音 |
+| Thumb Up / 点赞 | `feedback_positive` | 在 localStorage 记录“有帮助”反馈 |
+| Thumb Down / 点踩 | `feedback_negative` | 在 localStorage 记录“无帮助”反馈 |
+| Victory / 剪刀手 | `capture_positive_moment` | 生成积极瞬间日记草稿，等待用户确认 |
+
+部署资源：从 MediaPipe 官方模型页下载 Gesture Recognizer task 文件，放到 `models/gesture_recognizer.task`，重启 FastAPI。模型缺失时 `gesture.available=false` 且 `reason=model_missing:models/gesture_recognizer.task`，其他功能继续运行。
+
+参考：[MediaPipe Gesture Recognizer for Python](https://ai.google.dev/edge/mediapipe/solutions/vision/gesture_recognizer/python)。
+
+### 5.3 #9 注视方向估计
+
+`GazeEstimator` 使用 MediaPipe Face Landmarker 的虹膜点（需要至少 477 个点）计算虹膜中心相对眼角中心的粗略偏移，输出 `center`、`left`、`right`、`down`、`away`、`unknown`。它以 15% 权重作为 attention 的辅助证据，不替代头姿、眼部或稳定性评分。
+
+```json
+{"available":true,"state":"center","x_offset":0.02,"y_offset":0.05,"confidence":0.96}
+```
+
+使用：在 `/home` 的“手势陪伴”卡片查看“视线趋势”，或请求 `/api/state` 检查 `gaze`。无人脸、关键点不足或推理异常时返回 `available=false`，原 attention 仍可运行。
+
+参考：[MediaPipe Face Landmarker for Python](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker/python)。
+
+### 5.4 #10 PWA 本地提醒
+
+通知调度位于 `/home` 前端，使用 Notification API、Service Worker 和 localStorage，不新增后端推送服务，也不接入 ntfy、Telegram 或 MQTT。
+
+| 类型 | 触发规则 | 页面 |
+|---|---|---|
+| 护眼 | 用户开启 20-20-20 计时，20 分钟到期 | 健康页 |
+| 久坐 | 用户开启久坐计时，45 分钟到期 | 健康页 |
+| 喝水 | 09:00-22:00，90 分钟未记录且未达 8 杯目标 | 健康页 |
+| 疲劳 | PERCLOS/眨眼/视线向下任一异常且专注低于 60，持续 5 分钟 | 健康页 |
+| 低专注 | 专注记录开启且 score < 50，持续 10 分钟 | 健康页 |
+| 情绪关心 | `proactive_intervention.active=true` | 首页 |
+
+默认同类冷却 30 分钟，情绪关心 60 分钟，安静时段 22:30-08:30。通知不包含截图、日记正文、会议原文或敏感内容。权限未授权或浏览器不支持时降级为站内 toast。
+
+使用：通过 HTTPS 或 localhost 打开 `/home`，进入“建议/健康”页，点击“开启提醒”并授予浏览器权限，再用“测试提醒”验证。通知点击后由 `sw.js` 打开或聚焦 `/home#health` 或 `/home#home`。
+
+参考：[MDN Notifications API](https://developer.mozilla.org/docs/Web/API/Notifications_API)、[MDN Service Worker API](https://developer.mozilla.org/docs/Web/API/Service_Worker_API)。
+
+## 6. 状态接口
+
+`GET /api/state` 和 `WebSocket /ws` 均包含：
 
 ```json
 {
-  "video": { "connected": true, "fps": 5.0, "width": 640, "height": 480 },
-  "pose": { "count": 1, "persons": [] },
-  "gimbal": { "connected": true, "yaw": 180.0, "pitch": 90.0 },
-  "respeaker": { "connected": true, "doa_deg": 120.0, "has_speech": true },
-  "attention": { "has_face": true, "score": 82 },
-  "emotieff": { "emotion": "happy", "confidence": 0.91 },
-  "eye_metrics": { "ear": 0.28, "perclos": 0.12, "blink_rate": 14 },
-  "conversation": { "active": false, "state": "idle" },
-  "control": {
-    "feature": "single_face_analysis",
-    "session_id": "...",
-    "lease_remaining_ms": 2500,
-    "fsm_state": "VISION_TRACK",
-    "authority": "vision",
-    "command": {},
-    "safety": {}
-  },
-  "health": {}
+  "gaze": {"available": false, "state": "unknown", "x_offset": 0, "y_offset": 0, "confidence": 0},
+  "gesture": {"available": false, "name": "", "confidence": 0, "handedness": "", "stable_frames": 0, "intent": "", "intent_ready": false, "updated_at": 0, "reason": ""},
+  "proactive_intervention": {"active": false, "type": "", "reason": "", "message": "", "cooldown_remaining_sec": 0}
 }
 ```
 
-## 9. 前端功能
+前端本地状态包括 `xinyu_notify_enabled`、`xinyu_notify_quiet_hours`、`xinyu_notify_cooldowns`、`xinyu_water_last_at`、`xinyu_water_goal`、`xinyu_notify_last_sent_by_type`、`xinyu_gesture_feedback`。
 
-### 9.1 调试控制台：`dashboard/recamera_v2_live.html`
+## 7. 未完成与暂不计划功能
 
-路由：`/control`、`/v2`
-
-已实现内容：
-
-- 实时视频画面，叠加检测框和视觉辅助信息。
-- FSM 状态可视化，显示当前状态和控制权来源。
-- 决策链展示：最近事件、命令、安全门控结果。
-- 最近 trace 日志，用于回看控制决策。
-- 云台遥测：yaw、pitch、速度、延迟、连接状态。
-- 感知通道：DOA、语音状态、人体数、视觉丢帧。
-- 单人分析：情绪、专注分、眼部指标。
-- 系统健康：视频 FPS、WebSocket 客户端、DOA 新鲜度、云台 RTT。
-- 功能控制：单人追踪、多人声源跟随、会议 yaw、手动云台等。
-
-### 9.2 产品界面：`dashboard/home.html`
-
-路由：`/home`
-
-已实现内容：
-
-- 手机 App 形态的“心屿”产品界面。
-- 首页功能卡：情绪监测、专注记录、多人场景、陪伴对话。
-- 日记页：日历、日记内容、LLM 回复和历史记录组织。
-- 周报页：7 天情绪/专注趋势。
-- 健康页：眼部休息、坐姿提醒、呼吸引导、拉伸、饮水/步数打卡。
-- 个人页：用户名和历史概览。
-- PWA：`manifest.webmanifest` 与 `sw.js`。
-
-### 9.3 Page 2 预览工程：`dashboard/page2_preview/`
-
-该目录包含独立预览版页面、样式、脚本和情绪插画资源：
-
-- `index.html`
-- `app.js`
-- `styles.css`
-- `assets/moods/*.png`
-- `preview-mobile.png`
-- `preview-desktop.png`
-
-当前 Git 状态显示该目录有改动和新增资源，整理文档时未修改这些文件。
-
-## 10. LLM 与日记能力
-
-| 功能 | 当前实现 |
-|---|---|
-| DeepSeek 对话 | `/api/chat` 调用 DeepSeek API，未配置时使用本地 fallback |
-| 情绪日记反思 | `/api/reflect` 生成日记条目和陪伴式回复 |
-| 会议摘要 | `/api/meeting/summarize` 汇总录音转写内容，生成会议摘要和日记条目 |
-| 上下文输入 | 可结合当前情绪、专注状态、日记内容和前端传入消息 |
-| 状态检查 | `/api/chat/status` 返回 LLM 配置状态 |
-
-## 11. 设备与端口
-
-| 地址/端口 | 用途 | 说明 |
+| 功能 | 状态 | 当前决定 |
 |---|---|---|
-| `RECAMERA_DEVICE_IP:8090` | SSCMA WebSocket | reCamera 视频和检测数据输入 |
-| `RECAMERA_DEVICE_IP:1880` | Node-RED HTTP bridge | 云台 command、stop、status |
-| `0.0.0.0:9999` | Network DOA TCP | 远端 DOA 备用输入 |
-| `0.0.0.0:8001` | FastAPI | Web 页面、REST API、WebSocket |
-| `RECAMERA_DEVICE_IP:22` | SSH | 设备维护 |
+| TTS 语音输出 | 未部署 | 后续评估，不纳入本轮 |
+| 说话人分离与声纹-人脸绑定 | 未部署 | 难度和隐私成本高，暂缓 |
+| 跌倒/姿态异常检测 | 未部署（暂不计划） | 当前产品不走安防/告警路线 |
+| VLM 场景理解 | 未部署 | 可做手动实验，不接实时控制 |
+| 自定义唤醒词与常驻助手 | 部分部署 | 仅有基础模块，主链路暂缓 |
+| 声音事件检测 | 未部署（暂不计划） | 当前不做异响/安防提醒 |
+| 云台手势控制 | 未部署（暂不计划） | A 版明确只做陪伴交互 |
+| ntfy / Telegram 推送 | 未部署（暂不计划） | 第一版只做 PWA 本地通知 |
+| MQTT / Home Assistant | 未部署（暂不计划） | 当前系统计划不包含 MQTT |
+| 停留时长专注指标 | 未部署 | 可作为后续低中难度增强 |
+| 事件自动截图 | 部分部署 | 有 `/api/snapshot`，未接自动事件策略 |
+| 跨帧人数统计 | 部分部署 | 有当前帧人数，未做专门滑动窗口统计 |
+| 噪声抑制 | 未部署 | 可提升 VAD/ASR，尚未接入 |
+| 事件录像、RTSP、热力图、区域入侵 | 未部署（暂不计划） | 与健康陪伴定位不符 |
 
-设备地址来源：
-
-- 环境变量：`RECAMERA_DEVICE_IP`
-- FastAPI 参数：`--device-ip`
-- 控制进程参数：`--gimbal-ip`
-- Dashboard 顶部设备地址输入框：只影响视频/感知重连，不直接创建云台控制客户端
-
-典型启动：
+## 8. 启动与使用
 
 ```bash
 export RECAMERA_DEVICE_IP=<RECAMERA_IP>
+# 可选：export DEEPSEEK_API_KEY=<KEY>
 python3 recamera_fastapi.py --device-ip "$RECAMERA_DEVICE_IP"
 python3 main_phase3.py --enable-control --gimbal-ip "$RECAMERA_DEVICE_IP" --manual-control
 ```
 
-## 12. 依赖概览
+访问：`http://<HOST>:8001/home` 使用产品功能，`http://<HOST>:8001/control` 联调控制，`http://<HOST>:8001/api/state` 检查感知状态。PWA 通知在非 localhost 访问时需要 HTTPS。
 
-`requirements.txt` 当前列出的核心依赖：
+## 9. 已知限制
 
-| 类别 | 依赖 |
-|---|---|
-| 基础 | `numpy`、`PyYAML` |
-| 视频与硬件 | `websocket-client`、`pyusb` |
-| Web 服务 | `fastapi`、`uvicorn[standard]`、`aiohttp>=3.9` |
-| 视觉推理 | `opencv-python`、`onnx`、`onnxruntime`、`mediapipe` |
-| 音频 | `sounddevice` |
-| 可选人脸 | `insightface` |
-| 可选转写 | `faster-whisper` |
-
-## 13. 已知状态与注意事项
-
-| 项目 | 状态 |
-|---|---|
-| 单控制平面 | 已收束到 `main_phase3.py` |
-| FastAPI 云台控制权 | 不直接控制硬件，只发事件和展示遥测 |
-| Node-RED bridge | 生产安全依赖 `deploy/node_red/recamera_control_bridge.json` |
-| `core/control_filter.py` | 遗留孤立模块，当前不在生产链路 |
-| `tools/run_orchestrator_mvp.py` | 开发测试工具，不属于生产入口 |
-| `tools/build_function_arch_docx.py` | 文档生成工具，可能包含过时引用 |
-| TCP DOA | 备用输入，不能控制本机 ReSpeaker 实体 LED |
-| `/home` 产品页 | 已有完整 UI；部分数据可由 mock 或后端状态驱动 |
-| 真实硬件功能 | 需要 reCamera、ReSpeaker、Node-RED bridge 和对应设备地址在线 |
-| LLM 功能 | 需要 DeepSeek API Key；未配置时部分能力降级为本地模板 |
-
-## 14. 功能清单总览
-
-| 模块 | 功能 | 状态 |
-|---|---|---|
-| 视觉 | reCamera 视频接入 | 已实现 |
-| 视觉 | MJPEG 实时推流 | 已实现 |
-| 视觉 | SSCMA 检测框解析 | 已实现 |
-| 视觉 | 人脸检测与追踪 | 已实现 |
-| 视觉 | 人体姿态和人数统计 | 已实现 |
-| 视觉 | MediaPipe 面部关键点 | 已实现 |
-| 情绪 | EmotiEffLib 8 类情绪识别 | 已实现 |
-| 专注 | 头部姿态专注评分 | 已实现 |
-| 健康 | EAR、PERCLOS、眨眼率 | 已实现 |
-| 音频 | ReSpeaker DOA/VAD | 已实现 |
-| 音频 | TCP DOA 备用输入 | 已实现 |
-| 音频 | 会议录音分段 | 已实现 |
-| 音频 | faster-whisper 转写封装 | 已实现 |
-| 控制 | 单 FSM 控制平面 | 已实现 |
-| 控制 | 单人视觉追踪 | 已实现 |
-| 控制 | 多人声源 yaw 跟随 | 已实现 |
-| 控制 | 手动云台调试 | 已实现 |
-| 控制 | SafetyLayer 安全门控 | 已实现 |
-| 控制 | 会话租约与 heartbeat | 已实现 |
-| 后端 | REST API | 已实现 |
-| 后端 | WebSocket 状态推送 | 已实现 |
-| 前端 | `/control` 调试控制台 | 已实现 |
-| 前端 | `/home` 产品界面 | 已实现 |
-| 前端 | PWA manifest/service worker | 已实现 |
-| LLM | 陪伴对话 | 已实现 |
-| LLM | 日记反思 | 已实现 |
-| LLM | 会议摘要 | 已实现 |
-
+- 手势模型文件当前不在仓库，手势识别尚不能进行真实效果验收。
+- 注视估计受分辨率、眼镜、眯眼、遮挡和光照影响，只能作为趋势。
+- 主动情绪干预是陪伴策略，不是心理或医疗诊断。
+- PWA 通知由打开的 `/home` 页面调度；第一版不是服务器离线推送。
+- DeepSeek、faster-whisper、真实 reCamera、ReSpeaker 和 Node-RED 均需要各自外部资源或现场环境。

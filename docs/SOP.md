@@ -827,3 +827,152 @@ curl http://localhost:8001/api/conversation/debug
 - 接通 ReSpeaker USB DOA、会议录音和实体 WS2812 DOA 灯效。
 - 接通 DOA audio Event 到 yaw-only Orchestrator 命令。
 - 新增 Node-RED 双轴 control/status bridge 和真实 CAN motor readback。
+
+---
+
+## 12. 健康陪伴功能操作与验收（2026-06-30）
+
+### 12.1 前置检查
+
+四项新功能随 `recamera_fastapi.py` 启动，不需要新增后端服务。先确认基础依赖和模型：
+
+```bash
+python3 -c "import cv2, mediapipe, numpy; print('vision dependencies ok')"
+test -f models/face_landmarker.task && echo "face model ok"
+test -f models/gesture_recognizer.task && echo "gesture model ok" || echo "gesture model missing"
+```
+
+仓库当前不包含 `models/gesture_recognizer.task`。从 MediaPipe 官方 Gesture Recognizer 模型页面下载兼容的 `.task` 文件，并放置为：
+
+```text
+recamera_multimodal/models/gesture_recognizer.task
+```
+
+官方参考：[Gesture Recognizer Python Guide](https://ai.google.dev/edge/mediapipe/solutions/vision/gesture_recognizer/python)。模型未补齐时系统会降级，视频、情绪、专注、注视和控制功能不受影响。
+
+### 12.2 启动
+
+```bash
+cd /home/lintong_chen/recamera_multimodal
+export RECAMERA_DEVICE_IP=<RECAMERA_IP>
+python3 recamera_fastapi.py --device-ip "$RECAMERA_DEVICE_IP"
+```
+
+如果只验证感知和 PWA，不需要启动真实云台控制进程。需要联调原有云台功能时再启动第二终端：
+
+```bash
+cd /home/lintong_chen/recamera_multimodal
+export RECAMERA_DEVICE_IP=<RECAMERA_IP>
+python3 main_phase3.py --enable-control --gimbal-ip "$RECAMERA_DEVICE_IP" --manual-control
+```
+
+打开：
+
+- 产品页：`http://<HOST>:8001/home`
+- 状态：`http://<HOST>:8001/api/state`
+- 调试台：`http://<HOST>:8001/control`
+
+### 12.3 #4 主动情绪干预验证
+
+1. 保持单人面部进入画面，确认 `/api/state` 中 `emotieff`、`attention`、`eye_metrics` 和 `gaze` 有更新。
+2. 观察 `proactive_intervention.reason`：初期通常为 `collecting`，置信不足为 `low_confidence`，未达阈值为 `below_threshold`。
+3. 使用录制状态或受控测试持续满足阈值至少约 3 分钟，确认 `active=true`、`message` 非空。
+4. 触发后立即重复条件，确认 `cooldown_remaining_sec` 递减且不会重复激活。
+5. 确认文案为休息/陪伴式表达，不包含诊断结论。
+
+注意：策略还允许“低专注 + PERCLOS 偏高或 gaze 向下比例较高”的疲劳路径触发。代码默认冷却为 1800 秒。
+
+### 12.4 #8 手势识别 A 版验证
+
+先检查模型：
+
+```bash
+ls -lh models/gesture_recognizer.task
+```
+
+在 `/api/state` 查看 `gesture`：
+
+```bash
+curl -s http://127.0.0.1:8001/api/state
+```
+
+逐项验证 Open Palm、Closed Fist、Thumb Up、Thumb Down、Victory：
+
+1. 手掌完整进入画面，保持光照稳定。
+2. 同一手势连续保持至少 4 个识别帧。
+3. 确认 `confidence >= 0.6`、`stable_frames >= 4`、intent 映射正确。
+4. 确认首次稳定时 `intent_ready=true`，同 intent 3 秒内不会再次 ready。
+5. 在 `/home` 确认对应动作：唤起、收起提醒、正负反馈、积极瞬间草稿。
+6. 检查 EventBus/控制 trace，确认没有手势产生的云台或功能控制事件。
+
+模型缺失时预期结果：
+
+```json
+{"available":false,"intent_ready":false,"reason":"model_missing:models/gesture_recognizer.task"}
+```
+
+### 12.5 #9 注视方向估计验证
+
+1. 正对镜头，确认 `gaze.available=true` 且 `state` 多数为 `center`。
+2. 保持头部相对稳定，分别只用眼睛向左、向右和向下，观察 `left`、`right`、`down` 趋势。
+3. 离开画面，确认 `available=false`、`state=unknown`。
+4. 查看 `attention.components.gaze` 与 `weights.gaze=0.15`。
+5. 临时遮挡眼睛或制造关键点缺失，确认原 attention 接口仍返回而不是崩溃。
+
+注视结果受镜头分辨率、眼镜、眯眼、遮挡和光照影响。验收目标是方向趋势稳定，不是眼动仪级精度。
+
+### 12.6 #10 PWA 本地通知启用
+
+Notification API 和 Service Worker 要求安全上下文：localhost 可以使用 HTTP；从其他主机访问时应使用 HTTPS。可使用仓库已有 `tools/make_pwa_cert.sh` 生成开发证书，或接入正式反向代理证书。
+
+操作步骤：
+
+1. 通过 `https://<HOST>:<PORT>/home` 或本机 `http://localhost:8001/home` 打开页面。
+2. 进入底部“建议”页，找到“本地提醒”。
+3. 点击“开启提醒”，在浏览器权限框选择允许。
+4. 点击“测试提醒”，确认系统通知出现；点击通知应打开或聚焦 `/home#health`。
+5. 刷新页面，确认 `xinyu_notify_enabled` 和冷却记录仍保留。
+
+默认 localStorage 配置：
+
+| Key | 默认值 | 用途 |
+|---|---|---|
+| `xinyu_notify_enabled` | `false` | 总开关 |
+| `xinyu_notify_quiet_hours` | `22:30-08:30` | 安静时段 |
+| `xinyu_notify_cooldowns` | 普通 30 分钟、情绪 60 分钟 | 同类去重 |
+| `xinyu_water_last_at` | 首次打开时间 | 饮水计时 |
+| `xinyu_water_goal` | 8 | 每日目标杯数 |
+| `xinyu_notify_last_sent_by_type` | `{}` | 每类最近发送时间 |
+
+六类提醒验收：
+
+| 类型 | 触发条件 | 预期目标页 |
+|---|---|---|
+| 护眼 | 手动开启后 20 分钟到期 | `health` |
+| 久坐 | 手动开启后 45 分钟到期 | `health` |
+| 喝水 | 09:00-22:00，90 分钟未记录且未达目标 | `health` |
+| 疲劳 | 异常眼部/向下 gaze + attention < 60，持续 5 分钟 | `health` |
+| 低专注 | 专注记录开启，attention < 50，持续 10 分钟 | `health` |
+| 情绪关心 | `proactive_intervention.active=true` | `home` |
+
+### 12.7 降级与排障
+
+| 现象 | 预期检查 | 处理 |
+|---|---|---|
+| `gesture.reason` 为 `model_missing` | 模型文件不存在或路径错误 | 放置模型为 `models/gesture_recognizer.task` 后重启 |
+| 手势有名称但不触发 | 置信度、稳定帧或 3 秒冷却未满足 | 改善光照/距离，连续保持手势 |
+| `gaze.available=false` | 无脸、关键点少于 477 或 MediaPipe 异常 | 检查 Face Landmarker、画面和日志 |
+| gaze 方向反复跳变 | 光照、眼镜、距离或阈值不适配 | 先按趋势验收，再按设备采样校准 |
+| 主动关心一直 `collecting` | 样本少于 20 或运行时间不足 | 保持有效输入并等待窗口积累 |
+| 主动关心不触发 | 负面比例/置信度或疲劳组合未达阈值 | 查看 reason 与各输入状态，不直接降低所有门槛 |
+| 浏览器不弹通知 | 非安全上下文、权限拒绝、系统通知关闭 | 改用 HTTPS/localhost，重置站点权限 |
+| 只有站内 toast | Notification 不支持或未授权 | 属于设计内降级；授权后再测试 |
+| 页面关闭后不提醒 | 第一版由 `/home` 页面调度 | 保持页面/PWA 运行；服务器 Web Push 未实现 |
+
+### 12.8 安全确认
+
+- 四项新功能都不修改云台控制接口。
+- FastAPI 仍不得直接调用 `RecameraClient.apply_command()`。
+- 手势不会发出控制 Event。
+- 通知不包含截图、日记正文或会议原文。
+- 跌倒、异响、MQTT、ntfy、Telegram 和 TTS 不在本轮操作范围。
