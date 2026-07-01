@@ -35,6 +35,10 @@ USB Audio Class 由 `sounddevice` 独立录音。TCP `9999` 仅是 DOA 备用输
 该模式不能控制主机上的实体 ReSpeaker LED，telemetry 会报告
 `led.hardware=false`。
 
+会议录音链路可选启用主机侧音频预处理：存在 `noisereduce` 时对单声道
+音频块做降噪，存在 `webrtcvad` 时优先使用 WebRTC VAD。任一依赖缺失或运行
+失败时自动回退原 RMS 分段，不阻塞录音、ASR 或摘要流程。
+
 FastAPI 的视频、分析、录音和 Dashboard 状态通过 `/ws` 与 `/api/state`
 发布；权威 FSM、会话、命令、安全结果和云台 readback 均来自
 `main_phase3.py` 的 EventBus runtime snapshot，不存在 observe-only FSM 镜像。
@@ -173,6 +177,7 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | `vision/llm_reflect.py` | 本地轻量日记反思 fallback（无 DeepSeek 时） |
 | `vision/data_source.py` | VisionDataSource 抽象 + Mock 实现（供 main_phase3.py 使用） |
 | `vision/mock_data_generator.py` | Mock 检测框生成器 |
+| `vision/person_stabilizer.py` | 跨帧稳定人数统计，供多人场景 UI 使用 |
 
 ### 4.4 音频（`audio/`）
 
@@ -182,6 +187,7 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | `audio/doa.py` | DOA 文本解析器 + 可插拔 source 基础实现 |
 | `audio/respeaker_doa.py` | USB HID DOA（旧路径，可选 fallback） |
 | `audio/conversation_recorder.py` | 可选录音会话管理（`save_audio=true` 时启用） |
+| `audio/noise_suppressor.py` | 可选会议降噪与 WebRTC VAD；缺依赖时回退 RMS |
 | `audio/wake_word.py` | 唤醒词检测（可选） |
 
 ### 4.5 主入口
@@ -241,7 +247,7 @@ Debounce:
   "type": "state_snapshot",
   "data": {
     "video":    { "connected", "fps", "width", "height", "detections" },
-    "pose":     { "persons": [...], "count" },
+    "pose":     { "persons": [...], "count", "stable_count", "confidence", "window_sec", "last_changed_at" },
     "gimbal":   { "connected", "yaw", "pitch", "yaw_speed", "pitch_speed", "source", "age_ms" },
     "respeaker":{ "connected", "doa_deg", "has_speech", "audio_device", "led" },
     "attention":{ "has_face", "score", "state", "blink_count" },
@@ -252,6 +258,11 @@ Debounce:
     "sound_follow": { "active", "doa_deg", "has_speech", "source" },
     "face_lock": { "locked", "track_id", "phase" },
     "conversation": { "mode", "active", "state" },
+    "audio_processing": {
+      "noise_suppression": { "available": bool, "enabled": bool },
+      "vad_mode": "webrtcvad|rms",
+      "fallback_reason": ""
+    },
     "control":  {
       "feature": "inactive|single_face_analysis|multi_sound_yaw|meeting_recording|meeting_sound_yaw|manual_gimbal_debug",
       "session_id": "...",
@@ -314,6 +325,7 @@ Debounce:
 - [x] LLM 对话：DeepSeek API（`/api/chat`）+ 本地轻量 fallback
 - [x] 会议摘要：`/api/meeting/summarize` 返回结构化错误码 `recording_not_started`、`no_segments`、`asr_empty`
 - [x] 对话会话管理：`/api/conversation/{start,stop,state,save,debug}`
+- [x] 会议音频处理状态：`audio_processing.noise_suppression` 与 `vad_mode`
 - [x] LLM 反思：`/api/reflect`（情绪日记生成）
 - [x] API 快照：`/api/snapshot`（当前帧 JPEG）
 - [x] 健康检查：`/api/health`
@@ -394,6 +406,10 @@ Dashboard UI -> FastAPI UI Event -> EventBus -> main_phase3.py -> FSM -> Orchest
 每个页面都有“启动功能”按钮。启动后由 `session_id + 2.5s lease` 维护唯一控制权；切换页面会发送 stop，新页面不会自动启动。浏览器失联时租约到期自动停止，新会话接管后旧 session 的 heartbeat/stop 无效。
 
 `/home` 与 `/control` 共享同一状态契约。前端不再用多个 localStorage flag 伪造运行态，而是以后端 `control.active_feature`、`session_id` 和 `conversation` 为准；缺少 `session_id` 的 stop 请求会被后端明确拒绝，避免硬件 feature lease 假释放。`AttentionEngine` 已改为先融合 orientation、eye、stability、gaze 四项证据，再只对最终 fused 分数做平滑，避免重复加权。
+
+多人场景人数显示优先使用 `pose.stable_count`。原始 `pose.count` 保留用于
+调试和控制观测；稳定人数通过短滑动窗口和连续确认抑制单帧抖动，不参与云台
+控制。
 
 ---
 

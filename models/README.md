@@ -22,6 +22,10 @@ The gesture model only feeds UI companion intents. It must not emit gimbal
 control events. Meeting ASR is optional at runtime; `/api/meeting/summarize`
 returns a clear fallback error when no speech segment or ASR result is present.
 
+Meeting noise suppression and WebRTC VAD do not add files under `models/`.
+They are optional Python dependencies (`noisereduce` and `webrtcvad-wheels`)
+and automatically fall back to RMS segmentation when unavailable.
+
 ## Model conversion pipeline
 
 ONNX → `model_transform` (→ MLIR) → `run_calibration` (INT8) → `model_deploy` (→ .cvimodel)

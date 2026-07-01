@@ -24,6 +24,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from audio.noise_suppressor import MeetingAudioProcessor
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -96,6 +97,7 @@ class ConversationRecorder:
         }
         self._error = ""
         self._segment_idx = 0
+        self._audio_processor = MeetingAudioProcessor(sample_rate=self.sample_rate)
 
     @property
     def active(self) -> bool:
@@ -116,6 +118,7 @@ class ConversationRecorder:
         self._turns.clear()
         self._segment_idx = 0
         self._error = ""
+        self._audio_processor = MeetingAudioProcessor(sample_rate=self.sample_rate)
 
         try:
             import sounddevice as sd
@@ -177,13 +180,18 @@ class ConversationRecorder:
                 "speakers": len({t["speaker"] for t in turns}) if turns else 0,
                 "duration": round(max(0.0, time.time() - self._started_at), 1) if self._started_at else 0.0,
             },
+            "audio_processing": self.audio_processing_state(),
         }
+
+    def audio_processing_state(self) -> dict:
+        return self._audio_processor.state()
 
     def _audio_callback(self, indata, frames, time_info, status) -> None:
         if status:
             logger.debug("Audio input status: %s", status)
         try:
             mono = np.asarray(indata[:, 0], dtype=np.float32).copy()
+            mono = self._audio_processor.process(mono)
             self._audio_q.put_nowait(mono)
         except queue.Full:
             pass
@@ -213,6 +221,9 @@ class ConversationRecorder:
             noise_floor = min(0.06, max(0.004, noise_floor * 0.98 + level * 0.02))
             threshold = max(0.014, noise_floor * 2.8)
             voiced = level >= threshold
+            vad_voiced = self._audio_processor.is_voiced(chunk)
+            if vad_voiced is not None:
+                voiced = bool(vad_voiced)
             doa_deg, has_speech = self._read_doa()
             if has_speech:
                 voiced = True

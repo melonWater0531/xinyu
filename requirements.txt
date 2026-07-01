@@ -26,4 +26,8 @@ mediapipe
 # Meeting transcription
 faster-whisper
 
+# Optional meeting audio preprocessing
+# noisereduce
+# webrtcvad-wheels
+
 sounddevice

@@ -50,6 +50,7 @@ from core.device_config import (
 from core.event import Event
 from core.event_bus import EventBusClient
 from utils.logger import get_logger, setup_root_logger
+from vision.person_stabilizer import StablePersonCounter
 
 logger = get_logger(__name__)
 
@@ -301,6 +302,7 @@ _decision_trace = _deque(maxlen=40)
 ws_mgr = ConnectionManager()
 app_config: Optional[Config] = None
 _latest_pose_persons: list = []  # Latest PersonPose results from pose estimator
+_person_count_stabilizer = StablePersonCounter()
 _face_tracker = None             # InsightFace FaceTracker (or None if unavailable)
 _attention_engine = None         # AttentionEngine singleton
 _attn_result = {"has_face": False}  # Latest attention result
@@ -731,6 +733,16 @@ def _conversation_state() -> dict:
     return state
 
 
+def _audio_processing_state() -> dict:
+    if _conversation_recorder is not None:
+        return _conversation_recorder.audio_processing_state()
+    return {
+        "noise_suppression": {"available": False, "enabled": False},
+        "vad_mode": "rms",
+        "fallback_reason": "recorder_not_started",
+    }
+
+
 def _conversation_debug_state() -> dict:
     root = Path(__file__).resolve().parent / "records" / "conversations"
     state = _conversation_state()
@@ -915,7 +927,8 @@ def _build_pose_data() -> dict:
                            if p.face_center else None,
             "face_conf": round(float(p.face_conf), 2),
         })
-    return {"persons": persons, "count": len(persons)}
+    stable = _person_count_stabilizer.update(len(persons))
+    return {"persons": persons, "count": len(persons), **stable}
 
 
 def _build_vision_observation() -> dict:
@@ -1082,6 +1095,7 @@ def build_state_snapshot() -> dict:
             "sound_follow": sound_follow,
             "respeaker": _respeaker_state(),
             "conversation": _conversation_state(),
+            "audio_processing": _audio_processing_state(),
             "attention": _attn_result,
             "emotion": _emotion_result,
             "emotieff": _emotieff_result,
@@ -2215,14 +2229,20 @@ async def health():
 
 # 鈹€鈹€ Two pages only 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 # PAGE 1 = Control Dashboard (real telemetry/observability) -> /control , /v2
-# PAGE 2 = App / Demo (mock only)                           -> / , /home
-HOME_FILE = DASHBOARD_DIR / "home.html"
+# PAGE 2 = User product home                                -> / , /home
+HOME_FILE = DASHBOARD_DIR / "page2_preview" / "index.html"
 _NOCACHE = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache", "Expires": "0"}
 
 
 def _serve_html(path: Path):
-    return (HTMLResponse(path.read_text(encoding="utf-8"), headers=dict(_NOCACHE))
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if path == HOME_FILE:
+        text = text.replace('href="./styles.css"', 'href="/static/page2_preview/styles.css"')
+        text = text.replace('src="./app.js"', 'src="/static/page2_preview/app.js"')
+        text = text.replace('src="./assets/', 'src="/static/page2_preview/assets/')
+        text = text.replace('src="./../island_cutout.png"', 'src="/static/island_cutout.png"')
+    return (HTMLResponse(text, headers=dict(_NOCACHE))
             if path.is_file() else HTMLResponse("Not found", status_code=404))
 
 
@@ -2233,7 +2253,7 @@ async def serve_root():
 
 @app.get("/home")
 async def serve_home():
-    # PAGE 2: product demo / feature preview (mock data only).
+    # PAGE 2: user product home. Engineering controls stay under /control.
     return _serve_html(HOME_FILE)
 
 

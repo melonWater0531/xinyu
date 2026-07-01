@@ -224,6 +224,8 @@
             <div class="feature-state">
               <div class="state-cell"><span>声源方向</span><b id="doaValue">--</b></div>
               <div class="state-cell"><span>DOA 状态</span><b id="doaFreshValue">待接入</b></div>
+              <div class="state-cell"><span>稳定人数</span><b id="stablePersonValue">--</b></div>
+              <div class="state-cell"><span>音频处理</span><b id="audioProcessingValue">--</b></div>
             </div>
             <div class="feature-actions">
               <button class="btn primary" onclick="toggleMultiScene()" id="multiToggleBtn">开始多人跟踪</button>
@@ -874,7 +876,9 @@
       setText("focusScoreValue", attn.score != null ? Math.round(Number(attn.score)) : "--");
       renderCompanionSignals(s);
       const locked = !!((s.face_lock && s.face_lock.locked) || s.locked_track_id != null || String(s.tracking_phase || "").includes("lock"));
-      const hasPerson = !!(s.pose && s.pose.count > 0);
+      const pose = s.pose || {};
+      const stableCount = pose.stable_count != null ? Number(pose.stable_count) : Number(pose.count || 0);
+      const hasPerson = stableCount > 0 || Number(pose.count || 0) > 0;
       const doa = s.doa || {}, follow = s.sound_follow || {};
       const doaDeg = follow.doa_deg != null ? follow.doa_deg : doa.doa_deg;
       const doaReady = !!(doa.available || follow.active || doaDeg != null);
@@ -882,6 +886,11 @@
       $("trackingNote").textContent = isDefault ? "default 数据已加载，连接后会自动切换实时状态。" : (dry ? "当前是 dry-run，不会真的移动云台。" : (gimOk ? "云台控制链路已连接。" : "等待云台控制链路。"));
       setText("doaValue", doaDeg != null ? Math.round(Number(doaDeg)) + "°" : "--");
       setText("doaFreshValue", doaReady ? (follow.has_speech || doa.has_speech ? "有人声" : "已连接") : "待接入");
+      setText("stablePersonValue", pose.stable_count != null ? `${stableCount} 人` : (pose.count != null ? `${pose.count} 人` : "--"));
+      const ap = s.audio_processing || {};
+      const ns = ap.noise_suppression || {};
+      const audioLabel = ns.enabled ? "降噪+VAD" : (ap.vad_mode === "webrtcvad" ? "VAD" : "RMS 回退");
+      setText("audioProcessingValue", isDefault ? "--" : audioLabel);
       const conv = s.conversation || {};
       const turns = Number(conv.stats?.turns || (conv.timeline || []).length || 0);
       const msBtn = $("meetingSumBtn");

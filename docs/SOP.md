@@ -237,6 +237,9 @@ python3 -m pip install insightface --break-system-packages
 
 # 会议转写
 python3 -m pip install faster-whisper --break-system-packages
+
+# 可选：会议降噪与 WebRTC VAD；缺失时系统自动回退 RMS 分段
+python3 -m pip install noisereduce webrtcvad-wheels --break-system-packages
 ```
 
 ### 4.2 模型资源
@@ -268,7 +271,7 @@ PY
 |---|---|---|---|
 | 人脸追踪与分析 | 启动功能 | 终止功能 | 情绪、专注、EAR/PERCLOS 更新；云台命令来自 main runtime |
 | 声源 yaw 跟随 | 启动功能 | 终止功能 | DOA/VAD 更新，yaw-only 控制，pitch 不自动跟随 |
-| 会议录音 | 启动功能 | 终止并保存 | 录音状态、VAD 分段、可选 yaw 跟随和摘要接口可用 |
+| 会议录音 | 启动功能 | 终止并保存 | 录音状态、VAD 分段、音频处理状态、可选 yaw 跟随和摘要接口可用 |
 | 手势交互 | 启动功能 | 终止功能 | `gesture.available=true`，五类 intent 只更新 UI，不控制云台 |
 | 健康与 PWA | 启动功能 | 终止功能 | 护眼/久坐/喝水/疲劳/低专注/情绪关心状态可观察 |
 | LLM 与日记 | 启动功能 | 终止功能 | DeepSeek 有 key 时在线回复，无 key 时本地 fallback |
@@ -482,6 +485,13 @@ POST /api/multi_track/stop {"finalize":false}
 ```
 
 会议摘要需要有效 WAV 片段、`faster-whisper`，并建议配置 `DEEPSEEK_API_KEY`。
+`/api/state.audio_processing` 会报告会议录音的预处理状态：
+
+- `noise_suppression.enabled=true`：`noisereduce` 可用，录音块已尝试降噪。
+- `vad_mode=webrtcvad`：WebRTC VAD 可用，分段优先使用语音帧判断。
+- `vad_mode=rms`：依赖缺失或运行失败，系统回退原 RMS 分段。
+
+以上回退不应导致录音启动失败；只影响分段质量和噪声鲁棒性。
 
 ### 6.7 手动云台调试
 
@@ -756,6 +766,8 @@ python3 main_phase3.py \
 5. 修改昵称后刷新页面，确认昵称保留；发起聊天时 payload 包含 `user_name`。
 6. 在未录音、无语音片段、ASR 空结果三种情况下调用 `/api/meeting/summarize`，确认分别得到 `recording_not_started`、`no_segments`、`asr_empty`。
 7. 专注评分回归：输入已知 fused 分数时，只对 fused 做平滑，不再把同一分数当作 orientation/stability 二次加权。
+8. 多人场景中 `pose.stable_count` 应优先显示；输入短暂 `1,1,2,1,1` 抖动时不应跳变，持续多人后再更新。
+9. 会议录音启动后，`audio_processing.vad_mode` 应为 `webrtcvad` 或 `rms`，依赖缺失时显示清晰回退原因。
 
 ### 9.6 真实硬件动作
 
@@ -843,6 +855,11 @@ curl http://localhost:8001/api/conversation/debug
 `max_input_channels > 0`。如果环境变量不存在、索引越界或指向输出设备，重新执行
 7.2 节的枚举流程。摘要为空时确认存在有效 WAV、语音片段足够长，并已安装
 `faster-whisper`。
+
+如果 `/api/state.audio_processing.fallback_reason` 显示 `noisereduce_unavailable`
+或 `webrtcvad_unavailable`，表示可选降噪/VAD 依赖未安装；录音仍会使用 RMS
+分段继续工作。需要启用增强链路时安装 `noisereduce` 和 `webrtcvad-wheels` 后
+重启 FastAPI。
 
 ### 10.7 安全原则
 
