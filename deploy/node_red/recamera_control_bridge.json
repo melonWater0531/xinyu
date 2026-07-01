@@ -489,5 +489,96 @@
         "rc-exec-stop"
       ]
     ]
+  },
+  {
+    "id": "rc-http-calibrate",
+    "type": "http in",
+    "z": "rc-tab",
+    "name": "POST calibrate",
+    "url": "/recamera-control/v1/calibrate",
+    "method": "post",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 140,
+    "y": 770,
+    "wires": [
+      [
+        "rc-validate-calibrate"
+      ]
+    ]
+  },
+  {
+    "id": "rc-validate-calibrate",
+    "type": "function",
+    "z": "rc-tab",
+    "name": "Validate calibrate and revoke",
+    "func": "const p=msg.payload||{};\nconst sid=String(p.session_id||'');\nconst active=String(flow.get('rcSession')||'');\nconst deadline=Number(flow.get('rcLeaseDeadline')||0);\nif(!sid||sid!==active||Date.now()>=deadline){\n  msg.statusCode=409;\n  msg.payload={ok:false,accepted:false,error:'control_lease_invalid'};\n  return [null,msg];\n}\nflow.set('rcSession','');\nflow.set('rcLeaseDeadline',0);\nflow.set('rcLastSequence',0);\nreturn [msg,null];",
+    "outputs": 2,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 770,
+    "wires": [
+      [
+        "rc-exec-calibrate"
+      ],
+      [
+        "rc-http-calibrate-response"
+      ]
+    ]
+  },
+  {
+    "id": "rc-exec-calibrate",
+    "type": "exec",
+    "z": "rc-tab",
+    "command": "gimbal cali",
+    "addpay": false,
+    "append": "",
+    "useSpawn": "false",
+    "timer": "30",
+    "winHide": false,
+    "oldrc": false,
+    "name": "Calibrate gimbal",
+    "x": 640,
+    "y": 750,
+    "wires": [
+      [],
+      [],
+      [
+        "rc-calibrate-result"
+      ]
+    ]
+  },
+  {
+    "id": "rc-calibrate-result",
+    "type": "function",
+    "z": "rc-tab",
+    "name": "Calibrate result",
+    "func": "const code=Number((msg.payload&&msg.payload.code)??msg.payload??0);\nmsg.statusCode=code===0?200:500;\nmsg.payload=code===0?{ok:true,accepted:true,calibrated:true}:{ok:false,accepted:false,error:'calibrate_failed',code};\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 860,
+    "y": 750,
+    "wires": [
+      [
+        "rc-http-calibrate-response"
+      ]
+    ]
+  },
+  {
+    "id": "rc-http-calibrate-response",
+    "type": "http response",
+    "z": "rc-tab",
+    "name": "Calibrate response",
+    "statusCode": "",
+    "headers": {},
+    "x": 1090,
+    "y": 770,
+    "wires": []
   }
 ]

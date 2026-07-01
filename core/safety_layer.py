@@ -44,6 +44,12 @@ class SafetyLayer:
             self._last_block_reason = ""
             self._passed_count += 1
             return command
+        if command.action == "calibrate":
+            self._last_cmd_time = time.monotonic()
+            self._last_output = command
+            self._last_block_reason = ""
+            self._passed_count += 1
+            return command
 
         now = time.monotonic()
         if now - self._last_cmd_time < self._rate_limit_s:

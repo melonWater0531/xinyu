@@ -12,7 +12,23 @@
 | 人脸追踪与分析 | reCamera SSCMA 摄像头 | reCamera yaw/pitch CAN 电机 | 人脸对准后并行展示情绪、专注、EAR/PERCLOS |
 | 声源 yaw 跟随 | ReSpeaker XVF3800 四麦阵列；reCamera 仅展示视频 | reCamera yaw 电机；ReSpeaker 12 LED 灯环 | USB DOA Event 驱动 yaw，pitch 始终为空；实体 LED 使用硬件 DOA 灯效 |
 | 会议录音 | ReSpeaker USB Audio + USB DOA | ReSpeaker LED；可选 reCamera yaw | 默认只录音；显式开启会议跟随后才驱动 yaw |
+| 手势交互 | reCamera SSCMA 摄像头 + MediaPipe Gesture Recognizer | Dashboard intent/toast/local feedback | Open Palm、Closed Fist、Thumb Up、Thumb Down、Victory 只映射陪伴 intent，不进入云台控制 |
+| 健康/PWA | Dashboard localStorage + 实时 emotion/attention/eye/gaze state | 本地 PWA Notification | 护眼、久坐、喝水、疲劳、低专注、情绪关心通知在前端本地治理 |
+| LLM/日记 | DeepSeek 可选；本地 fallback | Dashboard 日记、反思、会议摘要 | 无 API key 时返回本地温和建议，不丢失日记 |
 | 手动云台 | Dashboard UI Event | reCamera yaw/pitch CAN 电机 | 有效 manual session 才接受 D-Pad/home |
+
+`/control` 是所有已部署功能的集合面板。每个功能卡都有独立启动和终止
+按钮；页面中的 Sleep、Standby、Stop、Calibrate 均通过 FastAPI 发出 UI
+Event，再由 `main_phase3.py`、Orchestrator、SafetyLayer 和
+`RecameraClient` 进入 Node-RED bridge。FastAPI 不直接打开硬件控制客户端。
+
+官方 reCamera Gimbal 面板语义在本系统中固定为：
+
+| 操作 | 控制语义 |
+|---|---|
+| Standby | `yaw=180, pitch=90, speed=360` |
+| Sleep | `yaw=180, pitch=175, speed=360` |
+| Calibrate | Node-RED bridge `/recamera-control/v1/calibrate` 执行 `gimbal cali`，并撤销当前 device lease |
 
 ReSpeaker USB control 以 10 Hz 读取 DOA/VAD，并与 LED 写入共用 USB 锁；
 USB Audio Class 由 `sounddevice` 独立录音。TCP `9999` 仅是 DOA 备用输入，

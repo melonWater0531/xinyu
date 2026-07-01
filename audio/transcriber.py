@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Optional
 
 _model = None
 _model_lock = asyncio.Lock()
+DEFAULT_MODEL = os.getenv("RECAMERA_WHISPER_MODEL", "Systran/faster-whisper-tiny")
 
 
 async def get_model():
@@ -15,7 +17,7 @@ async def get_model():
         if _model is None:
             try:
                 from faster_whisper import WhisperModel
-                _model = WhisperModel("tiny", device="cpu", compute_type="int8")
+                _model = WhisperModel(DEFAULT_MODEL, device="cpu", compute_type="int8")
             except ImportError:
                 pass  # faster-whisper not installed — transcribe_wav will return ""
     return _model

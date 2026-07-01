@@ -159,6 +159,16 @@ button,input,select{font:inherit}
     <button class="nav-btn" data-page="meeting_recording" onclick="activatePage('meeting_recording')">
       <span>会议录音</span><span class="nav-chip">Respeaker</span>
     </button>
+    <div class="nav-group">陪伴与健康</div>
+    <button class="nav-btn" data-page="gesture_interaction" onclick="activatePage('gesture_interaction')">
+      <span>手势交互</span><span class="nav-chip">Gesture</span>
+    </button>
+    <button class="nav-btn" data-page="health_pwa" onclick="activatePage('health_pwa')">
+      <span>健康与 PWA</span><span class="nav-chip">PWA</span>
+    </button>
+    <button class="nav-btn" data-page="llm_diary" onclick="activatePage('llm_diary')">
+      <span>LLM 与日记</span><span class="nav-chip">LLM</span>
+    </button>
     <div class="nav-group">设备调试</div>
     <button class="nav-btn" data-page="manual_gimbal_debug" onclick="activatePage('manual_gimbal_debug')">
       <span>手动云台</span><span class="nav-chip">EventBus</span>
@@ -215,10 +225,10 @@ button,input,select{font:inherit}
             <div class="card-head"><h2>单人控制</h2><span class="pill" id="singleModeText">未激活</span></div>
             <div class="controls">
               <button class="btn primary" onclick="startSinglePage()">启动功能</button>
-              <button class="btn requires-feature" data-page-lock="single_face_analysis" onclick="stopSinglePage()">暂停追踪</button>
+              <button class="btn danger requires-feature" data-page-lock="single_face_analysis" onclick="stopSinglePage()">终止功能</button>
               <button class="btn requires-feature" data-page-lock="single_face_analysis" onclick="restartSinglePage()">重新找人脸</button>
-              <button class="btn requires-feature" data-page-lock="single_face_analysis" onclick="gHome()">Home</button>
             </div>
+            <div class="controls device-actions"><button class="btn" onclick="gStandby()">Standby</button><button class="btn" onclick="gSleep()">Sleep</button><button class="btn" onclick="gStop()">Stop</button><button class="btn danger" onclick="gCalibrate()">Calibrate</button></div>
             <div class="notice" style="margin-top:12px">切到该页不会自动控制设备。点击“启动功能”后会先停止多人控制，再启用单人追踪和对准分析。</div>
           </section>
           <section class="card">
@@ -286,9 +296,9 @@ button,input,select{font:inherit}
             <div class="controls">
               <button class="btn primary" onclick="startMultiYawPage()">启动功能</button>
               <button class="btn requires-feature" data-page-lock="multi_sound_yaw" onclick="pauseMultiYawPage()">暂停 yaw 跟随</button>
-              <button class="btn danger requires-feature" data-page-lock="multi_sound_yaw" onclick="stopMultiYawPage()">停止多人控制</button>
-              <button class="btn requires-feature" data-page-lock="multi_sound_yaw" onclick="gHome()">Home</button>
+              <button class="btn danger requires-feature" data-page-lock="multi_sound_yaw" onclick="stopMultiYawPage()">终止功能</button>
             </div>
+            <div class="controls device-actions"><button class="btn" onclick="gStandby()">Standby</button><button class="btn" onclick="gSleep()">Sleep</button><button class="btn" onclick="gStop()">Stop</button><button class="btn danger" onclick="gCalibrate()">Calibrate</button></div>
             <div class="notice" style="margin-top:12px">切到该页只显示信息源。点击“启动功能”后才启用多人模式，云台只按 DOA 调整 yaw，pitch 不做自动跟随。</div>
           </section>
           <section class="card">
@@ -328,10 +338,11 @@ button,input,select{font:inherit}
           <div class="card-head"><h2>会议录音控制</h2><span class="pill" id="recLabel">--</span></div>
           <div class="controls">
             <button class="btn primary" id="btnRecStart" onclick="startMeetingPage()">启动功能</button>
-            <button class="btn danger requires-feature" data-page-lock="meeting_recording" id="btnRecStop" onclick="recCtrl('stop')">停止并保存</button>
+            <button class="btn danger requires-feature" data-page-lock="meeting_recording" id="btnRecStop" onclick="recCtrl('stop')">终止并保存</button>
             <button class="btn requires-feature" data-page-lock="meeting_recording" onclick="toggleMeetingYawFollow()">启用声源 yaw 跟随</button>
             <button class="btn requires-feature" data-page-lock="meeting_recording" onclick="stopMeetingYawFollow()">关闭 yaw 跟随</button>
           </div>
+          <div class="controls device-actions"><button class="btn" onclick="gStandby()">Standby</button><button class="btn" onclick="gSleep()">Sleep</button><button class="btn" onclick="gStop()">Stop</button><button class="btn danger" onclick="gCalibrate()">Calibrate</button></div>
           <div class="notice" style="margin-top:12px">切到会议页不会自动录音。点击“启动功能”后调度 Respeaker/录音链路；声源 yaw 跟随是可选能力。</div>
           <div class="metric-grid" style="margin-top:12px">
             <div class="metric"><div class="label">录音时长</div><div class="value" id="recDuration">--</div></div>
@@ -363,14 +374,71 @@ button,input,select{font:inherit}
       </div>
     </section>
 
+    <section class="page" id="page-gesture_interaction">
+      <div class="grid layout-2">
+        <section class="card video-card">
+          <div class="video-head"><strong>手势识别信息源</strong><span class="pill" id="gestureReady">--</span></div>
+          <div class="video-wrap"><img id="gestureVideoMirror" alt="gesture video mirror"></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>手势交互</h2><span class="pill" id="gestureModeText">未激活</span></div>
+          <div class="controls"><button class="btn primary" onclick="startGesturePage()">启动功能</button><button class="btn danger requires-feature" data-page-lock="gesture_interaction" onclick="stopGesturePage()">终止功能</button></div>
+          <div class="controls device-actions"><button class="btn" onclick="gStandby()">Standby</button><button class="btn" onclick="gSleep()">Sleep</button><button class="btn" onclick="gStop()">Stop</button><button class="btn danger" onclick="gCalibrate()">Calibrate</button></div>
+          <div class="metric-grid" style="margin-top:12px">
+            <div class="metric"><div class="label">Gesture</div><div class="value small" id="gestureName">--</div></div>
+            <div class="metric"><div class="label">Intent</div><div class="value small" id="gestureIntent">--</div></div>
+            <div class="metric"><div class="label">Stable</div><div class="value" id="gestureStable">--</div></div>
+          </div>
+          <div class="log mono" id="gestureLog" style="margin-top:12px"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="page" id="page-health_pwa">
+      <div class="grid layout-2">
+        <section class="card">
+          <div class="card-head"><h2>健康与 PWA 通知</h2><span class="pill" id="healthModeText">未激活</span></div>
+          <div class="controls"><button class="btn primary" onclick="startHealthPage()">启动功能</button><button class="btn danger requires-feature" data-page-lock="health_pwa" onclick="stopHealthPage()">终止功能</button></div>
+          <div class="controls device-actions"><button class="btn" onclick="gStandby()">Standby</button><button class="btn" onclick="gSleep()">Sleep</button><button class="btn" onclick="gStop()">Stop</button><button class="btn danger" onclick="gCalibrate()">Calibrate</button></div>
+          <div class="notice" style="margin-top:12px">汇总护眼、久坐、喝水、疲劳、低专注和情绪关心通知的运行状态。</div>
+        </section>
+        <section class="card">
+          <h2>健康状态</h2>
+          <div class="kv"><span>专注</span><span id="healthAttention">--</span></div>
+          <div class="kv"><span>眼部</span><span id="healthEye">--</span></div>
+          <div class="kv"><span>情绪干预</span><span id="healthIntervention">--</span></div>
+          <div class="log mono" id="healthLog" style="margin-top:12px"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="page" id="page-llm_diary">
+      <div class="grid layout-2">
+        <section class="card">
+          <div class="card-head"><h2>LLM 与情绪日记</h2><span class="pill" id="llmModeText">未激活</span></div>
+          <div class="controls"><button class="btn primary" onclick="startLlmPage()">启动功能</button><button class="btn danger requires-feature" data-page-lock="llm_diary" onclick="stopLlmPage()">终止功能</button></div>
+          <div class="controls device-actions"><button class="btn" onclick="gStandby()">Standby</button><button class="btn" onclick="gSleep()">Sleep</button><button class="btn" onclick="gStop()">Stop</button><button class="btn danger" onclick="gCalibrate()">Calibrate</button></div>
+          <div class="notice" style="margin-top:12px">汇总 DeepSeek 对话、/api/reflect、会议摘要和本地 fallback 状态。</div>
+        </section>
+        <section class="card">
+          <h2>LLM 状态</h2>
+          <div class="kv"><span>DeepSeek</span><span id="llmConfigured">--</span></div>
+          <div class="kv"><span>当前情绪</span><span id="llmEmotion">--</span></div>
+          <div class="kv"><span>会议摘要</span><span id="llmMeeting">--</span></div>
+          <div class="log mono" id="llmLog" style="margin-top:12px"></div>
+        </section>
+      </div>
+    </section>
+
     <section class="page" id="page-manual_gimbal_debug">
       <div class="grid layout-2">
         <section class="card">
           <div class="card-head"><h2>手动云台调试</h2><span class="pill">仅当前页启用</span></div>
           <div class="controls" style="margin-bottom:12px">
             <button class="btn primary" onclick="startManualPage()">启动功能</button>
-            <button class="btn danger requires-feature" data-page-lock="manual_gimbal_debug" onclick="stopManualPage()">关闭手动</button>
+            <button class="btn danger requires-feature" data-page-lock="manual_gimbal_debug" onclick="stopManualPage()">终止功能</button>
           </div>
+          <div class="controls device-actions"><button class="btn" onclick="gStandby()">Standby</button><button class="btn" onclick="gSleep()">Sleep</button><button class="btn" onclick="gStop()">Stop</button><button class="btn danger" onclick="gCalibrate()">Calibrate</button></div>
           <div class="dpad">
             <div></div><button class="btn requires-feature" data-page-lock="manual_gimbal_debug" onclick="gMove(0,3)">上</button><div></div>
             <button class="btn requires-feature" data-page-lock="manual_gimbal_debug" onclick="gMove(-5,0)">左</button><button class="btn requires-feature" data-page-lock="manual_gimbal_debug" onclick="gHome()">中</button><button class="btn requires-feature" data-page-lock="manual_gimbal_debug" onclick="gMove(5,0)">右</button>
@@ -416,6 +484,9 @@ const featureActive={
   single_face_analysis:false,
   multi_sound_yaw:false,
   meeting_recording:false,
+  gesture_interaction:false,
+  health_pwa:false,
+  llm_diary:false,
   manual_gimbal_debug:false
 };
 let smoothAttn=0,smoothConf=0;
@@ -424,6 +495,9 @@ const pageMeta={
   single_face_analysis:{title:'人脸追踪与分析',sub:'切到页面后只展示信息，点击“启动功能”才会找人脸、云台对准，并开始情绪、人脸、专注与眼部指标分析。'},
   multi_sound_yaw:{title:'声源 yaw 跟随',sub:'切到页面后只展示声源与摄像头信息，点击“启动功能”才启用多人声源模式，云台只转 yaw 轴。'},
   meeting_recording:{title:'会议录音',sub:'切到页面后不自动录音，点击“启动功能”才调度 Respeaker 录音链路。'},
+  gesture_interaction:{title:'手势交互',sub:'查看 MediaPipe 手势识别、稳定帧与低风险陪伴 intent；手势不驱动云台。'},
+  health_pwa:{title:'健康与 PWA 通知',sub:'汇总护眼、久坐、喝水、疲劳、低专注和情绪关心通知状态。'},
+  llm_diary:{title:'LLM 与情绪日记',sub:'汇总 DeepSeek 对话、日记反思、会议摘要和本地 fallback 状态。'},
   manual_gimbal_debug:{title:'手动云台调试',sub:'切到页面后不接管云台，点击“启动功能”才允许发送手动 UI Event。'}
 };
 function nowLine(msg){return `${new Date().toLocaleTimeString()} ${msg}`}
@@ -432,7 +506,10 @@ function pageLog(id,msg){
   const line=nowLine(msg); if(line===lastLog)return; lastLog=line;
   el.innerHTML=line+'<br>'+el.innerHTML.slice(0,4000);
 }
-function log(msg){pageLog(activePage==='meeting_recording'?'meetingLog':activePage==='multi_sound_yaw'?'multiLog':activePage==='manual_gimbal_debug'?'manualLog':'singleLog',msg)}
+function log(msg){
+  const map={meeting_recording:'meetingLog',multi_sound_yaw:'multiLog',manual_gimbal_debug:'manualLog',gesture_interaction:'gestureLog',health_pwa:'healthLog',llm_diary:'llmLog'};
+  pageLog(map[activePage]||'singleLog',msg);
+}
 function ema(cur,target,a){if(!Number.isFinite(cur)||cur===0)return target;return cur+(target-cur)*a}
 function normalizeState(p){if(!p)return null;if(p.type==='state_snapshot'&&p.data)return p.data;if(p.data&&p.data.gimbal)return p.data;if(p.gimbal||p.video||p.control)return p;return null}
 function setConn(kind,text){$('wsDot').className='dot '+(kind==='on'?'on':kind==='warn'?'warn':'');$('wsText').textContent=text}
@@ -564,6 +641,22 @@ async function recCtrl(action){
   }
   log(`会议录音 ${action==='start'?'开始':'停止'} ${r?(r.success||r.recording_success?'OK':'WARN'):'ERR'}`);
 }
+function startLocalFeature(pageId,label){
+  featureActive[pageId]=true;
+  updateFeatureLocks();
+  log(`${label}已启动`);
+}
+function stopLocalFeature(pageId,label){
+  featureActive[pageId]=false;
+  updateFeatureLocks();
+  log(`${label}已终止`);
+}
+function startGesturePage(){startLocalFeature('gesture_interaction','手势交互')}
+function stopGesturePage(){stopLocalFeature('gesture_interaction','手势交互')}
+function startHealthPage(){startLocalFeature('health_pwa','健康与 PWA 通知')}
+function stopHealthPage(){stopLocalFeature('health_pwa','健康与 PWA 通知')}
+function startLlmPage(){startLocalFeature('llm_diary','LLM 与日记')}
+function stopLlmPage(){stopLocalFeature('llm_diary','LLM 与日记')}
 async function startManualPage(){
   const r=await apiPost('/api/control/manual/start');
   if(adoptSession(r,'manual_gimbal_debug'))log('手动云台会话已接管');
@@ -588,6 +681,24 @@ async function gHome(){
   const msg=r?`home ${r.accepted?'accepted':'rejected'} ${r.reason||''}`:'home failed';
   const el=$('gimbalCmdResult'); if(el)el.textContent=msg; log(msg);
 }
+async function ensureDeviceSession(){
+  if(currentSessionId)return true;
+  const r=await apiPost('/api/control/manual/start');
+  if(adoptSession(r,activePage)){log('已为设备动作申请临时控制租约');return true}
+  return false;
+}
+async function gDeviceAction(path,label,clearAfter=false){
+  if(!(await ensureDeviceSession()))return;
+  const r=await apiPost(path,{session_id:currentSessionId});
+  const msg=r?`${label} ${r.accepted?'accepted':'rejected'} ${r.reason||''}`:`${label} failed`;
+  const el=$('gimbalCmdResult'); if(el)el.textContent=msg;
+  log(msg);
+  if(clearAfter)clearSession();
+}
+async function gStandby(){await gDeviceAction('/api/gimbal/standby','standby')}
+async function gSleep(){await gDeviceAction('/api/gimbal/sleep','sleep')}
+async function gStop(){await gDeviceAction('/api/gimbal/stop','stop',true)}
+async function gCalibrate(){await gDeviceAction('/api/gimbal/calibrate','calibrate',true)}
 async function heartbeat(){
   if(!currentSessionId)return;
   const r=await apiPost('/api/control/heartbeat',{session_id:currentSessionId});
@@ -603,7 +714,7 @@ function toggleLandmarks(){
 
 function renderState(s){
   if(!s)return;
-  const g=s.gimbal||{},pose=s.pose||{},att=s.attention||{},emo=s.emotieff||s.emotion||{},doa=s.doa||{},rs=s.respeaker||{},ctrl=s.control||{},health=s.health||{},conv=s.conversation||{},eye=s.eye_metrics||{},mp=s.mp_face||{};
+  const g=s.gimbal||{},pose=s.pose||{},att=s.attention||{},emo=s.emotieff||s.emotion||{},doa=s.doa||{},rs=s.respeaker||{},ctrl=s.control||{},health=s.health||{},conv=s.conversation||{},eye=s.eye_metrics||{},mp=s.mp_face||{},gesture=s.gesture||{};
   applyDeviceState(s.device);
   setConn(ws&&ws.readyState===WebSocket.OPEN?'on':'warn',ws&&ws.readyState===WebSocket.OPEN?'WebSocket 已连接':'HTTP polling');
   $('authorityText').textContent=ctrl.authority||'idle';
@@ -620,6 +731,7 @@ function renderState(s){
     Object.keys(featureActive).forEach(k=>featureActive[k]=false);
     if(runtimeFeature==='meeting_sound_yaw'||runtimeFeature==='meeting_recording')featureActive.meeting_recording=true;
     else if(runtimeFeature in featureActive)featureActive[runtimeFeature]=true;
+    if(activePage in featureActive)featureActive[activePage]=true;
     meetingYaw=runtimeFeature==='meeting_sound_yaw';
   }
   $('lastEvent').textContent=ctrl.last_event?`${ctrl.last_event.type}/${ctrl.last_event.name} @ ${ctrl.last_event.source}`:'--';
@@ -661,6 +773,19 @@ function renderState(s){
   $('recLabel').textContent=active?`录音中 ${fmtTime(elapsed)}`:'已停止';$('btnRecStart').disabled=active;$('btnRecStop').disabled=!active;
   $('recDuration').textContent=active?fmtTime(elapsed):'--';$('convMode').textContent=conv.mode||'--';$('convSave').textContent=conv.error?'异常':'就绪';
   $('meetingDebug').innerHTML=`recording=${active}<br>requested=${!!conv.requested}<br>error=${conv.error||''}<br>mode=${conv.mode||''}`;
+  $('gestureModeText').textContent=featureActive.gesture_interaction?'运行中':'未激活';
+  $('gestureReady').textContent=gesture.available?'模型可用':(gesture.reason||'未加载');
+  $('gestureName').textContent=gesture.name||'--';
+  $('gestureIntent').textContent=gesture.intent_ready?gesture.intent:(gesture.intent||'--');
+  $('gestureStable').textContent=gesture.stable_frames!=null?gesture.stable_frames:'--';
+  $('healthModeText').textContent=featureActive.health_pwa?'运行中':'未激活';
+  $('healthAttention').textContent=att.score!=null?`${Math.round(att.score)}/100 ${att.state||''}`:'--';
+  $('healthEye').textContent=eye.perclos!=null?`PERCLOS ${Number(eye.perclos).toFixed(3)}`:'--';
+  $('healthIntervention').textContent=health.proactive_intervention?'待关心':'正常';
+  $('llmModeText').textContent=featureActive.llm_diary?'运行中':'未激活';
+  $('llmConfigured').textContent=s.chat?.configured?'DeepSeek 已配置':'fallback 可用';
+  $('llmEmotion').textContent=$('emoVal').textContent;
+  $('llmMeeting').textContent=conv.stats?`${conv.stats.turns||0} turns`:'--';
   updateFeatureLocks();
   drawOverlay(s);
 }
@@ -721,10 +846,11 @@ async function poll(){
   if(ws&&ws.readyState===WebSocket.OPEN&&Date.now()-lastWsAt<1500)return;
   try{const r=await fetch('/api/state',{cache:'no-store'});const s=normalizeState(await r.json());if(s){state=s;renderState(state)}}catch(e){setConn('warn','HTTP state failed')}
 }
-const videoEl=$('videoStream'),multiMirror=$('multiVideoMirror');
+const videoEl=$('videoStream'),multiMirror=$('multiVideoMirror'),gestureMirror=$('gestureVideoMirror');
 videoEl.src=`${location.origin}/video_feed?t=${Date.now()}`;
 multiMirror.src=videoEl.src;
-videoEl.onerror=()=>{log('video_feed failed; retrying');setTimeout(()=>{const src=`${location.origin}/video_feed?t=${Date.now()}`;videoEl.src=src;multiMirror.src=src},1200)};
+if(gestureMirror)gestureMirror.src=videoEl.src;
+videoEl.onerror=()=>{log('video_feed failed; retrying');setTimeout(()=>{const src=`${location.origin}/video_feed?t=${Date.now()}`;videoEl.src=src;multiMirror.src=src;if(gestureMirror)gestureMirror.src=src},1200)};
 connectWS();loadDeviceConfig();poll();setInterval(poll,350);setInterval(heartbeat,500);addEventListener('resize',()=>state&&drawOverlay(state));
 addEventListener('beforeunload',()=>{deactivatePage(activePage,true)});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)deactivatePage(activePage,true);else{featureActive[activePage]=false;updateFeatureLocks();log('页面恢复可见，等待点击“启动功能”')}});

@@ -104,6 +104,7 @@ class ControlCommand:
 
     ts: float
     source: str
+    action: str = "move"
     mode: str = "absolute"
     yaw: Optional[float] = None
     pitch: Optional[float] = None
@@ -120,6 +121,7 @@ class ControlCommand:
         cls,
         source: str,
         *,
+        action: str = "move",
         mode: str = "absolute",
         yaw: Optional[float] = None,
         pitch: Optional[float] = None,
@@ -134,6 +136,7 @@ class ControlCommand:
         return cls(
             ts=time.monotonic(),
             source=str(source),
+            action=str(action),
             mode=str(mode),
             yaw=None if yaw is None else float(yaw),
             pitch=None if pitch is None else float(pitch),
@@ -147,4 +150,10 @@ class ControlCommand:
         )
 
     def has_motion(self) -> bool:
-        return self.stop or self.yaw is not None or self.pitch is not None or self.speed is not None
+        return (
+            self.stop
+            or self.action == "calibrate"
+            or self.yaw is not None
+            or self.pitch is not None
+            or self.speed is not None
+        )

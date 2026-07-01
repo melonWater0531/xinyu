@@ -23,7 +23,7 @@ mediapipe
 # Install: pip install insightface --break-system-packages
 # insightface
 
-# Meeting transcription (optional)
-# faster-whisper
+# Meeting transcription
+faster-whisper
 
 sounddevice

@@ -78,9 +78,14 @@ class HardwareAdapterTests(unittest.TestCase):
             self.assertEqual(status["source"], "motor_readback")
             self.assertAlmostEqual(status["yaw"], 181.2)
             self.assertTrue(client.emergency_stop())
+            self.assertTrue(client.start_session("hardware-test-2"))
+            calibrate = ControlCommand.make("test", action="calibrate",
+                                            session_id="hardware-test-2", sequence=1)
+            self.assertTrue(client.apply_command(calibrate))
             self.assertTrue(client.stop_session("hardware-test"))
             self.assertTrue(any(path.endswith("/command") for path, _ in BridgeHandler.commands))
             self.assertTrue(any(path.endswith("/stop") for path, _ in BridgeHandler.commands))
+            self.assertTrue(any(path.endswith("/calibrate") for path, _ in BridgeHandler.commands))
         finally:
             server.shutdown()
             server.server_close()
@@ -94,6 +99,7 @@ class HardwareAdapterTests(unittest.TestCase):
             "/recamera-control/v1/session/heartbeat",
             "/recamera-control/v1/session/stop",
             "/recamera-control/v1/command",
+            "/recamera-control/v1/calibrate",
             "/recamera-control/v1/stop",
             "/recamera-control/v1/status",
         }.issubset(urls))

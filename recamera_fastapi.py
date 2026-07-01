@@ -1223,6 +1223,7 @@ def _cmd_brief(cmd) -> Optional[dict]:
     if cmd is None:
         return None
     return {
+        "action": getattr(cmd, "action", "move"),
         "reason": cmd.reason,
         "yaw": round(float(cmd.yaw), 1) if cmd.yaw is not None else None,
         "pitch": round(float(cmd.pitch), 1) if cmd.pitch is not None else None,
@@ -1842,6 +1843,30 @@ async def api_control_config(payload: dict = Body(default={})):
 async def api_gimbal_home(payload: dict = Body(default={})):
     """Emit a UI Event. main_phase3 decides whether this becomes a command."""
     return await _emit_ui_event("gimbal_home", {"session_id": str(payload.get("session_id", ""))})
+
+
+@app.post("/api/gimbal/standby")
+async def api_gimbal_standby(payload: dict = Body(default={})):
+    """Official Standby pose: yaw=180, pitch=90, speed=360 via control runtime."""
+    return await _emit_ui_event("gimbal_standby", {"session_id": str(payload.get("session_id", ""))})
+
+
+@app.post("/api/gimbal/sleep")
+async def api_gimbal_sleep(payload: dict = Body(default={})):
+    """Official Sleep pose: yaw=180, pitch=175, speed=360 via control runtime."""
+    return await _emit_ui_event("gimbal_sleep", {"session_id": str(payload.get("session_id", ""))})
+
+
+@app.post("/api/gimbal/stop")
+async def api_gimbal_stop(payload: dict = Body(default={})):
+    """Authorized stop event; main_phase3 chooses emergency stop vs session stop."""
+    return await _emit_ui_event("gimbal_stop", {"session_id": str(payload.get("session_id", ""))})
+
+
+@app.post("/api/gimbal/calibrate")
+async def api_gimbal_calibrate(payload: dict = Body(default={})):
+    """Official Calibrate action, mapped to Node-RED `gimbal cali` by the bridge."""
+    return await _emit_ui_event("gimbal_calibrate", {"session_id": str(payload.get("session_id", ""))})
 
 
 @app.post("/api/gimbal/move")

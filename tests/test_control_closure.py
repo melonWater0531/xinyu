@@ -54,6 +54,20 @@ class ControlClosureTests(unittest.TestCase):
         command = self.orch.handle_event(ui("dpad_move", session_id="s1", pan=2, tilt=1))
         self.assertEqual(command.mode, "delta")
 
+    def test_official_standby_sleep_and_calibrate_require_session(self) -> None:
+        self.start("manual_gimbal_debug")
+        self.assertIsNone(self.orch.handle_event(ui("gimbal_sleep", session_id="old")))
+        standby = self.orch.handle_event(ui("gimbal_standby", session_id="s1"))
+        self.assertEqual(standby.reason, "standby")
+        self.assertEqual((standby.yaw, standby.pitch, standby.speed), (180.0, 90.0, 360))
+        sleep = self.orch.handle_event(ui("gimbal_sleep", session_id="s1"))
+        self.assertEqual(sleep.reason, "sleep")
+        self.assertEqual((sleep.yaw, sleep.pitch, sleep.speed), (180.0, 175.0, 360))
+        calibrate = self.orch.handle_event(ui("gimbal_calibrate", session_id="s1"))
+        self.assertEqual(calibrate.action, "calibrate")
+        self.assertEqual(calibrate.reason, "calibrate")
+        self.assertEqual(self.orch.session.mode, ControlMode.INACTIVE)
+
     def test_new_session_takes_over_and_old_stop_is_ignored(self) -> None:
         self.start("single_face_analysis", "old")
         self.start("multi_sound_yaw", "new")

@@ -309,17 +309,25 @@ class Orchestrator:
     def _ui_allowed(self, event):
         if not self.session.matches(str(event.payload.get("session_id", ""))):
             return False
-        return self.session.mode is ControlMode.MANUAL_GIMBAL_DEBUG if event.name == "dpad_move" else event.name in {"gimbal_home","gimbal_sleep","gimbal_stop"}
+        if event.name == "dpad_move":
+            return self.session.mode is ControlMode.MANUAL_GIMBAL_DEBUG
+        return event.name in {"gimbal_home","gimbal_standby","gimbal_sleep","gimbal_stop","gimbal_calibrate"}
 
     def _ui(self, event):
         if event.name == "dpad_move":
             return self._command(mode="delta", yaw=self._clamp(float(event.payload.get("pan",0)),-2.5,2.5), pitch=self._clamp(float(event.payload.get("tilt",0)),-2.5,2.5), speed=self.default_speed, reason="ui_dpad_move")
-        if event.name == "gimbal_home":
-            return self._command(yaw=self.center_yaw,pitch=self.center_pitch,speed=self.default_speed,reason="standby")
+        if event.name in {"gimbal_home", "gimbal_standby"}:
+            return self._command(yaw=self.center_yaw,pitch=self.center_pitch,speed=360,reason="standby")
         if event.name == "gimbal_sleep":
-            return self._command(yaw=self.center_yaw,pitch=180,speed=self.default_speed,reason="sleep")
+            return self._command(yaw=self.center_yaw,pitch=175,speed=360,reason="sleep")
         if event.name == "gimbal_stop":
             return self._command(stop=True,reason="ui_stop")
+        if event.name == "gimbal_calibrate":
+            sid = self.session.session_id
+            self.session.clear()
+            self._reset()
+            self.tracking_phase, self.stop_state = "calibrating", "stopping"
+            return self._command(action="calibrate", speed=360, reason="calibrate", session_id=sid)
         return None
 
     def _doa_yaw(self, doa):

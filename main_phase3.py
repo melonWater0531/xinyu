@@ -232,7 +232,7 @@ class Phase3Runner:
         else:
             ok = bool(self._hw.apply_command(allowed))
             if ok:
-                self._stop_state = "running"
+                self._stop_state = "stopped" if allowed.action == "calibrate" else "running"
         self._last_apply_ok = ok
         return {"command": self._command_dict(allowed), "applied": ok, "reason": "ok" if ok else "hardware_error"}
 
@@ -247,7 +247,8 @@ class Phase3Runner:
             requested_session = str(event.payload.get("session_id", ""))
             session_bound = event.type == "ui" and event.name in {
                 "feature_stop", "feature_heartbeat", "feature_mode_update",
-                "control_config", "dpad_move", "gimbal_home", "gimbal_sleep", "gimbal_stop",
+                "control_config", "dpad_move", "gimbal_home", "gimbal_standby",
+                "gimbal_sleep", "gimbal_stop", "gimbal_calibrate",
             }
             valid_before = requested_session == before.get("session_id") and bool(before.get("active"))
             if event.name == "dpad_move":
@@ -318,7 +319,7 @@ class Phase3Runner:
     @staticmethod
     def _command_dict(command: ControlCommand) -> dict:
         return {
-            "mode": command.mode, "yaw": command.yaw, "pitch": command.pitch,
+            "action": command.action, "mode": command.mode, "yaw": command.yaw, "pitch": command.pitch,
             "speed": command.speed, "stop": command.stop, "reason": command.reason,
             "session_id": command.session_id, "sequence": command.sequence,
             "issued_at": command.issued_at, "expires_at": command.expires_at,

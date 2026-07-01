@@ -60,6 +60,8 @@ class RecameraClient:
             raise TypeError("RecameraClient.apply_command requires ControlCommand")
         if command.stop:
             return self.emergency_stop(command.session_id or self._session_id)
+        if command.action == "calibrate":
+            return self.calibrate_session(command.session_id or self._session_id)
         session_id = command.session_id or self._session_id
         if not session_id or session_id != self._session_id:
             logger.warning("gimbal command rejected locally: invalid session")
@@ -70,6 +72,7 @@ class RecameraClient:
         self._sequence = max(self._sequence + 1, int(command.sequence or 0))
         payload = {
             "mode": command.mode,
+            "action": command.action,
             "yaw": command.yaw,
             "pitch": command.pitch,
             "yaw_speed": command.speed or 180,
@@ -120,6 +123,21 @@ class RecameraClient:
             ok = self._post("session/stop", {"session_id": sid})
         self._session_id = ""
         self._lease_deadline = 0.0
+        return ok
+
+    def calibrate_session(self, session_id: str = "") -> bool:
+        sid = str(session_id or self._session_id)
+        if not sid or sid != self._session_id:
+            logger.warning("gimbal calibration rejected locally: invalid session")
+            return False
+        if self._dry_run:
+            self._session_id = ""
+            self._lease_deadline = 0.0
+            return True
+        ok = self._post("calibrate", {"session_id": sid, "sequence": self._sequence + 1})
+        if ok:
+            self._session_id = ""
+            self._lease_deadline = 0.0
         return ok
 
     def get_status(self) -> Optional[dict]:

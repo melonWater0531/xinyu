@@ -235,11 +235,55 @@ python3 -m pip install -r requirements.txt --break-system-packages
 # FaceTrackerV2 推荐依赖
 python3 -m pip install insightface --break-system-packages
 
-# 会议转写可选依赖
+# 会议转写
 python3 -m pip install faster-whisper --break-system-packages
 ```
 
-### 4.2 环境变量
+### 4.2 模型资源
+
+```bash
+cd ~/recamera_multimodal
+
+# 手势识别模型
+curl -L --fail \
+  -o models/gesture_recognizer.task \
+  https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task
+
+# ASR tiny 模型预热；模型会进入 Hugging Face 本地缓存
+python3 - <<'PY'
+from faster_whisper import WhisperModel
+WhisperModel("Systran/faster-whisper-tiny", device="cpu", compute_type="int8")
+print("faster-whisper tiny ready")
+PY
+```
+
+可通过 `RECAMERA_WHISPER_MODEL` 覆盖默认 ASR 模型；默认值为
+`Systran/faster-whisper-tiny`。
+
+### 4.3 统一控制面板验收
+
+打开 `http://localhost:8001/control`，逐个页面验证：
+
+| 页面 | 启动 | 终止 | 关键验收 |
+|---|---|---|---|
+| 人脸追踪与分析 | 启动功能 | 终止功能 | 情绪、专注、EAR/PERCLOS 更新；云台命令来自 main runtime |
+| 声源 yaw 跟随 | 启动功能 | 终止功能 | DOA/VAD 更新，yaw-only 控制，pitch 不自动跟随 |
+| 会议录音 | 启动功能 | 终止并保存 | 录音状态、VAD 分段、可选 yaw 跟随和摘要接口可用 |
+| 手势交互 | 启动功能 | 终止功能 | `gesture.available=true`，五类 intent 只更新 UI，不控制云台 |
+| 健康与 PWA | 启动功能 | 终止功能 | 护眼/久坐/喝水/疲劳/低专注/情绪关心状态可观察 |
+| LLM 与日记 | 启动功能 | 终止功能 | DeepSeek 有 key 时在线回复，无 key 时本地 fallback |
+| 手动云台 | 启动功能 | 终止功能 | D-Pad 只在当前 manual session 有效 |
+
+每个页面都应显示 `Standby`、`Sleep`、`Stop`、`Calibrate`：
+
+- `Standby`：官方待机位 `yaw=180, pitch=90, speed=360`。
+- `Sleep`：官方睡眠位 `yaw=180, pitch=175, speed=360`。
+- `Calibrate`：通过 Node-RED bridge 的 `/recamera-control/v1/calibrate`
+  执行 `gimbal cali`，并撤销当前设备租约。
+- 所有操作都必须在 `/api/control/runtime` 的 trace 中显示为 UI Event；
+  FastAPI 不能直接调用 `RecameraClient`。
+
+### 4.4 环境变量
 
 | 变量 | 默认值 | 用途 |
 |---|---|---|
