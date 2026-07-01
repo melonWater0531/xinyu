@@ -29,7 +29,7 @@ async def transcribe_wav(wav_path: str | Path) -> str:
     if model is None:
         return ""
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         segments, _ = await loop.run_in_executor(
             None, lambda: model.transcribe(str(wav_path), language="zh")
         )

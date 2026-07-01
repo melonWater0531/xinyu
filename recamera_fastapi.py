@@ -345,6 +345,33 @@ _last_audio_event_active = False
 _last_audio_event_session_id = ""
 
 
+def _current_running_loop():
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
+def _emotion_valence(emotion: str = "", probabilities: dict | None = None, fallback=None):
+    if fallback is not None:
+        try:
+            return round(float(fallback), 4)
+        except (TypeError, ValueError):
+            pass
+    probs = probabilities or {}
+    positive = float(probs.get("Happiness", 0.0)) + 0.35 * float(probs.get("Surprise", 0.0))
+    negative = sum(float(probs.get(k, 0.0)) for k in ("Sadness", "Anger", "Fear", "Disgust", "Contempt"))
+    if probs:
+        return round(max(-1.0, min(1.0, positive - negative)), 4)
+    if emotion == "Happiness":
+        return 0.8
+    if emotion == "Surprise":
+        return 0.2
+    if emotion in {"Sadness", "Anger", "Fear", "Disgust", "Contempt"}:
+        return -0.7
+    return 0.0
+
+
 def _device_config_state() -> dict:
     ip = app_config.device_ip if app_config else ""
     return {
@@ -373,7 +400,7 @@ def _restart_video_client(device_ip: str) -> tuple[bool, str]:
     new_client = SSCMAVideoClient(device_ip=ip)
     try:
         new_client._frame_event = asyncio.Event()
-        new_client._event_loop = asyncio.get_event_loop()
+        new_client._event_loop = _current_running_loop()
     except RuntimeError:
         pass
     new_client.start()
@@ -1019,6 +1046,22 @@ def _extract_detections() -> list:
 
 def build_state_snapshot() -> dict:
     detections = _extract_detections()
+    control = dict(_control_obs)
+    locked_track_id = _runtime_cache.get("locked_track_id")
+    tracking_phase = _runtime_cache.get("tracking_phase", "inactive")
+    active_feature = str(control.get("active_feature") or _runtime_cache.get("active_feature") or "inactive")
+    doa_status = _doa_status()
+    face_lock = {
+        "locked": locked_track_id is not None or str(tracking_phase).endswith("lock") or "centered" in str(tracking_phase),
+        "track_id": locked_track_id,
+        "phase": tracking_phase,
+    }
+    sound_follow = {
+        "active": active_feature in {"multi_sound_yaw", "meeting_sound_yaw"},
+        "doa_deg": doa_status.get("doa_deg"),
+        "has_speech": bool(doa_status.get("has_speech")),
+        "source": doa_status.get("source"),
+    }
 
     snapshot = {
         "type": "state_snapshot",
@@ -1035,7 +1078,8 @@ def build_state_snapshot() -> dict:
                 "detections": detections,
             },
             "pose": _build_pose_data(),
-            "doa": _doa_status(),
+            "doa": doa_status,
+            "sound_follow": sound_follow,
             "respeaker": _respeaker_state(),
             "conversation": _conversation_state(),
             "attention": _attn_result,
@@ -1049,7 +1093,8 @@ def build_state_snapshot() -> dict:
             "gesture": _gesture_result,
             "proactive_intervention": _proactive_intervention,
             # Observe-only control-plane mirror (FSM / decision / authority / safety).
-            "control": dict(_control_obs),
+            "control": control,
+            "face_lock": face_lock,
             "trace": list(_decision_trace)[-12:],
             "health": {
                 "video_fps": round(float(video_client.fps), 1) if video_client else 0.0,
@@ -1058,14 +1103,18 @@ def build_state_snapshot() -> dict:
                 "gimbal_latency_ms": None,
                 "gimbal_connected": bool(_gimbal_tlm.get("connected")),
             },
-            "locked_track_id": _runtime_cache.get("locked_track_id"),
-            "tracking_phase": _runtime_cache.get("tracking_phase", "inactive"),
+            "locked_track_id": locked_track_id,
+            "tracking_phase": tracking_phase,
             "stop_state": _runtime_cache.get("stop_state", "stopped"),
             "device_lease": dict(_runtime_cache.get("device_lease") or {}),
             "face_landmark_mode": _face_landmark_mode,
             "tracking_mode": _tracking_mode,
             "single_track": {"active": _single_track_active},
             "multi_track": {"active": _multi_track_active},
+            "chat": {
+                "configured": bool(DEEPSEEK_API_KEY),
+                "model": DEEPSEEK_MODEL,
+            },
             "timestamp": time.time(),
         },
     }
@@ -1084,7 +1133,7 @@ async def lifespan(app: FastAPI):
     if app_config.device_ip:
         video_client = SSCMAVideoClient(device_ip=app_config.device_ip)
         video_client._frame_event = asyncio.Event()
-        video_client._event_loop = asyncio.get_event_loop()
+        video_client._event_loop = _current_running_loop()
         video_client.start()
     else:
         video_client = None
@@ -1304,7 +1353,7 @@ async def state_push_loop():
             if video_client:
                 jpeg = video_client.jpeg_bytes
                 if jpeg:
-                    loop = asyncio.get_event_loop()
+                    loop = _current_running_loop()
                     tracked_faces = []
                     if _face_tracker and _face_tracker.available and run_face:
                         try:
@@ -1394,7 +1443,7 @@ async def state_push_loop():
                         _mp_face = MPFaceDetector()
                         _eye_tracker = EyeMetricTracker()
                     try:
-                        loop = asyncio.get_event_loop()
+                        loop = _current_running_loop()
                         mp_res = await loop.run_in_executor(None, _mp_face.detect,
                             cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR))
                         if mp_res.success:
@@ -1427,7 +1476,7 @@ async def state_push_loop():
                 if jpeg and _gesture_detector is not None:
                     try:
                         frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
-                        loop = asyncio.get_event_loop()
+                        loop = _current_running_loop()
                         _gesture_result = await loop.run_in_executor(None, _gesture_detector.detect, frame)
                     except Exception as e:
                         _gesture_result = {"available": False, "name": "", "confidence": 0.0, "handedness": "", "stable_frames": 0, "intent": "", "intent_ready": False, "reason": str(e)[:80]}
@@ -1462,6 +1511,7 @@ async def state_push_loop():
                                 "emotion": top_emo,
                                 "confidence": round(float(top_conf), 4),
                                 "probabilities": raw_probs,
+                                "valence": _emotion_valence(top_emo, raw_probs, raw_result.get("valence")),
                                 "source": "emotiefflib_raw_max",
                             }
                             _emotion_result = _emotieff_result
@@ -1488,7 +1538,7 @@ async def state_push_loop():
                 except Exception:
                     pass
             if _llm_engine and _llm_engine.loaded:
-                loop = asyncio.get_event_loop()
+                loop = _current_running_loop()
                 if emotion_changed:
                     try:
                         text = await loop.run_in_executor(None, _llm_engine.diary, emo_name, attn_sc, "")
@@ -1709,8 +1759,11 @@ async def api_single_track_start(payload: dict = Body(default={})):
 @app.post("/api/single_track/stop")
 async def api_single_track_stop(payload: dict = Body(default={})):
     global _single_track_active
+    session_id = str(payload.get("session_id", ""))
+    if not session_id:
+        return {"ok": False, "accepted": False, "active": _single_track_active, "reason": "session_id_required"}
     _single_track_active = False
-    result = await _stop_feature(str(payload.get("session_id", ""))) if payload.get("session_id") else {"ok": True}
+    result = await _stop_feature(session_id)
     return {**result, "active": False}
 
 
@@ -1731,17 +1784,20 @@ async def api_multi_track_start(payload: dict = Body(default={})):
 @app.post("/api/multi_track/stop")
 async def api_multi_track_stop(payload: dict = Body(default={})):
     global _multi_track_active
+    session_id = str(payload.get("session_id", ""))
+    if not session_id:
+        return {"ok": False, "accepted": False, "active": _multi_track_active, "reason": "session_id_required"}
     _multi_track_active = False
     if payload.get("finalize", True):
         _stop_conversation_recording(finalize=True)
-    result = await _stop_feature(str(payload.get("session_id", ""))) if payload.get("session_id") else {"ok": True}
+    result = await _stop_feature(session_id)
     return {**result, "active": False}
 
 
 async def _emit_ui_event(name: str, payload: dict) -> dict:
     global _control_obs
     event = Event.make("ui", name, "fastapi", payload=payload)
-    loop = asyncio.get_event_loop()
+    loop = _current_running_loop()
     result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
     _apply_runtime_result(result)
     eventbus_state = {
@@ -2093,12 +2149,12 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
 
     recorder = _conversation_recorder
     if recorder is None:
-        return {"ok": False, "error": "录音未启动，请先开启多人场景"}
+        return {"ok": False, "error_code": "recording_not_started", "error": "录音未启动，请先开启会议录音"}
 
     session_state = recorder.state()
     turns = session_state.get("timeline", [])
     if not turns:
-        return {"ok": False, "error": "本次无录音片段"}
+        return {"ok": False, "error_code": "no_segments", "error": "本次无录音片段，请先录到语音片段"}
 
     transcripts = []
     for turn in turns:
@@ -2111,7 +2167,7 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
                 transcripts.append(f"[{zone}] {text}")
 
     if not transcripts:
-        return {"ok": False, "error": "转写结果为空（faster-whisper 未安装或语音过短）"}
+        return {"ok": False, "error_code": "asr_empty", "error": "转写结果为空（faster-whisper 未安装或语音过短）"}
 
     full_transcript = "\n".join(transcripts)
     duration_min = round(session_state.get("stats", {}).get("duration", 0) / 60, 1)

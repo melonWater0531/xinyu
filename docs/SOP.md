@@ -1,8 +1,8 @@
-# reCamera Multimodal SOP 5.1
+# reCamera Multimodal SOP 5.2
 
 > 架构、部署、操作、验收与排障手册
-> 版本：5.1
-> 更新日期：2026-06-28
+> 版本：5.2
+> 更新日期：2026-07-01
 > 本文档以当前仓库代码为准；架构原理见 `docs/ARCHITECTURE.md`。
 
 ---
@@ -283,6 +283,11 @@ PY
 - 所有操作都必须在 `/api/control/runtime` 的 trace 中显示为 UI Event；
   FastAPI 不能直接调用 `RecameraClient`。
 
+启动类 API 成功后会返回 `session_id`。前端必须保存该 session，并在
+stop、heartbeat、页面切换和 `beforeunload` 中继续携带；缺少 `session_id`
+的 stop 请求应返回 `ok=false` 和 `reason=session_id_required`，不能伪装成
+硬件功能已停止。
+
 ### 4.4 环境变量
 
 | 变量 | 默认值 | 用途 |
@@ -403,7 +408,7 @@ ss -lntp | grep 8765
 | 路由 | 页面 | 数据 |
 |---|---|---|
 | `/control`、`/v2` | Control Dashboard | FastAPI 真实视频、感知、录音状态和 UI Event 请求 |
-| `/home` | 产品 Demo | Mock 展示 |
+| `/home` | 产品 Demo | `/ws` 实时状态，失败时降级 `/api/state` polling |
 | `/` | 重定向 | 跳转 `/home` |
 
 Dashboard 左侧导航：
@@ -424,9 +429,11 @@ Dashboard 左侧导航：
 
 - 打开或切换到页面后只显示信息，不会自动启动该页功能。
 - 必须点击当前页“启动功能”按钮。
-- 切换页面前，前端会对旧页面发送对应 stop/deactivate 请求。
-- 页面隐藏或关闭时会 best-effort 发送 stop。
-- 页面重新可见后保持未启动状态，必须再次点击“启动功能”。
+- 启动成功后，前端保存返回的 `session_id`；stop、heartbeat、页面切换和 `beforeunload` 都必须携带该 session。
+- `/home` 优先使用 `/ws` 接收真实状态；WebSocket 不可用或长时间无状态时降级到 `/api/state` 1s polling。
+- `/home` 运行态以后端 `control.active_feature`、`session_id` 和 `conversation` 为准；localStorage 只保存用户偏好，不伪造“运行中”。
+- 切换页面前，前端会对旧页面发送对应 stop/deactivate 请求；缺少 `session_id` 的 stop 应被后端拒绝。
+- 页面隐藏或关闭时会 best-effort 发送带 session 的 stop。
 - 网络断开、浏览器崩溃或进程被强制终止时，best-effort 请求不保证送达。
 
 ### 6.3 设备地址输入
@@ -662,6 +669,14 @@ curl -X POST http://localhost:8001/api/meeting/summarize \
   -H 'Content-Type: application/json' -d '{}'
 ```
 
+`/api/meeting/summarize` 失败时返回结构化错误码：
+
+| 错误码 | 场景 | 操作提示 |
+|---|---|---|
+| `recording_not_started` | 未启动会议录音 | 先启动会议录音 |
+| `no_segments` | 已启动但没有有效语音片段 | 先录到语音片段 |
+| `asr_empty` | ASR 返回空文本或依赖不可用 | 检查语音时长、`faster-whisper` 和模型缓存 |
+
 ### 8.5 EventBus 端口
 
 ```bash
@@ -726,11 +741,23 @@ python3 main_phase3.py \
 
 1. 进入任一页面，功能按钮保持锁定或空闲。
 2. 点击“启动功能”后才调用对应 start API。
-3. 切换页面，旧页面发送 stop。
+3. 启动响应中的 `session_id` 被保存；heartbeat、stop 和页面卸载都携带该 session。
 4. 新页面不自动启动。
-5. 隐藏并恢复页面后，需要再次点击“启动功能”。
+5. 切换页面或点击停止时，旧功能发送带 session 的 stop。
+6. 缺少 `session_id` 的 stop 请求返回 `ok=false`，不会提前清空硬件 lease。
+7. 隐藏并恢复页面后，UI 以后端 active state 为准，不用 localStorage 伪造运行态。
 
-### 9.5 真实硬件动作
+### 9.5 `/home` 回归验收
+
+1. 打开 `/home`，确认浏览器建立 `/ws`；断开 WebSocket 后页面应回退到 `/api/state` 1s polling。
+2. 启动单人分析、声源 yaw、会议录音后分别刷新页面；按钮、状态文案和会议摘要按钮应与后端 active state 一致。
+3. 调用 `/api/state`，确认包含 `face_lock`、`sound_follow`、`doa`、`control` 和 `emotieff.valence`。
+4. 保存日记，确认保存的 emotion 不是无条件 `Neutral`。
+5. 修改昵称后刷新页面，确认昵称保留；发起聊天时 payload 包含 `user_name`。
+6. 在未录音、无语音片段、ASR 空结果三种情况下调用 `/api/meeting/summarize`，确认分别得到 `recording_not_started`、`no_segments`、`asr_empty`。
+7. 专注评分回归：输入已知 fused 分数时，只对 fused 做平滑，不再把同一分数当作 orientation/stability 二次加权。
+
+### 9.6 真实硬件动作
 
 只在周围无障碍物时测试：
 

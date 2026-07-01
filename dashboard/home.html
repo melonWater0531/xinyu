@@ -424,6 +424,10 @@
     let emotionMonitoring = localStorage.getItem("xinyu_emotion_monitoring") === "true";
     let focusMonitoring = localStorage.getItem("xinyu_focus_monitoring") === "true";
     let multiSceneRunning = localStorage.getItem("xinyu_multi_scene_running") === "true";
+    let runtimeMode = "inactive";
+    let controlSessionId = localStorage.getItem("xinyu_control_session_id") || "";
+    let ws = null;
+    let wsLastAt = 0;
     let focusStartedAt = Number(localStorage.getItem("xinyu_focus_started_at") || 0);
     let lastProductState = null;
     let toastTimer = null;
@@ -483,11 +487,12 @@
       Disgust:["不适","不舒服的感觉值得被认真听见。"],
       Fear:["不安","我陪你一步一步来。"],
       Happiness:["快乐","这份轻快很好，替你悄悄开心。"],
+      Calm:["平静","像岛上刚刚停下来的风。"],
       Neutral:["平静","像岛上刚刚停下来的风。"],
       Sadness:["低落","不用一个人扛，我在这里。"],
       Surprise:["惊讶","生活突然眨了一下眼。"]
     };
-    const emotionIcon = {Anger:"😠",Contempt:"😏",Disgust:"🤢",Fear:"😟",Happiness:"😊",Neutral:"😌",Sadness:"😢",Surprise:"😮"};
+    const emotionIcon = {Anger:"😠",Contempt:"😏",Disgust:"🤢",Fear:"😟",Happiness:"😊",Calm:"😌",Neutral:"😌",Sadness:"😢",Surprise:"😮"};
     const defaultDiary = {
       "2026-06-01": {weather:"☀️", emotion:"Neutral", score:82, text:"周一泡了杯绿茶坐在窗边看了会儿树叶晃动。待办清单有点长，但一件一件来吧。", reply:"绿茶的清香和周一的宁静是很好的搭配。慢慢来，不着急。"},
       "2026-06-02": {weather:"⛅", emotion:"Happiness", score:88, text:"阳光特别好，冲了杯热咖啡翻开想看的书。今天开了个好头。", reply:"早晨的阳光和咖啡，还有什么比这更好的开始呢。"},
@@ -593,7 +598,43 @@
       else post("/api/single_track/start", {speed:360}, true);
     }
 
-    async function post(url, payload, soft=false){
+    async function ensureSingleSession(){
+      if(controlSessionId && runtimeMode === "single") return true;
+      const data = await post("/api/single_track/start", {speed:360}, true, false);
+      return !!adoptControlSession(data, "single")?.accepted;
+    }
+    async function stopSingleSessionIfIdle(){
+      if(emotionMonitoring || focusMonitoring) return true;
+      if(!controlSessionId){ await refreshState(); return false; }
+      const data = await post("/api/single_track/stop", {session_id:controlSessionId}, true, false);
+      if(data?.accepted || data?.ok) clearControlSession();
+      return !!(data?.accepted || data?.ok);
+    }
+    async function startMultiSession(){
+      const data = await post("/api/multi_track/start", {save_audio:true}, true, false);
+      return !!adoptControlSession(data, "multi")?.accepted;
+    }
+    async function stopMultiSession(){
+      if(!controlSessionId){ await refreshState(); return false; }
+      const data = await post("/api/multi_track/stop", {finalize:true, session_id:controlSessionId}, true, false);
+      if(data?.accepted || data?.ok) clearControlSession();
+      return !!(data?.accepted || data?.ok);
+    }
+
+    function adoptControlSession(data, mode){
+      if(data && data.accepted && data.session_id){
+        controlSessionId = data.session_id;
+        localStorage.setItem("xinyu_control_session_id", controlSessionId);
+        runtimeMode = mode;
+      }
+      return data;
+    }
+    function clearControlSession(){
+      controlSessionId = "";
+      localStorage.removeItem("xinyu_control_session_id");
+      runtimeMode = "inactive";
+    }
+    async function post(url, payload, soft=false, refresh=true){
       if(isFilePreview){
         log(`${url}\nfile preview: default 数据模式，不发送真实控制请求。`);
         showToast("当前是本地预览，HTTP 打开后可同步状态");
@@ -604,8 +645,8 @@
         const res = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:payload ? JSON.stringify(payload) : undefined});
         const data = await res.json().catch(() => ({}));
         log(`${url}\n${JSON.stringify(data, null, 2)}`);
-        if(!soft && (!res.ok || data.success === false)) showToast(data.message || data.error || "操作失败");
-        await refreshState();
+        if(!soft && (!res.ok || data.success === false || data.ok === false)) showToast(data.message || data.error || data.reason || "操作失败");
+        if(refresh) await refreshState();
         return data;
       }catch(e){log("请求失败: " + e.message); showToast("请求失败");}
     }
@@ -633,8 +674,8 @@
       localStorage.setItem("xinyu_emotion_monitoring", emotionMonitoring);
       setMode("single", false);
       updateProductRuntime();
-      if(emotionMonitoring) await post("/api/single_track/start", {speed:360}, true);
-      else if(!focusMonitoring) await post("/api/single_track/stop", {}, true);
+      if(emotionMonitoring) await ensureSingleSession();
+      else await stopSingleSessionIfIdle();
       showToast(emotionMonitoring ? "情绪监测已开始" : "情绪监测已暂停");
       refreshState();
     }
@@ -651,8 +692,8 @@
       }
       setMode("single", false);
       updateProductRuntime();
-      if(focusMonitoring) await post("/api/single_track/start", {speed:360}, true);
-      else if(!emotionMonitoring) await post("/api/single_track/stop", {}, true);
+      if(focusMonitoring) await ensureSingleSession();
+      else await stopSingleSessionIfIdle();
       showToast(focusMonitoring ? "专注记录已开始" : "专注记录已暂停");
       refreshState();
     }
@@ -662,11 +703,11 @@
       setMode("multi", false);
       updateProductRuntime();
       if(multiSceneRunning){
-        await post("/api/tracking_mode", {mode:"multi"}, true);
-        await post("/api/multi_track/start", {save_audio:true}, true);
+        await post("/api/tracking_mode", {mode:"multi"}, true, false);
+        await startMultiSession();
         showToast("多人场景跟踪已开始");
       }else{
-        await post("/api/multi_track/stop", {finalize:true}, true);
+        await stopMultiSession();
         showToast("多人场景跟踪已停止");
       }
       refreshState();
@@ -691,14 +732,14 @@
         const res = await post("/api/reflect", {
           mode:"diary", emotion:emoKey, attention:score,
           user_text:text, duration_min:Math.round(focusSec/60)
-        });
+        }, true, false);
         if(res.reply){
           addChatBubble("assistant", res.reply);
           const thread = $("homeChatThread");
           if(thread) thread.scrollTop = thread.scrollHeight;
         }
-        if(res.diary && !text){
-          saved[key].text = res.diary;
+        if(res.diary && String(res.diary).trim() && String(res.diary).trim() !== text){
+          saved[key].ai_diary = res.diary;
           localStorage.setItem("xinyu_emotion_calendar", JSON.stringify(saved));
         }
         if(res.reply){
@@ -771,7 +812,7 @@
           body:JSON.stringify({
             message,
             emotion: emotion || "Neutral",
-            user_name:"心屿用户",
+            user_name:localStorage.getItem("xinyu_user_name") || "心屿用户",
             context,
             daily_state:{default_data:true, source:"home emotion calendar / weekly report"}
           })
@@ -791,8 +832,28 @@
       if(n >= 45) return ["稳定专注","慢慢把注意力牵回来就好。"];
       return ["需要休息","先歇一口气，再重新开始。"];
     }
+    function syncRuntimeFromState(s, isDefault=false){
+      if(isDefault) return;
+      const ctrl = s.control || {};
+      const feature = ctrl.active_feature || "inactive";
+      const sid = ctrl.session_id || "";
+      if(sid) {
+        controlSessionId = sid;
+        localStorage.setItem("xinyu_control_session_id", sid);
+      } else if(feature === "inactive") {
+        clearControlSession();
+      }
+      runtimeMode = feature === "multi_sound_yaw" || feature === "meeting_sound_yaw" ? "multi"
+        : feature === "meeting_recording" ? "meeting"
+        : feature === "single_face_analysis" ? "single"
+        : "inactive";
+      emotionMonitoring = feature === "single_face_analysis" && localStorage.getItem("xinyu_emotion_monitoring") === "true";
+      focusMonitoring = feature === "single_face_analysis" && localStorage.getItem("xinyu_focus_monitoring") === "true";
+      multiSceneRunning = feature === "multi_sound_yaw" || feature === "meeting_sound_yaw";
+    }
     function renderState(s, isDefault=false){
       lastProductState = s || defaultState;
+      syncRuntimeFromState(lastProductState, isDefault);
       const camOk = !!(s.video && s.video.connected);
       const gimOk = !!(s.gimbal && s.gimbal.connected);
       const dry = !!(s.gimbal && s.gimbal.dry_run);
@@ -812,7 +873,7 @@
       $("attentionLabel").textContent = fl[0]; $("attentionNote").textContent = fl[1];
       setText("focusScoreValue", attn.score != null ? Math.round(Number(attn.score)) : "--");
       renderCompanionSignals(s);
-      const locked = !!(s.face_lock && s.face_lock.locked);
+      const locked = !!((s.face_lock && s.face_lock.locked) || s.locked_track_id != null || String(s.tracking_phase || "").includes("lock"));
       const hasPerson = !!(s.pose && s.pose.count > 0);
       const doa = s.doa || {}, follow = s.sound_follow || {};
       const doaDeg = follow.doa_deg != null ? follow.doa_deg : doa.doa_deg;
@@ -821,6 +882,14 @@
       $("trackingNote").textContent = isDefault ? "default 数据已加载，连接后会自动切换实时状态。" : (dry ? "当前是 dry-run，不会真的移动云台。" : (gimOk ? "云台控制链路已连接。" : "等待云台控制链路。"));
       setText("doaValue", doaDeg != null ? Math.round(Number(doaDeg)) + "°" : "--");
       setText("doaFreshValue", doaReady ? (follow.has_speech || doa.has_speech ? "有人声" : "已连接") : "待接入");
+      const conv = s.conversation || {};
+      const turns = Number(conv.stats?.turns || (conv.timeline || []).length || 0);
+      const msBtn = $("meetingSumBtn");
+      if(msBtn){
+        msBtn.style.display = multiSceneRunning || turns > 0 ? "" : "none";
+        msBtn.disabled = turns <= 0;
+        msBtn.textContent = turns > 0 ? "整理会议记录" : "请先启动会议录音";
+      }
       // Persist today's real emotion+score to localStorage when monitoring is active
       if(!isDefault && (emotionMonitoring || focusMonitoring) && s?.emotieff?.emotion) {
         const today = new Date().toISOString().slice(0, 10);
@@ -908,6 +977,7 @@
       }
     }
     async function refreshState(){
+      if(ws && ws.readyState === WebSocket.OPEN && Date.now() - wsLastAt < 1500) return;
       if(isFilePreview){
         renderState(mockState(), true);
         return;
@@ -917,6 +987,30 @@
         const body = await res.json();
         renderState(body.data || body, false);
       }catch(e){renderState(defaultState, true); log("状态同步失败，已显示 default 数据: " + e.message);}
+    }
+
+    function normalizeWsState(payload){
+      if(!payload) return null;
+      if(payload.type === "state_snapshot" && payload.data) return payload.data;
+      if(payload.data && payload.data.video) return payload.data;
+      return payload.video || payload.control ? payload : null;
+    }
+    function connectHomeWS(){
+      if(isFilePreview || !("WebSocket" in window)) return;
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      try{
+        ws = new WebSocket(`${proto}://${location.host}/ws`);
+        ws.onopen = () => { wsLastAt = Date.now(); try{ ws.send("request_state"); }catch(e){} };
+        ws.onmessage = ev => {
+          wsLastAt = Date.now();
+          try{
+            const s = normalizeWsState(JSON.parse(ev.data));
+            if(s) renderState(s, false);
+          }catch(e){ log("WS 状态解析失败: " + e.message); }
+        };
+        ws.onclose = () => setTimeout(connectHomeWS, 1500);
+        ws.onerror = () => {};
+      }catch(e){ setTimeout(connectHomeWS, 1500); }
     }
 
     function updateProductRuntime(){
@@ -930,7 +1024,10 @@
       setButton("focusPrimaryBtn", focusMonitoring ? "暂停专注记录" : "开始专注记录", !focusMonitoring);
       setButton("multiPrimaryBtn", multiSceneRunning ? "停止多人场景" : "开始多人场景", !multiSceneRunning);
       const msBtn = $("meetingSumBtn");
-      if(msBtn) msBtn.style.display = multiSceneRunning ? "" : "none";
+      if(msBtn && !lastProductState?.conversation){
+        msBtn.style.display = multiSceneRunning ? "" : "none";
+        msBtn.disabled = !multiSceneRunning;
+      }
       const modeText = multiSceneRunning ? "多人 DOA 跟随" : (emotionMonitoring || focusMonitoring ? "单人视觉监测" : "待开始");
       const adviceEl = $("homeAdvice");
       if(adviceEl && adviceEl.dataset.manual !== "true"){
@@ -982,7 +1079,11 @@
       const text = $("diaryText").value.trim(); if(!text){showToast("先写一点内容"); return;}
       const saved = JSON.parse(localStorage.getItem("xinyu_emotion_calendar") || "{}");
       const key = selectedDayKey || dateKey(new Date());
-      saved[key] = {emotion:"Neutral", score:82, text};
+      const previous = mergedDiary()[key] || {};
+      const s = lastProductState || {};
+      const emotion = previous.emotion || s.emotieff?.emotion || s.emotion?.emotion || s.emotion?.label || "Neutral";
+      const score = previous.score ?? s.attention?.score ?? 82;
+      saved[key] = {emotion, score, text};
       localStorage.setItem("xinyu_emotion_calendar", JSON.stringify(saved));
       selectDay(key); showToast("日历记录已保存");
     }
@@ -1102,6 +1203,11 @@
       $("healthInsight").textContent = "身体已经重新动起来了。接下来保持轻一点的节奏，会更容易稳定专注。";
     }
     function saveStepGoal(){ localStorage.setItem("xinyu_steps_goal", $("stepsGoal").textContent.trim() || "6000"); renderHealth(); }
+    function saveProfileName(){
+      const name = ($("profileName")?.textContent || "").trim() || "心屿用户";
+      localStorage.setItem("xinyu_user_name", name);
+      if($("profileName")) $("profileName").textContent = name;
+    }
     function addWater(){ waterCount = Math.min(8, waterCount + 1); localStorage.setItem("xinyu_water_count", waterCount); localStorage.setItem("xinyu_water_last_at", String(Date.now())); renderHealth(); showToast("已记录一杯水"); }
     function addSteps(){ stepsNow += 500; localStorage.setItem("xinyu_steps_now", stepsNow); renderHealth(); showToast("已记录 500 步"); }
     function renderHealth(){
@@ -1134,8 +1240,21 @@
     renderWeekReport();
     renderMeetingNotes();
     renderHealth();
+    if($("profileName")){
+      $("profileName").textContent = localStorage.getItem("xinyu_user_name") || $("profileName").textContent || "心屿用户";
+      $("profileName").addEventListener("blur", saveProfileName);
+      $("profileName").addEventListener("keydown", e => { if(e.key === "Enter"){ e.preventDefault(); $("profileName").blur(); } });
+    }
+    connectHomeWS();
     refreshState();
     setInterval(refreshState, 1000);
+    addEventListener("beforeunload", () => {
+      if(!controlSessionId) return;
+      const path = runtimeMode === "multi" || runtimeMode === "meeting" ? "/api/multi_track/stop" : "/api/single_track/stop";
+      try{
+        navigator.sendBeacon(path, new Blob([JSON.stringify({session_id:controlSessionId, finalize:true})], {type:"application/json"}));
+      }catch(e){}
+    });
     if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js", {scope:"/"}).catch(() => {});}
   </script>
 </body>

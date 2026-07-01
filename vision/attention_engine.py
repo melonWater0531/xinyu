@@ -340,6 +340,11 @@ class ScoringModule:
         now = time.time()
         raw = (self._cfg.orientation_weight * orient_score +
                self._cfg.stability_weight * stability_score)
+        return self.update_raw(raw, now=now)
+
+    def update_raw(self, raw_score: float, now: Optional[float] = None) -> float:
+        now = time.time() if now is None else float(now)
+        raw = max(0.0, min(100.0, float(raw_score)))
         self._window.append((now, raw))
 
         cutoff = now - self._cfg.window_size
@@ -473,7 +478,7 @@ class AttentionEngine:
         if eye_metrics and eye_metrics.get("ear_avg", 0.3) < 0.15:
             fused = min(fused, 40)
 
-        score = self._scoring.update(fused, fused)
+        score = self._scoring.update_raw(fused)
         state = self._scoring.display_state
 
         return {

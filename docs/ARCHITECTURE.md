@@ -116,10 +116,10 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
         │   main_phase3 返回 session/FSM/command/safety/gimbal readback
         │
         ▼
-  build_state_snapshot() → /ws WebSocket push（每 200ms）
+  build_state_snapshot() → /ws WebSocket push（每 200ms）+ `/api/state`
         │
         ├─ PAGE 1 /control /v2  → recamera_v2_live.html（Event 控制 + 实时遥测）
-        └─ PAGE 2 /home         → home.html（纯 mock，isFilePreview=true）
+        └─ PAGE 2 /home         → home.html（产品页；真实状态优先，WS 失败降级 1s polling）
 
 云台遥测（main_phase3 侧）
   RecameraClient.get_status() → runtime snapshot → EventBus → FastAPI /ws
@@ -197,7 +197,7 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | 文件 | 路由 | 用途 |
 |---|---|---|
 | `recamera_v2_live.html` | `/control` `/v2` | PAGE 1：实时控制台（只读遥测 + FSM 可观测） |
-| `home.html` | `/home` `/`（重定向） | PAGE 2：产品 Demo（纯 mock，isFilePreview=true） |
+| `home.html` | `/home` `/`（重定向） | PAGE 2：产品 Demo；真实 `/ws`/`/api/state` 状态优先，离线预览才使用 mock |
 | `manifest.webmanifest` | `/manifest.webmanifest` | PWA 清单 |
 | `sw.js` | `/sw.js` | Service Worker |
 
@@ -245,9 +245,12 @@ Debounce:
     "gimbal":   { "connected", "yaw", "pitch", "yaw_speed", "pitch_speed", "source", "age_ms" },
     "respeaker":{ "connected", "doa_deg", "has_speech", "audio_device", "led" },
     "attention":{ "has_face", "score", "state", "blink_count" },
-    "emotieff": { "emotion", "confidence", "probabilities" },
+    "emotieff": { "emotion", "confidence", "probabilities", "valence" },
     "eye_metrics": { "ear", "perclos", "blink_rate" },
     "mp_face":  { "available", "landmarks_count" },
+    "doa": { "doa_deg", "has_speech", "source", "age_ms" },
+    "sound_follow": { "active", "doa_deg", "has_speech", "source" },
+    "face_lock": { "locked", "track_id", "phase" },
     "conversation": { "mode", "active", "state" },
     "control":  {
       "feature": "inactive|single_face_analysis|multi_sound_yaw|meeting_recording|meeting_sound_yaw|manual_gimbal_debug",
@@ -305,9 +308,11 @@ Debounce:
 ### 7.5 FastAPI 服务（recamera_fastapi.py）
 - [x] MJPEG 视频流 `/video_feed`（含 overlay：检测框/关键点）
 - [x] WebSocket `/ws`：状态快照推送（200ms 间隔）+ `request_state` 拉取
+- [x] `/api/state` 兼容契约：`face_lock`、`sound_follow`、`doa`、`control`、`emotieff.valence`
 - [x] Runtime snapshot：FastAPI 通过 EventBus 查询 `main_phase3.py` 的 FSM、session、command、safety 和 telemetry
 - [x] 云台遥测：仅 `main_phase3.py` 调用 `RecameraClient.get_status()`，FastAPI 不创建硬件客户端
 - [x] LLM 对话：DeepSeek API（`/api/chat`）+ 本地轻量 fallback
+- [x] 会议摘要：`/api/meeting/summarize` 返回结构化错误码 `recording_not_started`、`no_segments`、`asr_empty`
 - [x] 对话会话管理：`/api/conversation/{start,stop,state,save,debug}`
 - [x] LLM 反思：`/api/reflect`（情绪日记生成）
 - [x] API 快照：`/api/snapshot`（当前帧 JPEG）
@@ -325,10 +330,14 @@ Debounce:
   - 系统健康（FPS/DOA age/WS 客户端/云台 RTT）
   - 实时 MJPEG 视频（含检测框 overlay）
 - [x] PAGE 2（`/home`）：产品 Demo
-  - `isFilePreview=true`（所有网络调用短路）
-  - `mockState()` 动画化模拟数据（情绪轮转、DOA/专注正弦波动）
+  - 通过 `/ws` 订阅真实状态；WebSocket 不可用时自动降级到 `/api/state` 1s polling
+  - 单一 `runtimeMode` 来自后端 `control.active_feature`，localStorage 仅保存用户偏好
+  - 启动 API 返回的 `session_id` 会被保存；stop、heartbeat、beforeunload 必须携带 session
   - 情绪监测、专注度、多人场景、日记、LLM 对话、健康建议 UI
+  - 日记保存沿用当前/实时情绪，不再固定写入 Neutral；昵称保存到 `xinyu_user_name` 并进入 chat payload
   - PWA 支持（manifest + service worker）
+
+DeepSeek 默认模型保留 `deepseek-v4-flash`。旧截图中“模型不存在”的判断已过期，不作为回退依据。
 
 ---
 
@@ -383,6 +392,8 @@ Dashboard UI -> FastAPI UI Event -> EventBus -> main_phase3.py -> FSM -> Orchest
 - 设备调试：手动云台
 
 每个页面都有“启动功能”按钮。启动后由 `session_id + 2.5s lease` 维护唯一控制权；切换页面会发送 stop，新页面不会自动启动。浏览器失联时租约到期自动停止，新会话接管后旧 session 的 heartbeat/stop 无效。
+
+`/home` 与 `/control` 共享同一状态契约。前端不再用多个 localStorage flag 伪造运行态，而是以后端 `control.active_feature`、`session_id` 和 `conversation` 为准；缺少 `session_id` 的 stop 请求会被后端明确拒绝，避免硬件 feature lease 假释放。`AttentionEngine` 已改为先融合 orientation、eye、stability、gaze 四项证据，再只对最终 fused 分数做平滑，避免重复加权。
 
 ---
 
