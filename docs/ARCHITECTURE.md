@@ -5,7 +5,7 @@
 系统使用一个权威控制会话，模式为 `inactive`、`single_face_analysis`、
 `multi_sound_yaw`、`meeting_recording`、`meeting_sound_yaw` 或
 `manual_gimbal_debug`。Dashboard 页面只能发出 Event；会话由
-`main_phase3.py` 确认并以 `session_id + 1.5s lease` 维护。
+`main_phase3.py` 确认并以 `session_id + 5s lease` 维护，设备桥使用独立的 2s watchdog。
 
 | 页面 | 输入硬件 | 输出硬件 | 控制行为 |
 |---|---|---|---|
@@ -376,7 +376,7 @@ Debounce:
   - 通过 `/ws` 订阅真实状态；WebSocket 超过 10 次重连后停止，降级到 `/api/state` 1s polling；页面重新可见时自动复位重连计数并重连
   - RAF 节流：`scheduleRender()` 将每次状态变化合并到下一帧，避免 200ms WS 推送频繁 DOM 更新
   - 单一 `runtimeMode` 来自后端 `control.active_feature`，localStorage 仅保存用户偏好
-  - 启动 API 返回的 `session_id` 会被保存；stop、heartbeat（750ms 间隔）、beforeunload 必须携带 session
+  - 启动 API 返回的 `session_id` 会被保存；stop、heartbeat（1000ms 间隔）、beforeunload 必须携带 session
   - 情绪监测（PERCLOS / 眨眼率 / gaze 上下文）、专注度、多人场景、手势 Toast、主动关怀气泡
   - **日记系统（B 系列）**：`xinyu_diary_entries` 数组格式（含 `id, date, emotion, conversation[]`）；每次保存后 LLM 自动回复并写入 `conversation[0]`；详情页支持多轮对话；迁移函数从旧 `xinyu_diary_calendar` / `xinyu_emotion_calendar` 自动升级
   - **周报系统（C 系列）**：`aggregateWeekData()` 聚合近 7 天；`generateWeeklyReport()` 调用 LLM 生成书信体周报并持久化到 `xinyu_weekly_reports`
@@ -448,7 +448,7 @@ Dashboard UI -> FastAPI UI Event -> EventBus -> main_phase3.py -> FSM -> Orchest
 - **记录**：情绪日历、日记详情 + 对话链、周报生成、会议历史
 - **我的**：昵称/提醒设置、设备动作、数据重置
 
-每个功能启动后由 `session_id + 1.5s lease` 维护唯一控制权，前端每 **750ms** 发送一次 heartbeat（`POST /api/control/heartbeat {session_id}`）。切换标签页或 `beforeunload` 时自动发 stop；WS 超过 10 次重连后降级为 poll-only。
+每个功能启动后由 `session_id + 5s lease` 维护唯一控制权，前端每 **1000ms** 发送一次 heartbeat（`POST /api/control/heartbeat {session_id}`）。页面隐藏不会主动停止；页面卸载时发送 stop，心跳真正中断后租约仍会自动回收控制权。
 
 ### localStorage 键清单（home.html）
 

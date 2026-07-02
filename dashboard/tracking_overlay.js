@@ -8,8 +8,14 @@
     if (state) window.drawOverlay(state);
   };
   window.drawOverlay = function(s){
-    const img=$('videoStream'),canvas=$('overlay'),wrap=$('videoWrap'),ctx=canvas.getContext('2d');
+    drawScene($('overlay'), $('videoWrap'), $('videoStream'), s);
+    drawScene($('multiOverlay'), $('multiVideoWrap'), $('multiVideoMirror'), s);
+  };
+  function drawScene(canvas,wrap,img,s){
+    if(!canvas||!wrap||!img)return;
     const w=wrap.clientWidth,h=wrap.clientHeight;
+    if(w<=0||h<=0)return;
+    const ctx=canvas.getContext('2d');
     if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}
     ctx.clearRect(0,0,w,h);
     const video=s.video||{},pose=s.pose||{},rs=getImageDrawRect(img,w,h);
@@ -37,14 +43,7 @@
         ctx.beginPath();ctx.arc(rs.x+p[0]*rs.sx,rs.y+p[1]*rs.sy,1,0,Math.PI*2);ctx.fill();
       });
     }
-    const mirror=$('multiOverlay'),mirrorWrap=$('multiVideoWrap');
-    if(mirror&&mirrorWrap){
-      const mw=mirrorWrap.clientWidth,mh=mirrorWrap.clientHeight;
-      if(mirror.width!==mw||mirror.height!==mh){mirror.width=mw;mirror.height=mh}
-      const mctx=mirror.getContext('2d');mctx.clearRect(0,0,mw,mh);
-      mctx.drawImage(canvas,0,0,w,h,0,0,mw,mh);
-    }
-  };
+  }
   function finishStop(result,label){
     const runtime=(result&&result.runtime)||{};
     const failed=!result||!result.accepted||runtime.stop_state==='hardware_stop_failed'||result.reason==='hardware_error';

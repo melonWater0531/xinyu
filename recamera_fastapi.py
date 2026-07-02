@@ -318,6 +318,10 @@ _doa_reader = None
 _conversation_recorder = None
 _conversation_recording_requested = False
 _last_conversation_start_attempt = 0.0
+_meeting_report = {
+    "status": "idle", "summary": "", "minutes": "", "transcript": "",
+    "turns": 0, "duration_min": 0.0, "error": "",
+}
 _wake_word_service = None
 try:
     from services.voice_policy import voice_policy
@@ -328,6 +332,7 @@ _tracking_mode: str = "single"
 _single_track_active: bool = False
 _multi_track_active: bool = False
 _ui_session_id: str = ""
+CONTROL_LEASE_MS = 5000
 _runtime_cache = {
     "connected": False,
     "active_feature": "inactive",
@@ -567,7 +572,7 @@ def _apply_runtime_result(result: dict) -> None:
     feature = _runtime_cache.get("active_feature", "inactive")
     _single_track_active = feature == "single_face_analysis"
     _multi_track_active = feature in {"multi_sound_yaw", "meeting_sound_yaw"}
-    if feature == "inactive" and previous_feature in {"meeting_recording", "meeting_sound_yaw"}:
+    if feature == "inactive" and previous_feature in {"multi_sound_yaw", "meeting_recording", "meeting_sound_yaw"}:
         _conversation_recording_requested = False
         _stop_conversation_recording(finalize=True)
     _gimbal_tlm = dict(runtime.get("gimbal") or _gimbal_tlm)
@@ -816,8 +821,6 @@ def _start_conversation_recording() -> bool:
     if recorder.active:
         return True
     now = time.monotonic()
-    if now - _last_conversation_start_attempt < 5.0:
-        return False
     _last_conversation_start_attempt = now
     return bool(recorder.start())
 
@@ -828,9 +831,8 @@ def _stop_conversation_recording(finalize: bool = True) -> None:
 
 
 def _conversation_state() -> dict:
-    if not _conversation_recording_requested and (
-        _conversation_recorder is None or not _conversation_recorder.active
-    ):
+    from services.speaker_mapper import speaker_mapper
+    if _conversation_recorder is None:
         return {
             "active": False,
             "available": True,
@@ -846,10 +848,14 @@ def _conversation_state() -> dict:
             "current": {},
             "timeline": [],
             "stats": {"turns": 0, "speakers": 0, "duration": 0.0},
+            "speakers": speaker_mapper.get_registered_speakers(),
+            "report": dict(_meeting_report),
         }
     state = _conversation_recorder.state()
-    state["mode"] = "audio_recording"
+    state["mode"] = "audio_recording" if state.get("active") else "recording_complete"
     state["requested"] = bool(_conversation_recording_requested)
+    state["speakers"] = speaker_mapper.get_registered_speakers()
+    state["report"] = dict(_meeting_report)
     return state
 
 
@@ -1853,10 +1859,14 @@ async def api_conversation_debug():
 
 @app.post("/api/conversation/start")
 async def api_conversation_start(payload: dict = None):
-    global _conversation_recording_requested, _ui_session_id
+    global _conversation_recording_requested, _ui_session_id, _meeting_report
     payload = payload or {}
     from services.speaker_mapper import speaker_mapper
     speaker_mapper.reset()
+    _meeting_report = {
+        "status": "recording", "summary": "", "minutes": "", "transcript": "",
+        "turns": 0, "duration_min": 0.0, "error": "",
+    }
     _pause_wake_word()
     session_result = None
     if payload.get("control_session"):
@@ -1993,28 +2003,58 @@ async def api_single_track_stop(payload: dict = Body(default={})):
 @app.post("/api/multi_track/start")
 async def api_multi_track_start(payload: dict = Body(default={})):
     global _multi_track_active, _single_track_active, _tracking_mode
+    global _conversation_recording_requested, _meeting_report
+    from services.speaker_mapper import speaker_mapper
+
+    save_audio = bool(payload.get("save_audio", False))
+    speaker_mapper.reset()
+    _meeting_report = {
+        "status": "recording" if save_audio else "idle",
+        "summary": "", "minutes": "", "transcript": "",
+        "turns": 0, "duration_min": 0.0, "error": "",
+    }
+    _pause_wake_word()
     result = await _start_feature("multi_sound_yaw")
     if not result.get("accepted"):
+        _resume_wake_word()
         return {**result, "active": False}
     _single_track_active = False
     _multi_track_active = True
     _tracking_mode = "multi"
-    if payload.get("save_audio", False):
-        _start_conversation_recording()
-    return {**result, "active": True}
+    _conversation_recording_requested = save_audio
+    doa_ok = _ensure_doa_reader()
+    recording_ok = _start_conversation_recording() if save_audio else True
+    if not doa_ok or not recording_ok:
+        _conversation_recording_requested = False
+        _meeting_report["status"] = "error"
+        _meeting_report["error"] = "ReSpeaker DOA 或录音输入不可用"
+        await _stop_feature(result.get("session_id", ""))
+        _resume_wake_word()
+        return {
+            **result, "ok": False, "accepted": False, "active": False,
+            "reason": "meeting_input_unavailable", "state": _conversation_state(),
+        }
+    return {
+        **result, "success": True, "recording_success": bool(recording_ok),
+        "active": True, "state": _conversation_state(),
+    }
 
 
 @app.post("/api/multi_track/stop")
 async def api_multi_track_stop(payload: dict = Body(default={})):
-    global _multi_track_active
+    global _multi_track_active, _conversation_recording_requested, _meeting_report
     session_id = str(payload.get("session_id", ""))
     if not session_id:
         return {"ok": False, "accepted": False, "active": _multi_track_active, "reason": "session_id_required"}
     _multi_track_active = False
     if payload.get("finalize", True):
+        _conversation_recording_requested = False
         _stop_conversation_recording(finalize=True)
+        if _meeting_report.get("status") == "recording":
+            _meeting_report["status"] = "recorded"
+    _resume_wake_word()
     result = await _stop_feature(session_id)
-    return {**result, "active": False}
+    return {**result, "active": False, "state": _conversation_state()}
 
 
 async def _emit_ui_event(name: str, payload: dict) -> dict:
@@ -2047,7 +2087,7 @@ async def _start_feature(feature: str) -> dict:
     session_id = uuid.uuid4().hex
     result = await _emit_ui_event(
         "feature_start",
-        {"feature": feature, "session_id": session_id, "lease_ms": 1500},
+        {"feature": feature, "session_id": session_id, "lease_ms": CONTROL_LEASE_MS},
     )
     if result.get("accepted"):
         _ui_session_id = session_id
@@ -2070,7 +2110,7 @@ async def _stop_feature(session_id: str) -> dict:
 async def api_control_heartbeat(payload: dict = Body(default={})):
     return await _emit_ui_event(
         "feature_heartbeat",
-        {"session_id": str(payload.get("session_id", "")), "lease_ms": 1500},
+        {"session_id": str(payload.get("session_id", "")), "lease_ms": CONTROL_LEASE_MS},
     )
 
 
@@ -2414,12 +2454,16 @@ async def api_chat_status():
 @app.post("/api/meeting/summarize")
 async def api_meeting_summarize(payload: dict = Body(default={})):
     """Transcribe meeting segments and summarize with speaker labels."""
+    global _meeting_report
     from pathlib import Path as _Path
     from services.cloud_asr import cloud_asr as _cloud_asr
     from services.emotion_prompt import build_emotion_context
     from services.speaker_mapper import speaker_mapper
 
     recorder = _conversation_recorder
+    _meeting_report = {
+        **_meeting_report, "status": "summarizing", "error": "",
+    }
     if recorder is None:
         await _emit_voice_reason(
             "meeting_summary_error",
@@ -2427,7 +2471,8 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
             interrupt=False,
             source="meeting_summarize",
         )
-        return {"ok": False, "error_code": "recording_not_started", "error": "录音未启动，请先开启会议录音"}
+        _meeting_report.update({"status": "error", "error": "录音未启动，请先开启多人会议"})
+        return {"ok": False, "error_code": "recording_not_started", "error": _meeting_report["error"]}
 
     session_state = recorder.state()
     turns = session_state.get("timeline", [])
@@ -2438,16 +2483,20 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
             interrupt=False,
             source="meeting_summarize",
         )
-        return {"ok": False, "error_code": "no_segments", "error": "本次无录音片段，请先录到语音片段"}
+        _meeting_report.update({"status": "error", "error": "本次无录音片段，请先录到语音片段"})
+        return {"ok": False, "error_code": "no_segments", "error": _meeting_report["error"]}
 
     transcripts = []
     for turn in turns:
         wav = turn.get("wav_path", "")
         if wav and _Path(wav).exists():
-            text = await _cloud_asr.transcribe(wav)
+            text = str(turn.get("text") or "").strip() or await _cloud_asr.transcribe(wav)
             if text:
                 speaker = str(turn.get("speaker_label") or "未知说话人")
                 transcripts.append(f"[{speaker}] {text}")
+                recorder.set_transcript(str(turn.get("id") or ""), text)
+            else:
+                recorder.set_transcript(str(turn.get("id") or ""), "")
 
     if not transcripts:
         await _emit_voice_reason(
@@ -2456,7 +2505,11 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
             interrupt=False,
             source="meeting_summarize",
         )
-        return {"ok": False, "error_code": "asr_empty", "error": "转写结果为空（faster-whisper 未安装或语音过短）"}
+        _meeting_report.update({
+            "status": "error",
+            "error": "转写结果为空（ASR 未配置、依赖缺失或语音过短）",
+        })
+        return {"ok": False, "error_code": "asr_empty", "error": _meeting_report["error"]}
 
     full_transcript = "\n".join(transcripts)
     duration_min = round(session_state.get("stats", {}).get("duration", 0) / 60, 1)
@@ -2467,30 +2520,31 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
     sys_p = (
         "你是心屿，请将以下多人对话整理为会议记录。"
         "转写中方括号标记不同发言者；未知说话人也要如实保留。"
-        "要求：用'我'的视角；描述对话核心内容、不同发言者观点和氛围；不超过120字；"
-        "输出严格JSON：{\"diary\":\"...\",\"summary\":\"一句话摘要，不超过30字\"}"
+        "要求客观、可核查，不补写转写中不存在的事实。"
+        "minutes 必须包含参会说话人、讨论要点、形成的结论和待办事项；没有结论或待办时明确写无。"
+        "输出严格JSON：{\"summary\":\"一句话摘要，不超过40字\",\"minutes\":\"结构化会议纪要\"}"
     )
     usr_p = (
         f"对话时长：{duration_min}分钟。\n"
         f"已注册说话人：{speaker_list}\n"
         f"现场状态线索：\n{emotion_context}\n\n"
-        f"逐句记录（说话人标注）：\n{full_transcript[:1800]}"
+        f"逐句记录（说话人标注）：\n{full_transcript[:6000]}"
     )
 
     raw = await _deepseek_chat([
         {"role": "system", "content": sys_p},
         {"role": "user",   "content": usr_p},
-    ], max_tokens=300)
+    ], max_tokens=700)
 
-    diary_text = summary_text = ""
+    minutes_text = summary_text = ""
     try:
         import json as _j
         parsed = _j.loads(raw)
-        diary_text   = parsed.get("diary", "")
+        minutes_text = parsed.get("minutes") or parsed.get("diary", "")
         summary_text = parsed.get("summary", "")
     except Exception:
-        diary_text   = raw[:100] if raw else "本次会议记录整理完成。"
-        summary_text = diary_text[:30]
+        minutes_text = raw[:800] if raw else "本次会议记录整理完成。"
+        summary_text = minutes_text[:40]
 
     await _emit_voice_reason(
         "meeting_summary_ok",
@@ -2498,14 +2552,42 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
         interrupt=False,
         source="meeting_summarize",
     )
-    return {
-        "ok": True,
-        "diary": diary_text,
+    _meeting_report = {
+        "status": "ready",
+        "minutes": minutes_text,
+        "diary": minutes_text,
         "summary": summary_text,
         "transcript": full_transcript,
         "turns": len(transcripts),
         "duration_min": duration_min,
+        "error": "",
     }
+    report_path = recorder.save_report(_meeting_report)
+    if report_path:
+        _meeting_report["report_path"] = report_path
+    return {
+        "ok": True,
+        "diary": minutes_text,
+        "minutes": minutes_text,
+        "summary": summary_text,
+        "transcript": full_transcript,
+        "turns": len(transcripts),
+        "duration_min": duration_min,
+        "report_path": report_path,
+    }
+
+
+@app.post("/api/meeting/complete")
+async def api_meeting_complete(payload: dict = Body(default={})):
+    """Stop the unified DOA meeting session, transcribe turns, and build minutes."""
+    session_id = str(payload.get("session_id", ""))
+    if not session_id:
+        return {"ok": False, "accepted": False, "error_code": "session_id_required", "error": "缺少会议控制会话"}
+    stopped = await api_multi_track_stop({"session_id": session_id, "finalize": True})
+    if not stopped.get("accepted"):
+        return {**stopped, "ok": False, "error": "会议控制会话已失效，录音已尝试保存"}
+    report = await api_meeting_summarize(payload)
+    return {**report, "accepted": True, "stopped": True, "state": _conversation_state()}
 
 
 @app.get("/api/health")

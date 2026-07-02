@@ -319,7 +319,7 @@
     "type": "function",
     "z": "rc-tab",
     "name": "Build real readback",
-    "func": "const ts=Number(flow.get('rcStatusAt')||0);\nconst yaw=flow.get('rcYaw'); const pitch=flow.get('rcPitch');\nconst fresh=ts>0 && Date.now()-ts<2000;\nconst deadline=Number(flow.get('rcLeaseDeadline')||0);\nconst sid=String(flow.get('rcSession')||'');\nmsg.statusCode=fresh?200:503;\nmsg.payload={connected:fresh,yaw:yaw??null,pitch:pitch??null,yaw_speed:flow.get('rcYawSpeed')??null,pitch_speed:flow.get('rcPitchSpeed')??null,timestamp:ts,source:'motor_readback',authorized_session:sid,last_sequence:Number(flow.get('rcLastSequence')||0),device_lease:{active:!!sid&&Date.now()<deadline,remaining_ms:Math.max(0,deadline-Date.now()),watchdog_ms:750}};\nreturn msg;",
+    "func": "const ts=Number(flow.get('rcStatusAt')||0);\nconst yaw=flow.get('rcYaw'); const pitch=flow.get('rcPitch');\nconst fresh=ts>0 && Date.now()-ts<2000;\nconst deadline=Number(flow.get('rcLeaseDeadline')||0);\nconst sid=String(flow.get('rcSession')||'');\nmsg.statusCode=fresh?200:503;\nmsg.payload={connected:fresh,yaw:yaw??null,pitch:pitch??null,yaw_speed:flow.get('rcYawSpeed')??null,pitch_speed:flow.get('rcPitchSpeed')??null,timestamp:ts,source:'motor_readback',authorized_session:sid,last_sequence:Number(flow.get('rcLastSequence')||0),device_lease:{active:!!sid&&Date.now()<deadline,remaining_ms:Math.max(0,deadline-Date.now()),watchdog_ms:2000}};\nreturn msg;",
     "outputs": 1,
     "x": 360,
     "y": 460,

@@ -9,8 +9,11 @@ coordinates, frame dimensions, current track IDs, observation IDs and timestamps
 Stale, out-of-order and foreign-session observations fail closed.
 
 Every motor command carries a session ID, sequence, issue time and expiry. The
-device bridge rejects commands without a live lease and runs a 750 ms watchdog.
+device bridge rejects commands without a live lease and runs a 2000 ms watchdog.
 Explicit stop, lease expiry, page teardown and process shutdown revoke authority.
+Transient device-lease failures pause motion without clearing the selected feature;
+later heartbeats re-authorize the same session, while the device watchdog remains
+responsible for fail-safe motor stop.
 
 Single-person tracking locks one current face, holds through short occlusion,
 uses a deadband, searches within 35 degrees for eight seconds, then returns to

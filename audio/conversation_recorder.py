@@ -269,8 +269,20 @@ class ConversationRecorder:
                     "level": round(level, 4),
                 })
 
+        if in_speech and len(speech_chunks) >= min_speech_blocks:
+            self._finalize_segment(
+                speech_chunks,
+                doa_values,
+                speech_start_ts,
+                time.time(),
+            )
+
     def _read_doa(self) -> tuple[Optional[float], bool]:
         if not self.doa_provider:
+            return None, False
+        try:
+            return self.doa_provider()
+        except Exception:
             return None, False
 
     def _speaker_label_from_provider(self, doa: Optional[float]) -> str:
@@ -282,10 +294,37 @@ class ConversationRecorder:
         except Exception as exc:
             logger.debug("speaker provider failed: %s", str(exc)[:80])
             return "未知说话人"
-        try:
-            return self.doa_provider()
-        except Exception:
-            return None, False
+
+    def set_transcript(self, turn_id: str, text: str, confidence: float = 0.0) -> bool:
+        """Attach ASR output to a persisted turn and rewrite the session timeline."""
+        updated = False
+        with self._lock:
+            for turn in self._turns:
+                if turn.id == str(turn_id):
+                    turn.text = str(text).strip()
+                    turn.confidence = max(0.0, min(1.0, float(confidence)))
+                    turn.status = "transcribed" if turn.text else "asr_empty"
+                    updated = True
+                    break
+            snapshot = [turn.to_dict() for turn in self._turns]
+        if updated and self._session_dir is not None:
+            timeline = self._session_dir / "timeline.jsonl"
+            timeline.write_text(
+                "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in snapshot),
+                encoding="utf-8",
+            )
+        return updated
+
+    def save_report(self, report: dict) -> str:
+        """Persist the final transcript/minutes alongside the meeting session."""
+        if self._session_dir is None:
+            return ""
+        path = self._session_dir / "meeting_report.json"
+        path.write_text(
+            json.dumps(dict(report), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return str(path)
 
     def _finalize_segment(
         self,

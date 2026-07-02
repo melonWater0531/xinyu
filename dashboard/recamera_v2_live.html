@@ -127,17 +127,36 @@ button,input,select{font:inherit}
 .trace-row:last-child{border-bottom:0}
 .hardware-map{display:flex;flex-wrap:wrap;gap:8px;padding:10px 12px;margin-bottom:14px;border:1px solid var(--line);background:#fff}
 .hardware-map .pill{font-size:12px}
+.workflow-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;margin-bottom:14px;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--line)}
+.workflow-step{position:relative;background:var(--panel);padding:13px 14px;min-height:72px}
+.workflow-step .step-index{display:inline-flex;width:22px;height:22px;align-items:center;justify-content:center;border-radius:50%;background:#e8edf5;color:var(--muted);font-size:12px;font-weight:850;margin-right:7px}
+.workflow-step strong{font-size:13px}.workflow-step small{display:block;color:var(--muted);font-size:11px;line-height:1.4;margin:6px 0 0 29px}
+.workflow-step.active{background:var(--accent-soft)}.workflow-step.active .step-index{background:var(--accent);color:#fff}
+.workflow-step.done .step-index{background:var(--good);color:#fff}
+.meeting-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.speaker-list{display:flex;flex-wrap:wrap;gap:8px;min-height:34px}
+.speaker-chip{border:1px solid var(--line);border-radius:999px;background:var(--panel-soft);padding:7px 10px;font-size:12px;color:#334764}
+.transcript-list{height:280px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel-soft);padding:6px}
+.turn{display:grid;grid-template-columns:88px minmax(0,1fr) 58px;gap:10px;padding:10px 8px;border-bottom:1px solid var(--line);font-size:13px;line-height:1.5}
+.turn:last-child{border-bottom:0}.turn-speaker{font-weight:850;color:#1f4f91}.turn-text.empty{color:var(--muted);font-style:italic}.turn-time{color:var(--muted);font-size:11px;text-align:right}
+.empty-state{display:flex;min-height:130px;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:13px;padding:20px}
+.minutes-panel{min-height:150px;border:1px solid var(--line);border-radius:8px;background:linear-gradient(145deg,#f8fbff,#eef5ff);padding:14px}
+.minutes-summary{font-size:16px;font-weight:850;color:#173d73;margin-bottom:10px}.minutes-body{white-space:pre-wrap;font-size:13px;line-height:1.75;color:#31445f}
+.btn:focus-visible,.nav-btn:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid rgba(37,99,235,.28);outline-offset:2px}
 @media(max-width:1120px){
   .shell{grid-template-columns:1fr}
   .nav{position:relative;height:auto}
   .layout-2,.layout-3{grid-template-columns:1fr}
   .status-row{justify-content:flex-start}
+  .workflow-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media(max-width:680px){
   .main{padding:12px}
   .metric-grid{grid-template-columns:1fr}
   .doa-card{grid-template-columns:1fr}
   .video-wrap{min-height:300px}
+  .workflow-strip{grid-template-columns:1fr}
+  .turn{grid-template-columns:72px minmax(0,1fr)}.turn-time{grid-column:2;text-align:left}
 }
 </style>
 </head>
@@ -154,10 +173,7 @@ button,input,select{font:inherit}
     </button>
     <div class="nav-group">多人场景</div>
     <button class="nav-btn" data-page="multi_sound_yaw" onclick="activatePage('multi_sound_yaw')">
-      <span>声源 yaw 跟随</span><span class="nav-chip">DOA</span>
-    </button>
-    <button class="nav-btn" data-page="meeting_recording" onclick="activatePage('meeting_recording')">
-      <span>会议录音</span><span class="nav-chip">Respeaker</span>
+      <span>多人会议闭环</span><span class="nav-chip">DOA · ASR</span>
     </button>
     <div class="nav-group">陪伴与健康</div>
     <button class="nav-btn" data-page="gesture_interaction" onclick="activatePage('gesture_interaction')">
@@ -279,11 +295,17 @@ button,input,select{font:inherit}
     </section>
 
     <section class="page" id="page-multi_sound_yaw">
+      <div class="workflow-strip" aria-label="多人会议处理进度">
+        <div class="workflow-step" id="meetingStepDoa"><span class="step-index">1</span><strong>声源定位</strong><small id="meetingStepDoaText">等待启动</small></div>
+        <div class="workflow-step" id="meetingStepFace"><span class="step-index">2</span><strong>说话人锁定</strong><small id="meetingStepFaceText">等待声源</small></div>
+        <div class="workflow-step" id="meetingStepRecord"><span class="step-index">3</span><strong>录音与分段</strong><small id="meetingStepRecordText">尚未录音</small></div>
+        <div class="workflow-step" id="meetingStepReport"><span class="step-index">4</span><strong>转写与纪要</strong><small id="meetingStepReportText">等待会议结束</small></div>
+      </div>
       <div class="grid layout-2">
         <section class="card video-card">
           <div class="video-head">
-            <strong>DOA + visual fusion</strong>
-            <span class=pill>yaw + pitch</span>
+            <strong>声源与人脸融合定位</strong>
+            <span class="pill" id="meetingCurrentSpeaker">等待说话人</span>
           </div>
           <div class="video-wrap" id="multiVideoWrap">
             <img id="multiVideoMirror" alt="reCamera video mirror">
@@ -292,14 +314,21 @@ button,input,select{font:inherit}
         </section>
         <div class="grid">
           <section class="card">
-            <div class="card-head"><h2>声源 yaw 跟随控制</h2><span class="pill" id="multiModeText">未激活</span></div>
-            <div class="controls">
-              <button class="btn primary" onclick="startMultiYawPage()">启动功能</button>
-              <button class="btn requires-feature" data-page-lock="multi_sound_yaw" onclick="pauseMultiYawPage()">暂停 yaw 跟随</button>
-              <button class="btn danger requires-feature" data-page-lock="multi_sound_yaw" onclick="stopMultiYawPage()">终止功能</button>
+            <div class="card-head"><h2>多人会议控制</h2><span class="pill" id="multiModeText">未激活</span></div>
+            <div class="meeting-actions">
+              <div class="controls">
+                <button class="btn primary" id="btnMeetingStart" onclick="startMeetingWorkflow()">启动多人会议</button>
+                <button class="btn danger requires-feature" data-page-lock="multi_sound_yaw" id="btnMeetingComplete" onclick="completeMeetingWorkflow()">终止并生成纪要</button>
+              </div>
+              <span class="pill" id="meetingRecordState">录音未启动</span>
             </div>
             <div class="controls device-actions"><button class="btn" onclick="gStandby()">Standby</button><button class="btn" onclick="gSleep()">Sleep</button><button class="btn" onclick="gStop()">Stop</button><button class="btn danger" onclick="gCalibrate()">Calibrate</button></div>
-            <div class="notice" style="margin-top:12px">切到该页只显示信息源。点击“启动功能”后才启用多人模式，云台只按 DOA 调整 yaw，pitch 不做自动跟随。</div>
+            <div class="notice" style="margin-top:12px">启动后持续执行声源找人、人脸锁定、录音分段与说话人标注。点击“终止并生成纪要”后才结束会话，并自动完成转写与 LLM 会议纪要。</div>
+            <div class="metric-grid" style="margin-top:12px">
+              <div class="metric"><div class="label">会议时长</div><div class="value" id="meetingDuration">00:00</div></div>
+              <div class="metric"><div class="label">语音片段</div><div class="value" id="meetingTurns">0</div></div>
+              <div class="metric"><div class="label">已识别说话人</div><div class="value" id="meetingSpeakerCount">0</div></div>
+            </div>
           </section>
           <section class="card">
             <h2>声源与 LED 示意</h2>
@@ -324,53 +353,37 @@ button,input,select{font:inherit}
             <div class="param-row"><span>DOA 零点偏移</span><input id="doaOffset" type="number" min="-180" max="180" value="0"><span>°</span></div>
             <div class="param-row"><span>DOA 方向</span><select id="doaDirection"><option value="1">正向</option><option value="-1">反向</option></select><button class="btn requires-feature" data-page-lock="multi_sound_yaw" onclick="applyControlConfig()">应用</button></div>
           </section>
-          <section class="card">
-            <h2>多人页日志</h2>
-            <div class="log mono" id="multiLog"></div>
-          </section>
         </div>
       </div>
-    </section>
-
-    <section class="page" id="page-meeting_recording">
-      <div class="grid layout-2">
+      <div class="grid layout-2" style="margin-top:14px">
         <section class="card">
-          <div class="card-head"><h2>会议录音控制</h2><span class="pill" id="recLabel">--</span></div>
-          <div class="controls">
-            <button class="btn primary" id="btnRecStart" onclick="startMeetingPage()">启动功能</button>
-            <button class="btn danger requires-feature" data-page-lock="meeting_recording" id="btnRecStop" onclick="recCtrl('stop')">终止并保存</button>
-            <button class="btn requires-feature" data-page-lock="meeting_recording" onclick="toggleMeetingYawFollow()">启用声源 yaw 跟随</button>
-            <button class="btn requires-feature" data-page-lock="meeting_recording" onclick="stopMeetingYawFollow()">关闭 yaw 跟随</button>
-          </div>
-          <div class="controls device-actions"><button class="btn" onclick="gStandby()">Standby</button><button class="btn" onclick="gSleep()">Sleep</button><button class="btn" onclick="gStop()">Stop</button><button class="btn danger" onclick="gCalibrate()">Calibrate</button></div>
-          <div class="notice" style="margin-top:12px">切到会议页不会自动录音。点击“启动功能”后调度 Respeaker/录音链路；声源 yaw 跟随是可选能力。</div>
-          <div class="metric-grid" style="margin-top:12px">
-            <div class="metric"><div class="label">录音时长</div><div class="value" id="recDuration">--</div></div>
-            <div class="metric"><div class="label">会话模式</div><div class="value small" id="convMode">--</div></div>
-            <div class="metric"><div class="label">保存状态</div><div class="value small" id="convSave">--</div></div>
+          <div class="card-head"><h2>说话人逐句记录</h2><span class="pill" id="transcriptState">等待录音</span></div>
+          <div class="speaker-list" id="meetingSpeakers" aria-label="会议说话人"></div>
+          <div class="transcript-list" id="meetingTranscript" aria-live="polite">
+            <div class="empty-state">启动会议后，完成的语音片段会按说话人和时间显示在这里。</div>
           </div>
         </section>
         <section class="card">
-          <h2>会议声源与 LED 示意</h2>
-          <div class="doa-card">
-            <div class="doa-scene">
-              <div class="doa-axis v"></div><div class="doa-axis h"></div>
-              <div class="sound-arrow" id="meetingDoaArrow"><div class="sound-dot"></div></div>
-              <div class="device">Respeaker</div>
-              <div class="led n" id="mLedN"></div><div class="led e" id="mLedE"></div><div class="led s" id="mLedS"></div><div class="led w" id="mLedW"></div>
-            </div>
-            <div>
-              <div class="kv"><span>当前说话方向</span><span id="meetingDoaVal">--</span></div>
-              <div class="kv"><span>LED 方向</span><span id="meetingLedVal">--</span></div>
-              <div class="kv"><span>yaw 跟随</span><span id="meetingYawState">关闭</span></div>
-              <div class="kv"><span>实体灯环</span><span id="meetingHardwareLed">--</span></div>
-            </div>
+          <div class="card-head"><h2>LLM 会议纪要</h2><span class="pill" id="meetingReportState">尚未生成</span></div>
+          <div class="minutes-panel" aria-live="polite">
+            <div class="minutes-summary" id="meetingSummary">等待会议结束</div>
+            <div class="minutes-body" id="meetingMinutes">点击“终止并生成纪要”后，系统会先完成逐段转写，再整理不同说话人的观点和会议结论。</div>
           </div>
+          <div class="kv" style="margin-top:10px"><span>处理状态</span><span id="meetingAsrStatus">idle</span></div>
+          <div class="kv"><span>转写条数</span><span id="meetingReportTurns">0</span></div>
+          <div class="kv"><span>纪要时长</span><span id="meetingReportDuration">--</span></div>
+          <div class="notice" id="meetingReportError" style="display:none;margin-top:10px"></div>
         </section>
       </div>
       <div class="grid layout-2" style="margin-top:14px">
-        <section class="card"><h2>会议日志</h2><div class="log mono" id="meetingLog"></div></section>
-        <section class="card"><h2>录音调试信息</h2><div class="log mono" id="meetingDebug"></div></section>
+        <section class="card"><h2>多人会议日志</h2><div class="log mono" id="multiLog"></div></section>
+        <section class="card">
+          <h2>闭环状态说明</h2>
+          <div class="kv"><span>声源输入</span><span id="meetingDoaHealth">--</span></div>
+          <div class="kv"><span>人脸关联</span><span id="meetingFaceHealth">--</span></div>
+          <div class="kv"><span>录音存储</span><span id="meetingStorageHealth">--</span></div>
+          <div class="kv"><span>ASR / LLM</span><span id="meetingAiHealth">--</span></div>
+        </section>
       </div>
     </section>
 
@@ -488,11 +501,12 @@ button,input,select{font:inherit}
 </div>
 
 <script>
-let state=null,ws=null,wsRetry=null,lastWsAt=0,lastLog='',lastStopState='',activePage='single_face_analysis',switching=false,meetingYaw=false,currentSessionId='',landmarkMesh=false;
+let state=null,ws=null,wsRetry=null,lastWsAt=0,lastLog='',lastStopState='',activePage='single_face_analysis',switching=false,currentSessionId='',landmarkMesh=false;
+let heartbeatInFlight=false,heartbeatFailures=0;
+let meetingCompleting=false;
 const featureActive={
   single_face_analysis:false,
   multi_sound_yaw:false,
-  meeting_recording:false,
   gesture_interaction:false,
   health_pwa:false,
   llm_diary:false,
@@ -502,8 +516,7 @@ let smoothAttn=0,smoothConf=0;
 const $=id=>document.getElementById(id);
 const pageMeta={
   single_face_analysis:{title:'人脸追踪与分析',sub:'切到页面后只展示信息，点击“启动功能”才会找人脸、云台对准，并开始情绪、人脸、专注与眼部指标分析。'},
-  multi_sound_yaw:{title:'声源 yaw 跟随',sub:'切到页面后只展示声源与摄像头信息，点击“启动功能”才启用多人声源模式，云台只转 yaw 轴。'},
-  meeting_recording:{title:'会议录音',sub:'切到页面后不自动录音，点击“启动功能”才调度 Respeaker 录音链路。'},
+  multi_sound_yaw:{title:'多人会议闭环',sub:'声源找人、人脸锁定、分段录音、说话人转写与 LLM 会议纪要在同一个会话中完成。'},
   gesture_interaction:{title:'手势交互',sub:'查看 MediaPipe 手势识别、稳定帧与低风险陪伴 intent；手势不驱动云台。'},
   health_pwa:{title:'健康与 PWA 通知',sub:'汇总护眼、久坐、喝水、疲劳、低专注和情绪关心通知状态。'},
   llm_diary:{title:'LLM 与情绪日记',sub:'汇总 DeepSeek 对话、日记反思、会议摘要和本地 fallback 状态。'},
@@ -516,7 +529,7 @@ function pageLog(id,msg){
   el.innerHTML=line+'<br>'+el.innerHTML.slice(0,4000);
 }
 function log(msg){
-  const map={meeting_recording:'meetingLog',multi_sound_yaw:'multiLog',manual_gimbal_debug:'manualLog',gesture_interaction:'gestureLog',health_pwa:'healthLog',llm_diary:'llmLog'};
+  const map={multi_sound_yaw:'multiLog',manual_gimbal_debug:'manualLog',gesture_interaction:'gestureLog',health_pwa:'healthLog',llm_diary:'llmLog'};
   pageLog(map[activePage]||'singleLog',msg);
 }
 function ema(cur,target,a){if(!Number.isFinite(cur)||cur===0)return target;return cur+(target-cur)*a}
@@ -557,7 +570,7 @@ function adoptSession(result,page){
   updateFeatureLocks();
   return true;
 }
-function clearSession(){currentSessionId='';meetingYaw=false;Object.keys(featureActive).forEach(k=>featureActive[k]=false);updateFeatureLocks()}
+function clearSession(){currentSessionId='';heartbeatFailures=0;Object.keys(featureActive).forEach(k=>featureActive[k]=false);updateFeatureLocks()}
 function setParamLabel(id,val){$(id).textContent=val}
 function setDeviceConfigText(text){const el=$('deviceConfigText');if(el)el.textContent=text}
 function applyDeviceState(device){
@@ -592,6 +605,7 @@ async function saveDeviceConfig(){
 
 async function activatePage(pageId){
   if(switching||pageId===activePage)return;
+  if(currentSessionId&&featureActive[activePage]){log('当前功能仍在运行，请先点击终止功能再切换页面');return}
   switching=true;
   await deactivatePage(activePage);
   activePage=pageId;
@@ -607,7 +621,7 @@ async function activatePage(pageId){
 function updateFeatureLocks(){
   document.querySelectorAll('.requires-feature').forEach(btn=>{
     const page=btn.dataset.pageLock;
-    btn.disabled=!featureActive[page];
+    btn.disabled=!featureActive[page]||(btn.id==='btnMeetingComplete'&&meetingCompleting);
   });
 }
 async function deactivatePage(pageId,keepalive=false){
@@ -616,21 +630,13 @@ async function deactivatePage(pageId,keepalive=false){
   if(!keepalive)updateFeatureLocks();
   if(keepalive){
     if(pageId==='single_face_analysis')postKeepalive('/api/single_track/stop',{session_id});
-    if(pageId==='multi_sound_yaw')postKeepalive('/api/multi_track/stop',{finalize:false,session_id});
-    if(pageId==='meeting_recording'){
-      postKeepalive('/api/conversation/stop',{finalize:true,session_id});
-      meetingYaw=false;
-    }
+    if(pageId==='multi_sound_yaw')postKeepalive('/api/multi_track/stop',{finalize:true,session_id});
     if(pageId==='manual_gimbal_debug')postKeepalive('/api/control/manual/stop',{session_id});
     clearSession();
     return;
   }
   if(pageId==='single_face_analysis')await apiPost('/api/single_track/stop',{session_id});
-  if(pageId==='multi_sound_yaw')await apiPost('/api/multi_track/stop',{finalize:false,session_id});
-  if(pageId==='meeting_recording'){
-    await apiPost('/api/conversation/stop',{finalize:true,session_id});
-    meetingYaw=false;
-  }
+  if(pageId==='multi_sound_yaw')await apiPost('/api/multi_track/stop',{finalize:true,session_id});
   if(pageId==='manual_gimbal_debug')await apiPost('/api/control/manual/stop',{session_id});
   clearSession();
 }
@@ -640,30 +646,31 @@ async function startSinglePage(){
 }
 async function stopSinglePage(){await apiPost('/api/single_track/stop',{session_id:currentSessionId});clearSession();log('单人追踪已暂停')}
 async function restartSinglePage(){await stopSinglePage();await startSinglePage();log('重新找人脸')}
-async function startMultiYawPage(){
-  const r=await apiPost('/api/multi_track/start',{save_audio:false});
-  if(adoptSession(r,'multi_sound_yaw')){await applyControlConfig();log('ReSpeaker DOA → reCamera yaw 跟随已接管')}
-}
-async function pauseMultiYawPage(){await apiPost('/api/multi_track/stop',{finalize:false,session_id:currentSessionId});clearSession();log('声源 yaw 跟随已暂停')}
-async function stopMultiYawPage(){await pauseMultiYawPage();log('多人控制已停止')}
-async function startMeetingPage(){
-  const r=await apiPost('/api/conversation/start',{save_audio:true,control_session:true});
-  if(adoptSession(r,'meeting_recording'))log('ReSpeaker USB Audio 会议录音已启动');
-}
-async function toggleMeetingYawFollow(){
-  if(!featureActive.meeting_recording)return;
-  const r=await apiPost('/api/meeting/yaw/start',{session_id:currentSessionId});
-  meetingYaw=!!(r&&r.accepted); log(meetingYaw?'会议页已启用 ReSpeaker 声源 yaw 跟随':'yaw 跟随启动失败');
-}
-async function stopMeetingYawFollow(){await apiPost('/api/meeting/yaw/stop',{session_id:currentSessionId});meetingYaw=false;log('会议页 yaw 跟随已关闭')}
-async function recCtrl(action){
-  const path=action==='start'?'/api/conversation/start':'/api/conversation/stop';
-  const body=action==='start'?{save_audio:true,control_session:true}:{finalize:true,session_id:currentSessionId};
-  const r=await apiPost(path,body);
-  if(action==='stop'){
-    clearSession();
+async function startMeetingWorkflow(){
+  if(currentSessionId||meetingCompleting)return;
+  const r=await apiPost('/api/multi_track/start',{save_audio:true});
+  if(adoptSession(r,'multi_sound_yaw')){
+    await applyControlConfig();
+    log('多人会议已启动：DOA 找人、人脸关联与分段录音同步运行');
   }
-  log(`会议录音 ${action==='start'?'开始':'停止'} ${r?(r.success||r.recording_success?'OK':'WARN'):'ERR'}`);
+}
+async function completeMeetingWorkflow(){
+  if(!currentSessionId||meetingCompleting)return;
+  meetingCompleting=true;updateFeatureLocks();
+  $('meetingReportState').textContent='正在转写与生成';
+  $('meetingStepReportText').textContent='ASR 与 LLM 处理中';
+  log('正在终止会议、转写语音并生成会议纪要');
+  const sessionId=currentSessionId;
+  const r=await apiPost('/api/meeting/complete',{session_id:sessionId});
+  meetingCompleting=false;
+  if(r&&r.accepted){
+    clearSession();
+    if(r.state)renderMeetingWorkflow(r.state,{});
+    log(r.ok?'会议闭环完成，逐句转写与纪要已生成':`会议已停止，但纪要生成失败：${r.error||'未知错误'}`);
+  }else{
+    updateFeatureLocks();
+    log(`终止失败：${r&&r.error||r&&r.reason||'服务不可达'}`);
+  }
 }
 function startLocalFeature(pageId,label){
   featureActive[pageId]=true;
@@ -724,9 +731,24 @@ async function gSleep(){await gDeviceAction('/api/gimbal/sleep','sleep')}
 async function gStop(){await gDeviceAction('/api/gimbal/stop','stop',true)}
 async function gCalibrate(){await gDeviceAction('/api/gimbal/calibrate','calibrate',true)}
 async function heartbeat(){
-  if(!currentSessionId)return;
-  const r=await apiPost('/api/control/heartbeat',{session_id:currentSessionId});
-  if(!r||!r.accepted){log('控制租约已失效，功能已锁定');clearSession()}
+  if(!currentSessionId||heartbeatInFlight)return;
+  const sessionId=currentSessionId;
+  heartbeatInFlight=true;
+  try{
+    const r=await apiPost('/api/control/heartbeat',{session_id:sessionId});
+    if(sessionId!==currentSessionId)return;
+    if(r&&r.accepted){heartbeatFailures=0;return}
+    const transient=!r||r.authority==='unreachable'||/timed out|empty_response/i.test(String(r.reason||''));
+    heartbeatFailures+=1;
+    if(!transient||heartbeatFailures>=3){
+      log('控制租约已失效，功能已锁定');
+      clearSession();
+    }else if(heartbeatFailures===1){
+      log('控制心跳暂时不可达，正在重试');
+    }
+  }finally{
+    heartbeatInFlight=false;
+  }
 }
 function toggleLandmarks(){
   landmarkMesh=!landmarkMesh;
@@ -734,6 +756,56 @@ function toggleLandmarks(){
   btn.setAttribute('aria-pressed',String(landmarkMesh));
   btn.textContent=landmarkMesh?'MediaPipe 468 &#28857;':'&#20116;&#28857;&#26174;&#31034;';
   if(state)drawOverlay(state);
+}
+
+function escapeHtml(value){return String(value??'').replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]))}
+function setWorkflowStep(id,status,text){
+  const el=$(id);if(!el)return;
+  el.className=`workflow-step${status==='active'?' active':status==='done'?' done':''}`;
+  const label=$(`${id}Text`);if(label)label.textContent=text;
+}
+function renderMeetingWorkflow(conv={},context={}){
+  const timeline=Array.isArray(conv.timeline)?conv.timeline:[];
+  const speakers=Array.isArray(conv.speakers)?conv.speakers:[];
+  const report=conv.report||{};
+  const active=!!(conv.recording||conv.active||conv.requested);
+  const duration=Number(conv.stats?.duration||0);
+  const currentSpeaker=conv.current?.speaker_label||'等待说话人';
+  const reportStatus=String(report.status||'idle');
+  const recorded=timeline.length>0||['recorded','summarizing','ready','error'].includes(reportStatus);
+
+  $('btnMeetingStart').disabled=active||meetingCompleting;
+  $('meetingRecordState').textContent=active?`录音中 ${fmtTime(duration)}`:(recorded?'录音已封存':'录音未启动');
+  $('meetingDuration').textContent=fmtTime(duration);
+  $('meetingTurns').textContent=timeline.length;
+  $('meetingSpeakerCount').textContent=speakers.length;
+  $('meetingCurrentSpeaker').textContent=active?(conv.current?.has_speech?currentSpeaker:'监听中'):currentSpeaker;
+
+  setWorkflowStep('meetingStepDoa',active?(context.hasSpeech?'active':'done'):(recorded?'done':''),active?(context.hasSpeech?`定位 ${context.doaText||'声源'}`:'ReSpeaker 持续监听'):(recorded?'定位完成':'等待启动'));
+  setWorkflowStep('meetingStepFace',context.faceLocked?'done':(active?'active':(recorded?'done':'')),context.faceLocked?`已锁定 Track ${context.trackId??'--'}`:(active?'正在关联人脸':(recorded?'关联已结束':'等待声源')));
+  setWorkflowStep('meetingStepRecord',active?'active':(recorded?'done':''),active?`${timeline.length} 个片段 · ${fmtTime(duration)}`:(recorded?'录音已封存':'尚未录音'));
+  setWorkflowStep('meetingStepReport',reportStatus==='summarizing'?'active':(reportStatus==='ready'?'done':''),reportStatus==='ready'?'纪要已生成':reportStatus==='summarizing'?'ASR 与 LLM 处理中':reportStatus==='error'?'生成失败，可查看原因':'等待会议结束');
+
+  $('meetingSpeakers').innerHTML=speakers.length?speakers.map(s=>`<span class="speaker-chip">${escapeHtml(s.label||'未知说话人')} · ${s.doa==null?'--':Math.round(Number(s.doa))+'°'}${s.track_id==null?'':` · Track ${escapeHtml(s.track_id)}`}</span>`).join(''):'<span class="speaker-chip">尚未识别说话人</span>';
+  $('transcriptState').textContent=reportStatus==='summarizing'?'正在转写':timeline.length?`${timeline.length} 个语音片段`:'等待录音';
+  $('meetingTranscript').innerHTML=timeline.length?timeline.map(turn=>{
+    const text=turn.text||({asr_empty:'该片段未获得有效转写',audio_saved:'录音已保存，结束会议后转写'}[turn.status]||'等待转写');
+    return `<div class="turn"><span class="turn-speaker">${escapeHtml(turn.speaker_label||'未知说话人')}</span><span class="turn-text${turn.text?'':' empty'}">${escapeHtml(text)}</span><span class="turn-time">${fmtTime(turn.start||0)}</span></div>`;
+  }).join(''):'<div class="empty-state">启动会议后，完成的语音片段会按说话人和时间显示在这里。</div>';
+
+  const ready=reportStatus==='ready';
+  $('meetingReportState').textContent=ready?'已生成':reportStatus==='summarizing'?'生成中':reportStatus==='error'?'生成失败':'尚未生成';
+  $('meetingSummary').textContent=ready?(report.summary||'会议纪要已生成'):(reportStatus==='summarizing'?'正在整理逐句记录…':'等待会议结束');
+  $('meetingMinutes').textContent=ready?(report.minutes||report.diary||''):'点击“终止并生成纪要”后，系统会先完成逐段转写，再整理不同说话人的观点和会议结论。';
+  $('meetingAsrStatus').textContent=reportStatus;
+  $('meetingReportTurns').textContent=report.turns||0;
+  $('meetingReportDuration').textContent=report.duration_min!=null?`${report.duration_min} 分钟`:'--';
+  $('meetingReportError').style.display=report.error?'block':'none';
+  $('meetingReportError').textContent=report.error?`${report.error}。请检查 ASR 配置或录音片段后重试。`:'';
+  $('meetingDoaHealth').textContent=context.doaAvailable?'ReSpeaker 已连接':'等待 ReSpeaker';
+  $('meetingFaceHealth').textContent=context.faceLocked?`已关联 Track ${context.trackId??'--'}`:(active?'持续搜索':'未运行');
+  $('meetingStorageHealth').textContent=conv.error?`异常：${conv.error}`:(active?'增量保存中':recorded?'已封存':'待启动');
+  $('meetingAiHealth').textContent=reportStatus==='ready'?'转写与纪要完成':reportStatus==='summarizing'?'处理中':reportStatus==='error'?'需要检查':'等待终止会议';
 }
 
 function renderState(s){
@@ -748,15 +820,16 @@ function renderState(s){
   $('trackingPhaseText').textContent=s.tracking_phase||ctrl.tracking_phase||'waiting_target';
   const stopState=s.stop_state||ctrl.stop_state||'';
   if(stopState==='hardware_stop_failed'&&lastStopState!==stopState)log('Hardware stop failed; check the device bridge');
+  if(stopState==='hardware_lease_degraded'&&lastStopState!==stopState)log('设备控制暂时离线，DOA 功能保持开启并等待自动恢复');
+  if(stopState==='running'&&lastStopState==='hardware_lease_degraded')log('设备控制已恢复，DOA 继续运行');
   lastStopState=stopState;
   const runtimeFeature=ctrl.active_feature||'inactive';
   if(currentSessionId&&ctrl.session_id&&ctrl.session_id!==currentSessionId){log('控制权已被新会话接管');clearSession()}
   if(currentSessionId&&ctrl.session_id===currentSessionId){
     Object.keys(featureActive).forEach(k=>featureActive[k]=false);
-    if(runtimeFeature==='meeting_sound_yaw'||runtimeFeature==='meeting_recording')featureActive.meeting_recording=true;
+    if(runtimeFeature==='meeting_sound_yaw'||runtimeFeature==='meeting_recording')featureActive.multi_sound_yaw=true;
     else if(runtimeFeature in featureActive)featureActive[runtimeFeature]=true;
     if(activePage in featureActive)featureActive[activePage]=true;
-    meetingYaw=runtimeFeature==='meeting_sound_yaw';
   }
   $('lastEvent').textContent=ctrl.last_event?`${ctrl.last_event.type}/${ctrl.last_event.name} @ ${ctrl.last_event.source}`:'--';
   const cmd=ctrl.command;
@@ -785,18 +858,13 @@ function renderState(s){
   $('blinkRateVal').textContent=eye.blink_rate!=null?num(eye.blink_rate,'',1):'--';$('attnState').textContent=att.state||att.gaze_direction||'--';
 
   const deg=doa.doa_deg!=null?Number(doa.doa_deg):null,hasSpeech=!!doa.has_speech;
-  $('doaVal').textContent=deg!=null?Math.round(deg)+'°':'--';$('meetingDoaVal').textContent=$('doaVal').textContent;
+  $('doaVal').textContent=deg!=null?Math.round(deg)+'°':'--';
   $('speechVal').textContent=hasSpeech?'有声':'无声';$('doaReady').textContent=doa.available?`已连接 (${doa.source||'doa'})`:'未连接';$('doaAge').textContent=health.doa_age!=null?num(health.doa_age,'s',2):'--';
   renderDoa(deg,hasSpeech,'doaArrow',['ledN','ledE','ledS','ledW'],'ledVal');
-  renderDoa(deg,hasSpeech,'meetingDoaArrow',['mLedN','mLedE','mLedS','mLedW'],'meetingLedVal');
-  $('meetingYawState').textContent=meetingYaw?'开启':'关闭';
   const led=rs.led||doa.led||{},ledText=led.hardware?`${led.effect||'--'} / hardware`:'unavailable';
-  $('hardwareLedState').textContent=ledText;$('meetingHardwareLed').textContent=ledText;
+  $('hardwareLedState').textContent=ledText;
 
-  const active=!!(conv.recording||conv.active||conv.requested),elapsed=conv.current?.elapsed||conv.stats?.duration||0;
-  $('recLabel').textContent=active?`录音中 ${fmtTime(elapsed)}`:'已停止';$('btnRecStart').disabled=active;$('btnRecStop').disabled=!active;
-  $('recDuration').textContent=active?fmtTime(elapsed):'--';$('convMode').textContent=conv.mode||'--';$('convSave').textContent=conv.error?'异常':'就绪';
-  $('meetingDebug').innerHTML=`recording=${active}<br>requested=${!!conv.requested}<br>error=${conv.error||''}<br>mode=${conv.mode||''}`;
+  renderMeetingWorkflow(conv,{hasSpeech,doaAvailable:!!doa.available,doaText:deg!=null?`${Math.round(deg)}°`:'--',faceLocked:!!(s.face_lock?.locked||ctrl.locked_track_id!=null),trackId:s.face_lock?.track_id??ctrl.locked_track_id});
   $('gestureModeText').textContent=featureActive.gesture_interaction?'运行中':'未激活';
   $('gestureReady').textContent=gesture.available?'模型可用':(gesture.reason||'未加载');
   $('gestureName').textContent=gesture.name||'--';
@@ -868,7 +936,12 @@ function connectWS(){
   try{
     ws=new WebSocket(url);setConn('warn','WebSocket 连接中');
     ws.onopen=()=>{lastWsAt=Date.now();setConn('on','WebSocket 已连接');log('WS connected');try{ws.send('request_state')}catch(e){}};
-    ws.onmessage=ev=>{lastWsAt=Date.now();try{const msg=JSON.parse(ev.data);if(handleVoiceDebugEvent(msg))return;const s=normalizeState(msg);if(s){state=s;renderState(state)}}catch(e){log(`WS parse error ${e.message}`)}};
+    ws.onmessage=ev=>{
+      lastWsAt=Date.now();
+      let msg;
+      try{msg=JSON.parse(ev.data)}catch(e){log(`WS parse error ${e.message}`);return}
+      try{if(handleVoiceDebugEvent(msg))return;const s=normalizeState(msg);if(s){state=s;renderState(state)}}catch(e){log(`State render error ${e.message}`)}
+    };
     ws.onerror=()=>setConn('warn','WebSocket 异常');
     ws.onclose=()=>{setConn('warn','WebSocket 断开');wsRetry=setTimeout(connectWS,1500)};
   }catch(e){setConn('warn','WebSocket failed');wsRetry=setTimeout(connectWS,1500)}
@@ -882,9 +955,9 @@ videoEl.src=`${location.origin}/video_feed?t=${Date.now()}`;
 multiMirror.src=videoEl.src;
 if(gestureMirror)gestureMirror.src=videoEl.src;
 videoEl.onerror=()=>{log('video_feed failed; retrying');setTimeout(()=>{const src=`${location.origin}/video_feed?t=${Date.now()}`;videoEl.src=src;multiMirror.src=src;if(gestureMirror)gestureMirror.src=src},1200)};
-connectWS();loadDeviceConfig();poll();setInterval(poll,350);setInterval(heartbeat,500);addEventListener('resize',()=>state&&drawOverlay(state));
+connectWS();loadDeviceConfig();poll();setInterval(poll,350);setInterval(heartbeat,1000);addEventListener('resize',()=>state&&drawOverlay(state));
 addEventListener('beforeunload',()=>{deactivatePage(activePage,true)});
-document.addEventListener('visibilitychange',()=>{if(document.hidden)deactivatePage(activePage,true);else{featureActive[activePage]=false;updateFeatureLocks();log('页面恢复可见，等待点击“启动功能”')}});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&currentSessionId)log('页面恢复可见，控制会话仍在运行')});
 updateFeatureLocks();
 log('已进入页面，等待点击“启动功能”');
 </script>

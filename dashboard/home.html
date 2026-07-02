@@ -1072,11 +1072,11 @@
     async function startSingleTrack(){
       const data=await apiPost("/api/single_track/start",{});
       if(data.session_id){App.companionSid=data.session_id;localStorage.setItem(LS.CONTROL_SID,data.session_id);}
-      // Start heartbeat (lease=1500ms, send every 750ms)
+      // Start heartbeat (lease=5000ms, send every 1000ms)
       clearInterval(App.heartbeatTimer);
       App.heartbeatTimer=setInterval(()=>{
         if(App.companionSid)apiPost("/api/control/heartbeat",{session_id:App.companionSid}).catch(()=>{});
-      },750);
+      },1000);
       return data;
     }
     async function stopSingleTrack(){

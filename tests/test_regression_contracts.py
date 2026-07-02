@@ -287,6 +287,16 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             def audio_processing_state(self):
                 return {"noise_suppression": {"enabled": False}, "vad_mode": "rms"}
 
+            def set_transcript(self, turn_id, text, confidence=0.0):
+                for turn in self._turns:
+                    if str(turn.get("id", "")) == str(turn_id):
+                        turn["text"] = text
+                return True
+
+            def save_report(self, report):
+                self.report = dict(report)
+                return "/tmp/meeting_report.json"
+
         old_recorder = api._conversation_recorder
         old_chat = api._deepseek_chat
         captured = {}
@@ -302,6 +312,7 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
 
             with tempfile.NamedTemporaryFile(suffix=".wav") as wav:
                 api._conversation_recorder = FakeRecorder([{
+                    "id": "turn_1",
                     "wav_path": wav.name,
                     "speaker_label": "说话人A",
                     "doa_mean": 65.0,
@@ -325,6 +336,62 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
         finally:
             api._conversation_recorder = old_recorder
             api._deepseek_chat = old_chat
+
+    async def test_meeting_complete_stops_before_summarizing(self) -> None:
+        old_stop = api.api_multi_track_stop
+        old_summarize = api.api_meeting_summarize
+        calls = []
+
+        async def fake_stop(payload):
+            calls.append(("stop", payload["session_id"]))
+            return {"ok": True, "accepted": True, "active": False}
+
+        async def fake_summarize(payload):
+            calls.append(("summarize", payload["session_id"]))
+            return {"ok": True, "summary": "完成", "minutes": "会议完成"}
+
+        try:
+            api.api_multi_track_stop = fake_stop
+            api.api_meeting_summarize = fake_summarize
+            result = await api.api_meeting_complete({"session_id": "meeting-1"})
+            self.assertEqual(calls, [("stop", "meeting-1"), ("summarize", "meeting-1")])
+            self.assertTrue(result["accepted"])
+            self.assertTrue(result["stopped"])
+        finally:
+            api.api_multi_track_stop = old_stop
+            api.api_meeting_summarize = old_summarize
+
+    async def test_multi_track_start_opens_control_and_recording_together(self) -> None:
+        old_start_feature = api._start_feature
+        old_ensure_doa = api._ensure_doa_reader
+        old_start_recording = api._start_conversation_recording
+        old_recorder = api._conversation_recorder
+        old_requested = api._conversation_recording_requested
+        old_report = dict(api._meeting_report)
+        calls = []
+
+        async def fake_start_feature(feature):
+            calls.append(("feature", feature))
+            return {"ok": True, "accepted": True, "session_id": "meeting-2"}
+
+        try:
+            api._start_feature = fake_start_feature
+            api._ensure_doa_reader = lambda: True
+            api._start_conversation_recording = lambda: calls.append(("recording", True)) or True
+            api._conversation_recorder = None
+            result = await api.api_multi_track_start({"save_audio": True})
+            self.assertTrue(result["accepted"])
+            self.assertTrue(result["recording_success"])
+            self.assertTrue(api._conversation_recording_requested)
+            self.assertEqual(api._meeting_report["status"], "recording")
+            self.assertEqual(calls, [("feature", "multi_sound_yaw"), ("recording", True)])
+        finally:
+            api._start_feature = old_start_feature
+            api._ensure_doa_reader = old_ensure_doa
+            api._start_conversation_recording = old_start_recording
+            api._conversation_recorder = old_recorder
+            api._conversation_recording_requested = old_requested
+            api._meeting_report = old_report
 
 
 class AttentionScoringTests(unittest.TestCase):
