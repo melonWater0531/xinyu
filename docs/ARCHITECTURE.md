@@ -5,7 +5,7 @@
 系统使用一个权威控制会话，模式为 `inactive`、`single_face_analysis`、
 `multi_sound_yaw`、`meeting_recording`、`meeting_sound_yaw` 或
 `manual_gimbal_debug`。Dashboard 页面只能发出 Event；会话由
-`main_phase3.py` 确认并以 `session_id + 2.5s lease` 维护。
+`main_phase3.py` 确认并以 `session_id + 1.5s lease` 维护。
 
 | 页面 | 输入硬件 | 输出硬件 | 控制行为 |
 |---|---|---|---|
@@ -58,9 +58,9 @@ FastAPI = UI Event emitter + perception/recording + runtime telemetry viewer
 
 ---
 
-> 版本：2.0
-> 日期：2026-06-28
-> 基于：全功能硬件闭环审计
+> 版本：2.1
+> 日期：2026-07-02
+> 基于：全功能硬件闭环审计 + A–E 功能迭代审计
 
 ---
 
@@ -203,9 +203,12 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | 文件 | 路由 | 用途 |
 |---|---|---|
 | `recamera_v2_live.html` | `/control` `/v2` | PAGE 1：实时控制台（只读遥测 + FSM 可观测） |
-| `home.html` | `/home` `/`（重定向） | PAGE 2：产品 Demo；真实 `/ws`/`/api/state` 状态优先，离线预览才使用 mock |
+| `home.html` | 需将 `HOME_FILE` 指向此文件 | PAGE 2：产品 Demo（单文件 IIFE，含所有 A–E 功能） |
+| `page2_preview/index.html` | `/home` `/`（当前实际路由） | 旧版产品首页预览（不含 A–E 功能）；**待替换为 home.html** |
 | `manifest.webmanifest` | `/manifest.webmanifest` | PWA 清单 |
 | `sw.js` | `/sw.js` | Service Worker |
+
+> **路由问题**：`recamera_fastapi.py:2233` 的 `HOME_FILE` 仍指向 `page2_preview/index.html`，导致 `/home` 不服务 `home.html`。修复：将 `HOME_FILE` 改为 `DASHBOARD_DIR / "home.html"` 并移除 `_serve_html` 中针对 `page2_preview` 的 CSS/JS 路径替换逻辑。
 
 ---
 
@@ -252,7 +255,7 @@ Debounce:
     "respeaker":{ "connected", "doa_deg", "has_speech", "audio_device", "led" },
     "attention":{ "has_face", "score", "state", "blink_count" },
     "emotieff": { "emotion", "confidence", "probabilities", "valence" },
-    "eye_metrics": { "ear", "perclos", "blink_rate" },
+    "eye_metrics": { "ear_avg", "perclos", "blink_rate", "focus_score" },
     "mp_face":  { "available", "landmarks_count" },
     "doa": { "doa_deg", "has_speech", "source", "age_ms" },
     "sound_follow": { "active", "doa_deg", "has_speech", "source" },
@@ -264,9 +267,9 @@ Debounce:
       "fallback_reason": ""
     },
     "control":  {
-      "feature": "inactive|single_face_analysis|multi_sound_yaw|meeting_recording|meeting_sound_yaw|manual_gimbal_debug",
+      "active_feature": "inactive|single_face_analysis|multi_sound_yaw|meeting_recording|meeting_sound_yaw|manual_gimbal_debug",
       "session_id": "...",
-      "lease_remaining_ms": 2500,
+      "lease_remaining_ms": 1500,
       "fsm_state": "IDLE|AUDIO_SEARCH|VISION_TRACK|FUSED_TRACK|LOST",
       "authority": "idle|audio|vision|fusion|lost",
       "last_event": { "type", "name", "source" },
@@ -341,12 +344,16 @@ Debounce:
   - 单人分析（专注度/情绪/眼部指标）
   - 系统健康（FPS/DOA age/WS 客户端/云台 RTT）
   - 实时 MJPEG 视频（含检测框 overlay）
-- [x] PAGE 2（`/home`）：产品 Demo
-  - 通过 `/ws` 订阅真实状态；WebSocket 不可用时自动降级到 `/api/state` 1s polling
+- [x] PAGE 2（`home.html`，待正确路由）：产品 Demo
+  - 通过 `/ws` 订阅真实状态；WebSocket 超过 10 次重连后停止，降级到 `/api/state` 1s polling；页面重新可见时自动复位重连计数并重连
+  - RAF 节流：`scheduleRender()` 将每次状态变化合并到下一帧，避免 200ms WS 推送频繁 DOM 更新
   - 单一 `runtimeMode` 来自后端 `control.active_feature`，localStorage 仅保存用户偏好
-  - 启动 API 返回的 `session_id` 会被保存；stop、heartbeat、beforeunload 必须携带 session
-  - 情绪监测、专注度、多人场景、日记、LLM 对话、健康建议 UI
-  - 日记保存沿用当前/实时情绪，不再固定写入 Neutral；昵称保存到 `xinyu_user_name` 并进入 chat payload
+  - 启动 API 返回的 `session_id` 会被保存；stop、heartbeat（750ms 间隔）、beforeunload 必须携带 session
+  - 情绪监测（PERCLOS / 眨眼率 / gaze 上下文）、专注度、多人场景、手势 Toast、主动关怀气泡
+  - **日记系统（B 系列）**：`xinyu_diary_entries` 数组格式（含 `id, date, emotion, conversation[]`）；每次保存后 LLM 自动回复并写入 `conversation[0]`；详情页支持多轮对话；迁移函数从旧 `xinyu_diary_calendar` / `xinyu_emotion_calendar` 自动升级
+  - **周报系统（C 系列）**：`aggregateWeekData()` 聚合近 7 天；`generateWeeklyReport()` 调用 LLM 生成书信体周报并持久化到 `xinyu_weekly_reports`
+  - **陪伴对话增强（D 系列）**：聊天发送时携带 PERCLOS / 眨眼率 / gaze / 最近日记摘要上下文；主动关怀触发时在陪伴 Tab 注入带 `data-type="care"` 气泡；每日对话持久化到 `xinyu_chat_YYYY-MM-DD`，标签页切回时恢复最近 20 条
+  - **错误处理（E 系列）**：所有 `/api/chat` 和 `/api/reflect` 调用通过 `apiChatWithTimeout()` 加 10s AbortController；所有 localStorage 写入通过 `lsWrite()` 捕获 `QuotaExceededError`；初始化时检查存储配额超 85% 时提示
   - PWA 支持（manifest + service worker）
 
 DeepSeek 默认模型保留 `deepseek-v4-flash`。旧截图中“模型不存在”的判断已过期，不作为回退依据。
@@ -396,14 +403,32 @@ Dashboard 输入框只负责重连 FastAPI 的视频/感知来源（`SSCMAVideoC
 Dashboard UI -> FastAPI UI Event -> EventBus -> main_phase3.py -> FSM -> Orchestrator -> SafetyLayer -> RecameraClient -> gimbal hardware
 ```
 
-当前 dashboard 页面结构：
+当前 dashboard 页面结构（`/home` 五个标签页）：
 
-- 单人场景：人脸追踪与分析（找人脸、云台对准、情绪/人脸/专注/眼部指标）
-- 多人场景：声源 yaw 跟随
-- 多人场景：会议录音（Respeaker 调度，集成声源/LED 示意）
-- 设备调试：手动云台
+- **首页**：今日情绪/专注摘要 + 快捷入口
+- **陪伴**（单人场景）：人脸追踪与分析、情绪/专注/眼部指标/手势/gaze、小屿对话（每日持久化）、主动关怀气泡
+- **会议**：声源 yaw 跟随 + 会议录音（`/api/conversation/start {control_session:true, save_audio:true}`）；会议整理 + 摘要
+- **记录**：情绪日历、日记详情 + 对话链、周报生成、会议历史
+- **我的**：昵称/提醒设置、设备动作、数据重置
 
-每个页面都有“启动功能”按钮。启动后由 `session_id + 2.5s lease` 维护唯一控制权；切换页面会发送 stop，新页面不会自动启动。浏览器失联时租约到期自动停止，新会话接管后旧 session 的 heartbeat/stop 无效。
+每个功能启动后由 `session_id + 1.5s lease` 维护唯一控制权，前端每 **750ms** 发送一次 heartbeat（`POST /api/control/heartbeat {session_id}`）。切换标签页或 `beforeunload` 时自动发 stop；WS 超过 10 次重连后降级为 poll-only。
+
+### localStorage 键清单（home.html）
+
+| Key | 用途 |
+|---|---|
+| `xinyu_user_name` | 用户昵称 |
+| `xinyu_diary_entries` | 日记数组（新格式：`{id, date, emotion, conversation[]}` ） |
+| `xinyu_diary_calendar` | 旧日记格式（同步写入，向后兼容） |
+| `xinyu_emotion_calendar` | 更旧格式（只迁移不再写入） |
+| `xinyu_weekly_reports` | 周报数组 |
+| `xinyu_meeting_notes` | 会议整理历史 |
+| `xinyu_chat_YYYY-MM-DD` | 每日陪伴对话（最多 50 条） |
+| `xinyu_notify_enabled` | 本地通知总开关 |
+| `xinyu_notify_last_sent` | 每类通知最近发送时间（防重） |
+| `xinyu_notify_style` | 通知节奏（quiet / gentle / active） |
+| `xinyu_control_session_id` | 陪伴 session（临时，beforeunload 时清除） |
+| `xinyu_recording_session_id` | 会议 session（临时） |
 
 `/home` 与 `/control` 共享同一状态契约。前端不再用多个 localStorage flag 伪造运行态，而是以后端 `control.active_feature`、`session_id` 和 `conversation` 为准；缺少 `session_id` 的 stop 请求会被后端明确拒绝，避免硬件 feature lease 假释放。`AttentionEngine` 已改为先融合 orientation、eye、stability、gaze 四项证据，再只对最终 fused 分数做平滑，避免重复加权。
 

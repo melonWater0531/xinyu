@@ -792,8 +792,8 @@
         </fieldset>
         <label class="note-label" for="diary-note">
           <span>想对今天说什么？</span>
-          <textarea id="diary-note" rows="4" maxlength="500" placeholder="写下一件让你记得的事……"></textarea>
-          <small><span id="diary-note-count">0</span> / 500</small>
+          <textarea id="diary-note" rows="4" maxlength="2000" placeholder="写下一件让你记得的事……"></textarea>
+          <small><span id="diary-note-count">0</span> / 2000</small>
           <p id="diary-note-warn" hidden style="color:var(--amber);font-size:11px;margin-top:4px">内容有点长，可以精简一下～</p>
         </label>
         <div class="dialog-actions">
@@ -1363,7 +1363,7 @@
 
     function renderWeekBars(){
       const now=new Date();
-      const days=[],weekAgo=new Date(now-6*86400000);
+      const days=[];
       for(let i=6;i>=0;i--){const d=new Date(now);d.setDate(d.getDate()-i);days.push(d);}
       const bars=$("rec-week-bars");if(!bars)return;bars.innerHTML="";
       const dayNames=["日","一","二","三","四","五","六"];
@@ -1386,7 +1386,8 @@
       const reports=loadWeeklyReports();
       const latestReport=reports[0];
       const letter=$("rec-week-letter");
-      if(letter&&!letter.dataset.custom){
+      if(letter){
+        delete letter.dataset.custom;
         if(latestReport){letter.textContent=latestReport.content;letter.dataset.custom="1";}
         else letter.textContent=!totalDays?"这一周还没有留下记录。可以从今天的一句话开始。"
           :(topInfo?`最近的记录里，${topInfo.zh}出现得比较多。${topInfo.note} 能停下来感受自己，本身就是一件珍贵的事。`:"");
@@ -1658,7 +1659,6 @@
           showToast("会议记录已结束");
         }else{
           const data=await startMeetingRecording();
-          if(data?.accepted===false&&!data?.session_id)throw new Error("not accepted");
           App.meetingActive=true;App.meetingStartedAt=Date.now();
           App.meetingElapsedTimer=setInterval(renderMeetingTimer,1000);
           showToast("会议记录已开始");

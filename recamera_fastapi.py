@@ -2012,10 +2012,11 @@ async def api_llm_reflect(payload: dict = Body(default={})):
         except Exception:
             pass
 
+        emo_en = _EMO_ZH_EN.get(emotion, emotion)
         if not diary_entry:
-            diary_entry = _llm_engine.diary(emotion, attn, prev)
+            diary_entry = _llm_engine.diary(emo_en, attn, prev)
         if not reply_text:
-            reply_text = _llm_engine.quote(emotion, "mid")
+            reply_text = _llm_engine.quote(emo_en, "mid")
 
         return {"diary": diary_entry, "reply": reply_text, "text": diary_entry, "source": source,
                 "time": round(_llm_engine._last_time, 2)}
@@ -2088,6 +2089,8 @@ def _reply_looks_incomplete(text: str) -> bool:
 _EMO_ZH_EN = {
     "开心": "Happiness", "悲伤": "Sadness", "愤怒": "Anger", "恐惧": "Fear",
     "惊讶": "Surprise", "厌恶": "Disgust", "轻蔑": "Contempt", "平静": "Neutral",
+    # frontend EMOTION_MAP.zh aliases
+    "快乐": "Happiness", "低落": "Sadness", "不安": "Fear", "不适": "Disgust",
 }
 
 
@@ -2230,18 +2233,13 @@ async def health():
 # 鈹€鈹€ Two pages only 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 # PAGE 1 = Control Dashboard (real telemetry/observability) -> /control , /v2
 # PAGE 2 = User product home                                -> / , /home
-HOME_FILE = DASHBOARD_DIR / "page2_preview" / "index.html"
+HOME_FILE = DASHBOARD_DIR / "home.html"
 _NOCACHE = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache", "Expires": "0"}
 
 
 def _serve_html(path: Path):
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
-    if path == HOME_FILE:
-        text = text.replace('href="./styles.css"', 'href="/static/page2_preview/styles.css"')
-        text = text.replace('src="./app.js"', 'src="/static/page2_preview/app.js"')
-        text = text.replace('src="./assets/', 'src="/static/page2_preview/assets/')
-        text = text.replace('src="./../island_cutout.png"', 'src="/static/island_cutout.png"')
     return (HTMLResponse(text, headers=dict(_NOCACHE))
             if path.is_file() else HTMLResponse("Not found", status_code=404))
 
