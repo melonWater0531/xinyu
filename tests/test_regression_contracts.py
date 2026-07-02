@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
 
+import numpy as np
 import recamera_fastapi as api
+from audio.conversation_recorder import ConversationRecorder
 from services.emotion_prompt import build_emotion_context
 import services.llm_router as llm_router
+from services.speaker_mapper import SpeakerMapper
 from vision.attention_engine import AttentionConfig, ScoringModule
 
 
@@ -171,6 +175,156 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(reflect["diary"])
         finally:
             api._cloud_llm_complete = old_complete
+
+    def test_speaker_mapper_register_lookup_and_search_plan_are_non_executing(self) -> None:
+        mapper = SpeakerMapper()
+        self.assertIsNone(mapper.lookup(65))
+        info = mapper.register(65, track_id=2, pitch=88.5)
+        self.assertEqual(info["label"], "说话人A")
+        self.assertEqual(mapper.lookup(70)["label"], "说话人A")
+        self.assertIsNone(mapper.lookup(120))
+
+        wrap = mapper.register(355, track_id=3, pitch=90)
+        self.assertEqual(mapper.lookup(5)["label"], wrap["label"])
+
+        direct = mapper.build_search_plan(66)
+        self.assertEqual(direct["action"], "direct")
+        self.assertFalse(direct["execute"])
+
+        search = mapper.build_search_plan(180)
+        self.assertEqual(search["action"], "search")
+        self.assertFalse(search["execute"])
+
+        mapper.reset()
+        self.assertEqual(mapper.get_registered_speakers(), [])
+
+    def test_conversation_turn_records_speaker_provider_label_and_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            recorder = ConversationRecorder(
+                root=tmp,
+                doa_provider=lambda: (65.0, True),
+                speaker_provider=lambda doa: "说话人A",
+            )
+            recorder._session_id = "session_test"
+            recorder._session_dir = recorder.root / recorder._session_id
+            (recorder._session_dir / "audio" / "segments").mkdir(parents=True)
+            recorder._started_at = 100.0
+            chunk = np.zeros(1600, dtype=np.float32)
+            recorder._finalize_segment([chunk], [65.0], 101.0, 102.0)
+            turn = recorder.state()["timeline"][0]
+            self.assertEqual(turn["speaker_label"], "说话人A")
+            self.assertEqual(turn["speaker"], "SPEAKER_RIGHT")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            def broken(_doa):
+                raise RuntimeError("boom")
+
+            recorder = ConversationRecorder(root=tmp, speaker_provider=broken)
+            recorder._session_id = "session_test"
+            recorder._session_dir = recorder.root / recorder._session_id
+            (recorder._session_dir / "audio" / "segments").mkdir(parents=True)
+            recorder._started_at = 100.0
+            recorder._finalize_segment([np.zeros(1600, dtype=np.float32)], [10.0], 101.0, 102.0)
+            self.assertEqual(recorder.state()["timeline"][0]["speaker_label"], "未知说话人")
+
+    async def test_meeting_speakers_and_wake_word_state_defaults(self) -> None:
+        from services.speaker_mapper import speaker_mapper
+
+        speaker_mapper.reset()
+        empty = await api.api_meeting_speakers()
+        self.assertEqual(empty, {"ok": True, "speakers": [], "total": 0})
+        speaker_mapper.register(65, track_id=2, pitch=88.5)
+        speakers = await api.api_meeting_speakers()
+        self.assertEqual(speakers["total"], 1)
+        self.assertEqual(speakers["speakers"][0]["label"], "说话人A")
+
+        old_wake = api._wake_word_service
+        try:
+            api._wake_word_service = None
+            state = await api.api_wake_word_state()
+            self.assertFalse(state["enabled"])
+            self.assertFalse(state["available"])
+        finally:
+            api._wake_word_service = old_wake
+
+    async def test_voice_state_say_and_stop_are_stable_without_wake_word(self) -> None:
+        old_wake = api._wake_word_service
+        sent = []
+        old_broadcast = api.ws_mgr.broadcast
+
+        async def fake_broadcast(data):
+            sent.append(data)
+
+        try:
+            api._wake_word_service = None
+            api.ws_mgr.broadcast = fake_broadcast
+            state = await api.api_voice_state()
+            self.assertIn("enabled", state)
+            self.assertEqual(state["engine"], "browser_speech")
+
+            said = await api.api_voice_say({"text": "小屿语音测试。", "reason": "manual", "source": "test"})
+            self.assertTrue(said["ok"])
+            self.assertEqual(sent[-1]["type"], "voice_utterance")
+            self.assertEqual(sent[-1]["text"], "小屿语音测试。")
+
+            stopped = await api.api_voice_stop({"reason": "test"})
+            self.assertTrue(stopped["ok"])
+            self.assertEqual(sent[-1]["type"], "voice_stop")
+            self.assertFalse((await api.api_wake_word_state())["enabled"])
+        finally:
+            api._wake_word_service = old_wake
+            api.ws_mgr.broadcast = old_broadcast
+
+    async def test_meeting_summarize_uses_speaker_labels_and_preserves_errors(self) -> None:
+        class FakeRecorder:
+            def __init__(self, turns):
+                self._turns = turns
+                self.active = False
+
+            def state(self):
+                return {"timeline": self._turns, "stats": {"duration": 60}}
+
+            def audio_processing_state(self):
+                return {"noise_suppression": {"enabled": False}, "vad_mode": "rms"}
+
+        old_recorder = api._conversation_recorder
+        old_chat = api._deepseek_chat
+        captured = {}
+
+        async def fake_chat(messages, max_tokens=None):
+            captured["user"] = messages[-1]["content"]
+            return '{"diary":"会议整理完成。","summary":"完成整理"}'
+
+        try:
+            api._conversation_recorder = FakeRecorder([])
+            no_segments = await api.api_meeting_summarize({})
+            self.assertEqual(no_segments["error_code"], "no_segments")
+
+            with tempfile.NamedTemporaryFile(suffix=".wav") as wav:
+                api._conversation_recorder = FakeRecorder([{
+                    "wav_path": wav.name,
+                    "speaker_label": "说话人A",
+                    "doa_mean": 65.0,
+                }])
+                api._deepseek_chat = fake_chat
+                import services.cloud_asr as cloud_asr_module
+                old_transcribe = cloud_asr_module.cloud_asr.transcribe
+
+                async def fake_transcribe(_path):
+                    return "今天讨论了项目进展。"
+
+                cloud_asr_module.cloud_asr.transcribe = fake_transcribe
+                try:
+                    result = await api.api_meeting_summarize({})
+                finally:
+                    cloud_asr_module.cloud_asr.transcribe = old_transcribe
+
+            self.assertTrue(result["ok"])
+            self.assertIn("[说话人A] 今天讨论了项目进展。", result["transcript"])
+            self.assertIn("[说话人A] 今天讨论了项目进展。", captured["user"])
+        finally:
+            api._conversation_recorder = old_recorder
+            api._deepseek_chat = old_chat
 
 
 class AttentionScoringTests(unittest.TestCase):

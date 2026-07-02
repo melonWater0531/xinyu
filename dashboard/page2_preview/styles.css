@@ -228,3 +228,8 @@ dialog { border: 0; padding: 0; background: transparent; color: var(--ink); }.mo
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.voice-inline { margin-left: 8px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.75); color: var(--ink); font-size: 12px; cursor: pointer; }
+.check-row { display: flex; align-items: center; gap: 8px; margin: 8px 0 12px; color: var(--muted); font-size: 13px; }
+.settings-card select, .settings-card input[type="range"] { width: 100%; }
+.settings-card fieldset p { margin: 8px 0 0; color: var(--muted); font-size: 12px; }

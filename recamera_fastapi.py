@@ -318,6 +318,11 @@ _doa_reader = None
 _conversation_recorder = None
 _conversation_recording_requested = False
 _last_conversation_start_attempt = 0.0
+_wake_word_service = None
+try:
+    from services.voice_policy import voice_policy
+except Exception:
+    voice_policy = None
 # Single/multi tracking mode — UI state only (no hardware binding)
 _tracking_mode: str = "single"
 _single_track_active: bool = False
@@ -655,6 +660,132 @@ def _conversation_doa_provider() -> tuple[Optional[float], bool]:
     return float(_doa_reader.doa), bool(_doa_reader.has_speech)
 
 
+def _meeting_speaker_provider(doa_deg: Optional[float]) -> Optional[str]:
+    if doa_deg is None:
+        return None
+    from services.speaker_mapper import speaker_mapper
+
+    match = speaker_mapper.lookup(float(doa_deg))
+    if match:
+        return str(match.get("label", "未知说话人"))
+
+    try:
+        state = build_state_snapshot().get("data", {})
+        face_lock = state.get("face_lock") or {}
+        gimbal = state.get("gimbal") or {}
+        pitch = gimbal.get("pitch")
+        if face_lock.get("locked"):
+            info = speaker_mapper.register(
+                doa_deg=float(doa_deg),
+                track_id=face_lock.get("track_id"),
+                pitch=float(pitch) if pitch is not None else None,
+            )
+            return str(info["label"])
+
+        pose = state.get("pose") or {}
+        persons = pose.get("persons") or []
+        video = state.get("video") or {}
+        width = int(video.get("width") or 1920)
+        yaw = float(gimbal.get("yaw") or doa_deg)
+        face = speaker_mapper.find_closest_face_to_doa(persons, float(doa_deg), width, yaw)
+        if face:
+            info = speaker_mapper.register(
+                doa_deg=float(doa_deg),
+                track_id=face.get("track_id"),
+                pitch=float(pitch) if pitch is not None else None,
+            )
+            return str(info["label"])
+    except Exception as exc:
+        logger.debug("meeting speaker provider failed: %s", str(exc)[:100])
+    return None
+
+
+def _wake_word_state() -> dict:
+    if _wake_word_service is None:
+        return {"enabled": False, "available": False, "listening": False, "paused": False, "error": ""}
+    return _wake_word_service.state()
+
+
+def _voice_state() -> dict:
+    if voice_policy is None:
+        return {
+            "enabled": False,
+            "available": False,
+            "speaking": False,
+            "queue_len": 0,
+            "last_utterance": "",
+            "last_reason": "",
+            "engine": "browser_speech",
+            "cooldowns": {},
+            "recent_events": [],
+            "error": "voice_policy_unavailable",
+        }
+    return voice_policy.state()
+
+
+async def _emit_voice(
+    text: str,
+    reason: str = "manual",
+    priority: str = "normal",
+    interrupt: bool = False,
+    source: str = "fastapi",
+    force: bool = False,
+) -> dict:
+    if voice_policy is None:
+        return {"ok": False, "reason": "voice_policy_unavailable"}
+    utterance = voice_policy.build(
+        text,
+        reason=reason,
+        priority=priority,
+        interrupt=interrupt,
+        source=source,
+        force=force,
+    )
+    if utterance is None:
+        return {"ok": False, "reason": "suppressed", "state": _voice_state()}
+    event = utterance.to_event()
+    await ws_mgr.broadcast(event)
+    return {"ok": True, "event": event, "state": _voice_state()}
+
+
+async def _emit_voice_reason(
+    reason: str,
+    priority: str = "normal",
+    interrupt: bool = False,
+    source: str = "fastapi",
+    force: bool = False,
+) -> dict:
+    if voice_policy is None:
+        return {"ok": False, "reason": "voice_policy_unavailable"}
+    text = voice_policy.short_text_for(reason)
+    return await _emit_voice(
+        text,
+        reason=reason,
+        priority=priority,
+        interrupt=interrupt,
+        source=source,
+        force=force,
+    )
+
+
+async def _emit_voice_stop(reason: str = "manual") -> dict:
+    if voice_policy is None:
+        return {"ok": False, "reason": "voice_policy_unavailable"}
+    event = voice_policy.stop_event(reason=reason)
+    await ws_mgr.broadcast(event)
+    return {"ok": True, "event": event, "state": _voice_state()}
+
+
+def _pause_wake_word() -> None:
+    if _wake_word_service is not None:
+        _wake_word_service.pause()
+
+
+def _resume_wake_word() -> None:
+    if _wake_word_service is not None:
+        _wake_word_service.resume()
+
+
 def _ensure_conversation_recorder():
     global _conversation_recorder
     if _conversation_recorder is not None:
@@ -672,6 +803,7 @@ def _ensure_conversation_recorder():
     _conversation_recorder = ConversationRecorder(
         root=records_root,
         doa_provider=_conversation_doa_provider,
+        speaker_provider=_meeting_speaker_provider,
         sample_rate=16000,
         device=audio_device,
     )
@@ -1084,6 +1216,7 @@ def build_state_snapshot() -> dict:
             "respeaker": _respeaker_state(),
             "conversation": _conversation_state(),
             "audio_processing": _audio_processing_state(),
+            "voice": _voice_state(),
             "attention": _attn_result,
             "emotion": _emotion_result,
             "emotieff": _emotieff_result,
@@ -1197,10 +1330,37 @@ async def lifespan(app: FastAPI):
     get_emotieff_adapter()
 
     # USB is the production source; TCP remains an explicit fallback.
-    global _doa_reader, _conversation_recording_requested
+    global _doa_reader, _conversation_recording_requested, _wake_word_service
     _doa_reader = None
     _conversation_recording_requested = False
     _ensure_doa_reader()
+
+    audio_device = os.environ.get("RECAMERA_AUDIO_DEVICE", "").strip()
+    if audio_device:
+        try:
+            audio_device = int(audio_device)
+        except ValueError:
+            pass
+    else:
+        audio_device = None
+    from services.wake_word_service import WakeWordService
+    _wake_word_service = WakeWordService(audio_device_index=audio_device)
+    loop = asyncio.get_running_loop()
+
+    def _on_wake(name: str, score: float) -> None:
+        event = {"type": "wake_word_detected", "name": name, "score": float(score), "time": time.time()}
+        def _schedule_wake_events():
+            asyncio.create_task(ws_mgr.broadcast(event))
+            asyncio.create_task(_emit_voice_reason(
+                "wake_word",
+                priority="high",
+                interrupt=True,
+                source="wake_word",
+            ))
+        loop.call_soon_threadsafe(_schedule_wake_events)
+
+    _wake_word_service.on_wake(_on_wake)
+    _wake_word_service.start()
 
     # Background task: perception/state push. Control telemetry comes from the
     # external control runtime, not from direct FastAPI hardware access.
@@ -1232,6 +1392,8 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError: pass
 
     _stop_conversation_recording(finalize=True)
+    if _wake_word_service:
+        _wake_word_service.stop()
     if video_client: video_client.stop()
     if _doa_reader:
         led_off = getattr(_doa_reader, "set_led_off", None)
@@ -1693,16 +1855,28 @@ async def api_conversation_debug():
 async def api_conversation_start(payload: dict = None):
     global _conversation_recording_requested, _ui_session_id
     payload = payload or {}
+    from services.speaker_mapper import speaker_mapper
+    speaker_mapper.reset()
+    _pause_wake_word()
     session_result = None
     if payload.get("control_session"):
         session_result = await _start_feature("meeting_recording")
         if not session_result.get("accepted"):
+            _resume_wake_word()
             return {"success": False, "recording_success": False, **session_result}
     _conversation_recording_requested = bool(payload.get("save_audio", False))
     doa_ok = _ensure_doa_reader()
     ok = _start_conversation_recording() if _conversation_recording_requested else True
     if not ok and session_result:
         await _stop_feature(session_result.get("session_id", ""))
+        _resume_wake_word()
+    if doa_ok and ok:
+        await _emit_voice_reason(
+            "meeting_start",
+            priority="normal",
+            interrupt=False,
+            source="conversation_start",
+        )
     return {
         "success": bool(doa_ok and ok), "recording_success": bool(ok),
         "state": _conversation_state(), **(session_result or {}),
@@ -1715,7 +1889,14 @@ async def api_conversation_stop(payload: dict = None):
     payload = payload or {}
     _conversation_recording_requested = False
     _stop_conversation_recording(finalize=bool(payload.get("finalize", True)))
+    _resume_wake_word()
     session_result = await _stop_feature(str(payload.get("session_id", ""))) if payload.get("session_id") else {}
+    await _emit_voice_reason(
+        "meeting_stop",
+        priority="normal",
+        interrupt=False,
+        source="conversation_stop",
+    )
     return {"success": True, "state": _conversation_state(), **session_result}
 
 
@@ -1724,6 +1905,46 @@ async def api_conversation_save(payload: dict = None):
     # Segments and timeline are written incrementally; this endpoint is a stable
     # frontend action that returns the current persisted session metadata.
     return {"success": True, "state": _conversation_state()}
+
+
+@app.get("/api/meeting/speakers")
+async def api_meeting_speakers():
+    from services.speaker_mapper import speaker_mapper
+    speakers = speaker_mapper.get_registered_speakers()
+    return {"ok": True, "speakers": speakers, "total": len(speakers)}
+
+
+@app.get("/api/wake_word/state")
+async def api_wake_word_state():
+    return _wake_word_state()
+
+
+@app.get("/api/voice/state")
+async def api_voice_state():
+    return _voice_state()
+
+
+@app.post("/api/voice/say")
+async def api_voice_say(payload: dict = Body(default={})):
+    payload = payload or {}
+    text = str(payload.get("text") or "")
+    reason = str(payload.get("reason") or "manual")
+    if not text and voice_policy is not None:
+        text = voice_policy.short_text_for(reason, "小屿语音测试。")
+    return await _emit_voice(
+        text,
+        reason=reason,
+        priority=str(payload.get("priority") or "normal"),
+        interrupt=bool(payload.get("interrupt", False)),
+        source=str(payload.get("source") or "api"),
+        force=bool(payload.get("force", True)),
+    )
+
+
+@app.post("/api/voice/stop")
+async def api_voice_stop(payload: dict = Body(default={})):
+    payload = payload or {}
+    return await _emit_voice_stop(str(payload.get("reason") or "api"))
 
 # NOTE: removed /api/auto_align (gimbal yaw/pitch search + face-tracking start).
 
@@ -2192,41 +2413,69 @@ async def api_chat_status():
 
 @app.post("/api/meeting/summarize")
 async def api_meeting_summarize(payload: dict = Body(default={})):
-    """Transcribe WAV segments from ConversationRecorder, summarize with DeepSeek."""
+    """Transcribe meeting segments and summarize with speaker labels."""
     from pathlib import Path as _Path
     from services.cloud_asr import cloud_asr as _cloud_asr
+    from services.emotion_prompt import build_emotion_context
+    from services.speaker_mapper import speaker_mapper
 
     recorder = _conversation_recorder
     if recorder is None:
+        await _emit_voice_reason(
+            "meeting_summary_error",
+            priority="normal",
+            interrupt=False,
+            source="meeting_summarize",
+        )
         return {"ok": False, "error_code": "recording_not_started", "error": "录音未启动，请先开启会议录音"}
 
     session_state = recorder.state()
     turns = session_state.get("timeline", [])
     if not turns:
+        await _emit_voice_reason(
+            "meeting_summary_error",
+            priority="normal",
+            interrupt=False,
+            source="meeting_summarize",
+        )
         return {"ok": False, "error_code": "no_segments", "error": "本次无录音片段，请先录到语音片段"}
 
     transcripts = []
     for turn in turns:
         wav = turn.get("wav_path", "")
-        doa = turn.get("doa_mean")
         if wav and _Path(wav).exists():
             text = await _cloud_asr.transcribe(wav)
             if text:
-                zone = "左侧" if (doa or 180) < 135 else "右侧" if (doa or 180) > 225 else "正前方"
-                transcripts.append(f"[{zone}] {text}")
+                speaker = str(turn.get("speaker_label") or "未知说话人")
+                transcripts.append(f"[{speaker}] {text}")
 
     if not transcripts:
+        await _emit_voice_reason(
+            "meeting_summary_error",
+            priority="normal",
+            interrupt=False,
+            source="meeting_summarize",
+        )
         return {"ok": False, "error_code": "asr_empty", "error": "转写结果为空（faster-whisper 未安装或语音过短）"}
 
     full_transcript = "\n".join(transcripts)
     duration_min = round(session_state.get("stats", {}).get("duration", 0) / 60, 1)
+    speakers = speaker_mapper.get_registered_speakers()
+    speaker_list = "、".join(s["label"] for s in speakers) if speakers else "暂未识别"
+    emotion_context = build_emotion_context(build_state_snapshot().get("data", {}))
 
     sys_p = (
-        "你是心屿，请将以下多人对话整理为一段今日会议摘要。"
-        "要求：用'我'的视角；描述对话的核心内容和氛围；不超过100字；"
+        "你是心屿，请将以下多人对话整理为会议记录。"
+        "转写中方括号标记不同发言者；未知说话人也要如实保留。"
+        "要求：用'我'的视角；描述对话核心内容、不同发言者观点和氛围；不超过120字；"
         "输出严格JSON：{\"diary\":\"...\",\"summary\":\"一句话摘要，不超过30字\"}"
     )
-    usr_p = f"对话时长：{duration_min}分钟。\n逐句记录（方向标注）：\n{full_transcript[:1500]}"
+    usr_p = (
+        f"对话时长：{duration_min}分钟。\n"
+        f"已注册说话人：{speaker_list}\n"
+        f"现场状态线索：\n{emotion_context}\n\n"
+        f"逐句记录（说话人标注）：\n{full_transcript[:1800]}"
+    )
 
     raw = await _deepseek_chat([
         {"role": "system", "content": sys_p},
@@ -2243,6 +2492,12 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
         diary_text   = raw[:100] if raw else "本次会议记录整理完成。"
         summary_text = diary_text[:30]
 
+    await _emit_voice_reason(
+        "meeting_summary_ok",
+        priority="normal",
+        interrupt=False,
+        source="meeting_summarize",
+    )
     return {
         "ok": True,
         "diary": diary_text,

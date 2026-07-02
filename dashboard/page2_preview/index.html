@@ -112,6 +112,11 @@
             <p id="care-copy">护眼、久坐、喝水和情绪关心都在本机提醒。</p>
             <div class="inline-actions"><button class="soft-button" type="button" id="notify-toggle">开启提醒</button><button class="soft-button" type="button" id="notify-test">测试提醒</button></div>
           </article>
+          <article class="paper-panel product-card">
+            <p class="eyebrow">VOICE</p><h2>小屿语音</h2>
+            <p id="voice-status">语音待命</p>
+            <div class="inline-actions"><button class="soft-button" type="button" id="voice-toggle">关闭语音</button><button class="soft-button" type="button" id="voice-stop">停止朗读</button><button class="soft-button" type="button" id="voice-replay" disabled>重播</button></div>
+          </article>
           <article class="paper-panel product-card wide">
             <p class="eyebrow">XIAOYU</p><h2>和小屿聊聊</h2>
             <div class="chat-thread" id="chat-thread"><div class="chat-bubble">你可以把此刻想说的话放在这里，小屿会结合今天的状态回应。</div></div>
@@ -187,6 +192,7 @@
           <form class="settings-card paper-panel" id="settings-form">
             <div class="field"><label for="profile-name">昵称</label><input id="profile-name" name="profileName" maxlength="20" autocomplete="nickname"></div>
             <fieldset><legend>提醒节奏</legend><div class="segmented"><label><input type="radio" name="reminderTone" value="quiet"><span>安静</span></label><label><input type="radio" name="reminderTone" value="gentle"><span>温和</span></label><label><input type="radio" name="reminderTone" value="active"><span>积极</span></label></div></fieldset>
+            <fieldset><legend>语音输出</legend><label class="check-row"><input type="checkbox" id="voice-enabled">允许小屿朗读短句</label><div class="field"><label for="voice-volume">音量</label><input id="voice-volume" type="range" min="0" max="100" step="5"></div><div class="field"><label for="voice-rate">语速</label><input id="voice-rate" type="range" min="0.70" max="1.25" step="0.05"></div><div class="field"><label for="voice-proactive">主动程度</label><select id="voice-proactive"><option value="quiet">手动为主</option><option value="gentle">克制提醒</option><option value="active">积极陪伴</option></select></div><p id="voice-backend-status">后端：browser_speech / 待命</p></fieldset>
             <button class="primary-cta compact-cta" type="submit">保存设置</button>
           </form>
           <article class="privacy-card paper-panel"><span aria-hidden="true">⌂</span><div><h2>本地优先，安心记录</h2><p>日记、心情和健康记录只保存在当前浏览器；实时陪伴能力会在心屿服务可用时加入。</p></div></article>

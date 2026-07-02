@@ -56,6 +56,14 @@
       entries: {},
       meetings: [],
       notifyEnabled: localStorage.getItem("xinyu_notify_enabled") === "true",
+      voice: {
+        enabled: localStorage.getItem("xinyu_voice_enabled") !== "false",
+        volume: 0.85,
+        rate: 1.0,
+        proactive: "gentle",
+        lastText: "",
+        lastReason: ""
+      },
       lastSent: {},
       quietHours: { start: "22:30", end: "08:30" }
     };
@@ -72,6 +80,7 @@
         profile: { ...base.profile, ...(saved.profile || {}) },
         entries: saved.entries || {},
         meetings: saved.meetings || [],
+        voice: { ...base.voice, ...(saved.voice || {}) },
         lastSent: saved.lastSent || {}
       };
     } catch (_) {
@@ -83,6 +92,7 @@
     localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
     localStorage.setItem("xinyu_user_name", store.profile.name);
     localStorage.setItem("xinyu_notify_enabled", String(store.notifyEnabled));
+    localStorage.setItem("xinyu_voice_enabled", String(store.voice.enabled));
   }
 
   function dateKey(date) {
@@ -102,6 +112,71 @@
     toast.classList.add("show");
     clearTimeout(toastTimer);
     toastTimer = window.setTimeout(() => toast.classList.remove("show"), 2400);
+  }
+
+  function voiceAvailable() {
+    return "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+  }
+
+  function setVoiceStatus(text) {
+    const status = $("#voice-status");
+    if (status) status.textContent = text;
+  }
+
+  function stopVoice(reason = "user") {
+    if (voiceAvailable()) window.speechSynthesis.cancel();
+    setVoiceStatus(store.voice.enabled ? "语音已停止" : "语音已关闭");
+    apiPost("/api/voice/stop", { reason }).catch(() => {});
+  }
+
+  function speakText(text, reason = "manual", interrupt = false) {
+    const cleaned = String(text || "").trim();
+    if (!cleaned) return false;
+    store.voice.lastText = cleaned;
+    store.voice.lastReason = reason;
+    persist();
+    if (!store.voice.enabled) {
+      setVoiceStatus("语音已关闭");
+      return false;
+    }
+    if (!voiceAvailable()) {
+      setVoiceStatus("当前浏览器不支持语音朗读");
+      showToast(cleaned);
+      return false;
+    }
+    if (interrupt) window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(cleaned);
+    utterance.lang = "zh-CN";
+    utterance.volume = Math.max(0, Math.min(1, Number(store.voice.volume || 0.85)));
+    utterance.rate = Math.max(0.7, Math.min(1.25, Number(store.voice.rate || 1)));
+    utterance.onstart = () => setVoiceStatus("小屿正在说话");
+    utterance.onend = () => setVoiceStatus(store.voice.enabled ? "语音待命" : "语音已关闭");
+    utterance.onerror = () => setVoiceStatus("语音播放失败，已保留文字");
+    window.speechSynthesis.speak(utterance);
+    renderVoiceControls();
+    return true;
+  }
+
+  function handleVoiceEvent(msg) {
+    if (!msg || !msg.type) return false;
+    if (msg.type === "voice_utterance") {
+      const text = msg.display_text || msg.text || "";
+      setVoiceStatus(text ? `小屿：${text}` : "收到语音事件");
+      speakText(text, msg.reason || "voice_event", Boolean(msg.interrupt));
+      return true;
+    }
+    if (msg.type === "voice_stop") {
+      if (voiceAvailable()) window.speechSynthesis.cancel();
+      setVoiceStatus("语音已停止");
+      return true;
+    }
+    if (msg.type === "wake_word_detected") {
+      showToast("小屿听到了唤醒词");
+      const input = $("#chat-input");
+      if (input) input.focus();
+      return true;
+    }
+    return false;
   }
 
   function moodIcon(mood, className = "mood-icon", alt = "") {
@@ -186,6 +261,7 @@
         wsLastAt = Date.now();
         try {
           const msg = JSON.parse(event.data);
+          if (handleVoiceEvent(msg)) return;
           applyState(msg.data || msg);
         } catch (_) {}
       };
@@ -207,6 +283,31 @@
     mergeTodayObservation();
     renderAll();
     evaluateNotifications();
+  }
+
+  function renderVoiceControls() {
+    const enabled = Boolean(store.voice.enabled);
+    const backend = product.state?.voice || {};
+    const status = $("#voice-status");
+    if (status && !store.voice.lastText) {
+      status.textContent = enabled
+        ? (backend.available === false ? "语音事件待命，浏览器播放" : "语音待命")
+        : "语音已关闭";
+    }
+    const toggle = $("#voice-toggle");
+    if (toggle) toggle.textContent = enabled ? "关闭语音" : "开启语音";
+    const replay = $("#voice-replay");
+    if (replay) replay.disabled = !store.voice.lastText;
+    const checkbox = $("#voice-enabled");
+    if (checkbox) checkbox.checked = enabled;
+    const volume = $("#voice-volume");
+    if (volume) volume.value = String(Math.round(Number(store.voice.volume || 0.85) * 100));
+    const rate = $("#voice-rate");
+    if (rate) rate.value = String(Number(store.voice.rate || 1).toFixed(2));
+    const proactive = $("#voice-proactive");
+    if (proactive) proactive.value = store.voice.proactive || "gentle";
+    const backendLine = $("#voice-backend-status");
+    if (backendLine) backendLine.textContent = `后端：${backend.engine || "browser_speech"} / ${backend.enabled === false ? "关闭" : "待命"}`;
   }
 
   function mergeTodayObservation() {
@@ -263,6 +364,7 @@
     renderRecords();
     renderMine();
     renderServiceStatus();
+    renderVoiceControls();
   }
 
   function renderHome() {
@@ -313,6 +415,7 @@
     const gesture = product.state?.gesture || {};
     $("#gesture-state").textContent = gesture.intent_ready || gesture.intent ? gestureLabel(gesture.intent) : "暂未识别到手势";
     $("#notify-toggle").textContent = store.notifyEnabled ? "关闭提醒" : "开启提醒";
+    renderVoiceControls();
   }
 
   function gestureLabel(intent) {
@@ -590,7 +693,10 @@
     pending.className = "chat-bubble";
     pending.textContent = "小屿正在读你的这句话……";
     thread.append(pending);
-    pending.textContent = await askXiaoyu(message);
+    const reply = await askXiaoyu(message);
+    pending.innerHTML = `${escapeHTML(reply)} <button class="voice-inline" type="button" aria-label="朗读这条回复">朗读</button>`;
+    pending.querySelector(".voice-inline")?.addEventListener("click", () => speakText(reply, "chat_replay", true));
+    speakText(reply, "chat_reply", false);
     thread.scrollTop = thread.scrollHeight;
   }
 
@@ -647,9 +753,11 @@
       $("#meeting-notes").innerHTML = `<div class="demo-note"><strong>这次交流的回声</strong><br>${escapeHTML(summary)}<br><br>${escapeHTML(diary)}</div>`;
       renderMeetingHistory();
       showToast("会议整理完成");
+      speakText("会议整理好了，重点已经放在记录里。", "meeting_summary_ok", false);
     } catch (error) {
       const code = error?.error_code || error?.message;
       $("#meeting-notes").textContent = meetingErrorText(code);
+      speakText("这段声音太短或不够清楚，我还没有整理出来。", "meeting_summary_error", false);
     }
   }
 
@@ -724,9 +832,26 @@
     event.preventDefault();
     store.profile.name = $("#profile-name").value.trim() || "心屿用户";
     store.profile.reminderTone = $("input[name='reminderTone']:checked")?.value || "gentle";
+    store.voice.enabled = Boolean($("#voice-enabled")?.checked);
+    store.voice.volume = Math.max(0, Math.min(1, Number($("#voice-volume")?.value || 85) / 100));
+    store.voice.rate = Math.max(0.7, Math.min(1.25, Number($("#voice-rate")?.value || 1)));
+    store.voice.proactive = $("#voice-proactive")?.value || "gentle";
     persist();
     renderAll();
     showToast("设置已经保存");
+  }
+
+  function toggleVoice() {
+    store.voice.enabled = !store.voice.enabled;
+    if (!store.voice.enabled) stopVoice("disabled");
+    persist();
+    renderVoiceControls();
+    showToast(store.voice.enabled ? "语音已开启" : "语音已关闭");
+  }
+
+  function replayVoice() {
+    if (!store.voice.lastText) return;
+    speakText(store.voice.lastText, store.voice.lastReason || "replay", true);
   }
 
   function resetData() {
@@ -771,6 +896,9 @@
     $("#settings-form").addEventListener("submit", saveProfile);
     $("#notify-toggle").addEventListener("click", toggleNotifications);
     $("#notify-test").addEventListener("click", testNotification);
+    $("#voice-toggle")?.addEventListener("click", toggleVoice);
+    $("#voice-stop")?.addEventListener("click", () => stopVoice("home_button"));
+    $("#voice-replay")?.addEventListener("click", replayVoice);
     $("#reset-data").addEventListener("click", resetData);
     $$("[data-device-action]").forEach((button) => button.addEventListener("click", () => deviceAction(button.dataset.deviceAction)));
     $("#mood-dialog").addEventListener("click", (event) => { if (event.target === $("#mood-dialog")) $("#mood-dialog").close(); });

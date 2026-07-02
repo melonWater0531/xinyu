@@ -36,6 +36,7 @@ class ConversationTurn:
     session_id: str
     speaker: str
     speaker_hint: str
+    speaker_label: str
     start: float
     end: float
     text: str
@@ -67,6 +68,7 @@ class ConversationRecorder:
         self,
         root: str | Path,
         doa_provider: Optional[Callable[[], tuple[Optional[float], bool]]] = None,
+        speaker_provider: Optional[Callable[[Optional[float]], Optional[str]]] = None,
         sample_rate: int = 16000,
         block_ms: int = 100,
         device: Optional[int | str] = None,
@@ -77,6 +79,7 @@ class ConversationRecorder:
         self.block_size = max(160, int(self.sample_rate * self.block_ms / 1000))
         self.device = device
         self.doa_provider = doa_provider
+        self.speaker_provider = speaker_provider
 
         self._lock = threading.Lock()
         self._audio_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=200)
@@ -93,6 +96,7 @@ class ConversationRecorder:
             "elapsed": 0.0,
             "doa_deg": None,
             "speaker_hint": "未知",
+            "speaker_label": "未知说话人",
             "level": 0.0,
         }
         self._error = ""
@@ -261,12 +265,23 @@ class ConversationRecorder:
                     "elapsed": round(max(0.0, now - speech_start_ts), 1) if in_speech else 0.0,
                     "doa_deg": round(float(doa_deg), 1) if doa_deg is not None else None,
                     "speaker_hint": self._speaker_hint(doa_deg),
+                    "speaker_label": self._speaker_label_from_provider(doa_deg),
                     "level": round(level, 4),
                 })
 
     def _read_doa(self) -> tuple[Optional[float], bool]:
         if not self.doa_provider:
             return None, False
+
+    def _speaker_label_from_provider(self, doa: Optional[float]) -> str:
+        if not self.speaker_provider:
+            return "未知说话人"
+        try:
+            label = self.speaker_provider(doa)
+            return str(label).strip() if label else "未知说话人"
+        except Exception as exc:
+            logger.debug("speaker provider failed: %s", str(exc)[:80])
+            return "未知说话人"
         try:
             return self.doa_provider()
         except Exception:
@@ -289,11 +304,13 @@ class ConversationRecorder:
 
         doa_mean = self._circular_mean(doa_values) if doa_values else None
         stability = self._doa_stability(doa_values) if doa_values else 0.0
+        speaker_label = self._speaker_label_from_provider(doa_mean)
         turn = ConversationTurn(
             id=f"turn_{self._segment_idx:06d}",
             session_id=self._session_id,
             speaker=self._speaker_label(doa_mean),
             speaker_hint=self._speaker_hint(doa_mean),
+            speaker_label=speaker_label,
             start=start_ts - self._started_at,
             end=end_ts - self._started_at,
             text="",

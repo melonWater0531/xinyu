@@ -427,6 +427,15 @@ button,input,select{font:inherit}
           <div class="kv"><span>会议摘要</span><span id="llmMeeting">--</span></div>
           <div class="log mono" id="llmLog" style="margin-top:12px"></div>
         </section>
+        <section class="card">
+          <h2>Voice Debug</h2>
+          <div class="kv"><span>Engine</span><span id="voiceEngine">--</span></div>
+          <div class="kv"><span>状态</span><span id="voiceStateText">--</span></div>
+          <div class="kv"><span>Last reason</span><span id="voiceReason">--</span></div>
+          <div class="kv"><span>Last text</span><span id="voiceText">--</span></div>
+          <div class="controls" style="margin-top:10px"><input id="voiceTestText" value="小屿语音测试。" maxlength="80" style="flex:1;min-width:180px"><button class="btn" onclick="voiceSayTest()">测试朗读</button><button class="btn danger" onclick="voiceStopTest()">停止</button></div>
+          <div class="log mono" id="voiceLog" style="margin-top:12px"></div>
+        </section>
       </div>
     </section>
 
@@ -512,6 +521,12 @@ function log(msg){
 }
 function ema(cur,target,a){if(!Number.isFinite(cur)||cur===0)return target;return cur+(target-cur)*a}
 function normalizeState(p){if(!p)return null;if(p.type==='state_snapshot'&&p.data)return p.data;if(p.data&&p.data.gimbal)return p.data;if(p.gimbal||p.video||p.control)return p;return null}
+function handleVoiceDebugEvent(msg){
+  if(!msg||!String(msg.type||'').startsWith('voice_'))return false;
+  const line=`${new Date().toLocaleTimeString()} ${msg.type} ${msg.reason||''} ${msg.text||msg.display_text||msg.why||''}`;
+  const el=$('voiceLog'); if(el)el.innerHTML=line+'<br>'+el.innerHTML.slice(0,2000);
+  return true;
+}
 function setConn(kind,text){$('wsDot').className='dot '+(kind==='on'?'on':kind==='warn'?'warn':'');$('wsText').textContent=text}
 function fmtTime(sec){sec=Math.max(0,Number(sec)||0);const m=Math.floor(sec/60),s=Math.floor(sec%60);return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`}
 function num(v,suffix='',d=0){return v==null||!Number.isFinite(Number(v))?'--':(d?Number(v).toFixed(d):Math.round(Number(v)))+suffix}
@@ -525,6 +540,15 @@ async function apiPost(path,body={},opts={}){
     const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),keepalive:!!opts.keepalive});
     return await r.json();
   }catch(e){log(`API error ${path}: ${e.message}`);return null}
+}
+async function voiceSayTest(){
+  const text=($('voiceTestText')?.value||'小屿语音测试。').trim();
+  const r=await apiPost('/api/voice/say',{text,reason:'manual',source:'control',interrupt:true,force:true});
+  log(r&&r.ok?'Voice test event sent':'Voice test failed');
+}
+async function voiceStopTest(){
+  const r=await apiPost('/api/voice/stop',{reason:'control'});
+  log(r&&r.ok?'Voice stop event sent':'Voice stop failed');
 }
 function adoptSession(result,page){
   if(!result||!result.accepted||!result.session_id){log(`启动失败：${result&&result.reason||'EventBus 不可达'}`);return false}
@@ -714,7 +738,7 @@ function toggleLandmarks(){
 
 function renderState(s){
   if(!s)return;
-  const g=s.gimbal||{},pose=s.pose||{},att=s.attention||{},emo=s.emotieff||s.emotion||{},doa=s.doa||{},rs=s.respeaker||{},ctrl=s.control||{},health=s.health||{},conv=s.conversation||{},eye=s.eye_metrics||{},mp=s.mp_face||{},gesture=s.gesture||{};
+  const g=s.gimbal||{},pose=s.pose||{},att=s.attention||{},emo=s.emotieff||s.emotion||{},doa=s.doa||{},rs=s.respeaker||{},ctrl=s.control||{},health=s.health||{},conv=s.conversation||{},eye=s.eye_metrics||{},mp=s.mp_face||{},gesture=s.gesture||{},voice=s.voice||{};
   applyDeviceState(s.device);
   setConn(ws&&ws.readyState===WebSocket.OPEN?'on':'warn',ws&&ws.readyState===WebSocket.OPEN?'WebSocket 已连接':'HTTP polling');
   $('authorityText').textContent=ctrl.authority||'idle';
@@ -786,6 +810,13 @@ function renderState(s){
   $('llmConfigured').textContent=s.chat?.configured?'DeepSeek 已配置':'fallback 可用';
   $('llmEmotion').textContent=$('emoVal').textContent;
   $('llmMeeting').textContent=conv.stats?`${conv.stats.turns||0} turns`:'--';
+  $('voiceEngine').textContent=voice.engine||'browser_speech';
+  $('voiceStateText').textContent=`${voice.enabled===false?'disabled':'enabled'} / ${voice.available===false?'unavailable':'available'} / ${voice.speaking?'speaking':'idle'} / q=${voice.queue_len||0}`;
+  $('voiceReason').textContent=voice.last_reason||'--';
+  $('voiceText').textContent=voice.last_utterance||'--';
+  if(Array.isArray(voice.recent_events)&&voice.recent_events.length){
+    $('voiceLog').innerHTML=voice.recent_events.slice().reverse().map(ev=>`${fmtClock(ev.time)} ${ev.type||'voice'} ${ev.reason||''} ${ev.text||ev.display_text||ev.why||''}`).join('<br>');
+  }
   updateFeatureLocks();
   drawOverlay(s);
 }
@@ -837,7 +868,7 @@ function connectWS(){
   try{
     ws=new WebSocket(url);setConn('warn','WebSocket 连接中');
     ws.onopen=()=>{lastWsAt=Date.now();setConn('on','WebSocket 已连接');log('WS connected');try{ws.send('request_state')}catch(e){}};
-    ws.onmessage=ev=>{lastWsAt=Date.now();try{const s=normalizeState(JSON.parse(ev.data));if(s){state=s;renderState(state)}}catch(e){log(`WS parse error ${e.message}`)}};
+    ws.onmessage=ev=>{lastWsAt=Date.now();try{const msg=JSON.parse(ev.data);if(handleVoiceDebugEvent(msg))return;const s=normalizeState(msg);if(s){state=s;renderState(state)}}catch(e){log(`WS parse error ${e.message}`)}};
     ws.onerror=()=>setConn('warn','WebSocket 异常');
     ws.onclose=()=>{setConn('warn','WebSocket 断开');wsRetry=setTimeout(connectWS,1500)};
   }catch(e){setConn('warn','WebSocket failed');wsRetry=setTimeout(connectWS,1500)}

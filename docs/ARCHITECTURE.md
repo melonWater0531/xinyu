@@ -15,6 +15,7 @@
 | 手势交互 | reCamera SSCMA 摄像头 + MediaPipe Gesture Recognizer | Dashboard intent/toast/local feedback | Open Palm、Closed Fist、Thumb Up、Thumb Down、Victory 只映射陪伴 intent，不进入云台控制 |
 | 健康/PWA | Dashboard localStorage + 实时 emotion/attention/eye/gaze state | 本地 PWA Notification | 护眼、久坐、喝水、疲劳、低专注、情绪关心通知在前端本地治理 |
 | LLM/日记 | DeepSeek 优先；智谱 GLM-4-Flash 兜底；端点本地 fallback | Dashboard 日记、反思、会议摘要 | 无云端 API key 时返回本地温和建议，不丢失日记 |
+| TTS/语音输出 | FastAPI voice event + 浏览器 Web Speech | `/home` 朗读短句；`/control` 调试事件 | 后端不合成音频，不占用主机/ReSpeaker 输出设备 |
 | 手动云台 | Dashboard UI Event | reCamera yaw/pitch CAN 电机 | 有效 manual session 才接受 D-Pad/home |
 
 `/control` 是所有已部署功能的集合面板。每个功能卡都有独立启动和终止
@@ -40,6 +41,9 @@ USB Audio Class 由 `sounddevice` 独立录音。TCP `9999` 仅是 DOA 备用输
 失败时自动回退原 RMS 分段，不阻塞录音。ASR 路由默认为智谱 GLM-ASR；
 无 `ZHIPU_API_KEY`、`ASR_PROVIDER=local` 或云端失败时回退本地
 `faster-whisper`，全部失败时会议摘要返回 `asr_empty`。
+会议 turn finalize 时通过只读 DOA/face/pose/gimbal 状态做非阻塞说话人标注；
+无法匹配时写入 `未知说话人`，不影响 WAV 保存、ASR 或摘要。Wake word 是可选
+服务，默认关闭，缺少 openWakeWord 或模型时只在 state 中报告 unavailable。
 
 FastAPI 的视频、分析、录音和 Dashboard 状态通过 `/ws` 与 `/api/state`
 发布；权威 FSM、会话、命令、安全结果和云台 readback 均来自
@@ -199,6 +203,9 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | `services/llm_router.py` | LLM 云端路由：DeepSeek → 智谱 GLM-4-Flash；失败返回空字符串，由端点保留原本地 fallback |
 | `services/cloud_asr.py` | ASR 路由：智谱 GLM-ASR → 本地 `audio.transcriber.transcribe_wav()` fallback |
 | `services/emotion_prompt.py` | 开放词汇情绪 prompt 构建：EmotiEff + attention/eye/gaze → LLM 低频语义推理、chat/reflect 情绪注入 |
+| `services/speaker_mapper.py` | 会议说话人映射：DOA zone → 临时说话人标签；只读状态注册，提供 search plan 但不执行云台控制 |
+| `services/wake_word_service.py` | 可选 wake word 服务：`ENABLE_WAKE_WORD=true` 才尝试加载 openWakeWord；检测后广播 WebSocket 事件 |
+| `services/voice_policy.py` | 浏览器 TTS 初版策略：短句、冷却、优先级和 voice event；不做音频合成或播放 |
 
 ### 4.6 主入口
 
@@ -276,6 +283,10 @@ Debounce:
       "vad_mode": "webrtcvad|rms",
       "fallback_reason": ""
     },
+    "voice": {
+      "enabled", "available", "speaking", "queue_len",
+      "last_utterance", "last_reason", "engine", "cooldowns", "recent_events"
+    },
     "control":  {
       "active_feature": "inactive|single_face_analysis|multi_sound_yaw|meeting_recording|meeting_sound_yaw|manual_gimbal_debug",
       "session_id": "...",
@@ -322,6 +333,8 @@ Debounce:
 - [x] DOA age 管理（过期数据不驱动控制）
 - [x] ReSpeaker XVF3800 USB control（生产默认）；TCP 9999 仅备用
 - [x] 可选录音会话（`save_audio=true`）
+- [x] 非阻塞说话人标注：DOA zone + 当前视觉状态注册临时 label，失败时 fallback 为 `未知说话人`
+- [x] Wake word 基础集成：默认关闭，可选启用，不影响 FastAPI 启动
 
 ### 7.4 控制系统（main_phase3.py）
 - [x] 单 FSM 控制平面（5 状态 × 事件表驱动 + debounce）
@@ -338,8 +351,11 @@ Debounce:
 - [x] 云台遥测：仅 `main_phase3.py` 调用 `RecameraClient.get_status()`，FastAPI 不创建硬件客户端
 - [x] LLM 对话：DeepSeek API 优先、智谱 GLM-4-Flash 兜底；端点保留本地轻量 fallback
 - [x] 情绪感知 prompt 注入：`/api/chat` 和 `/api/reflect` diary 使用 `services/emotion_prompt.py` 融入实时状态，响应字段保持兼容
-- [x] 会议摘要：智谱 GLM-ASR 优先、本地 whisper fallback；`/api/meeting/summarize` 返回结构化错误码 `recording_not_started`、`no_segments`、`asr_empty`
+- [x] 会议摘要：智谱 GLM-ASR 优先、本地 whisper fallback；transcript 带 `[说话人A]` / `[未知说话人]` 标签；`/api/meeting/summarize` 返回结构化错误码 `recording_not_started`、`no_segments`、`asr_empty`
 - [x] 对话会话管理：`/api/conversation/{start,stop,state,save,debug}`
+- [x] 会议说话人查询：`GET /api/meeting/speakers`
+- [x] Wake word 状态查询：`GET /api/wake_word/state`；检测事件通过 `/ws` 广播 `wake_word_detected`
+- [x] TTS voice event：`GET /api/voice/state`、`POST /api/voice/say`、`POST /api/voice/stop`；浏览器 Web Speech 负责播放
 - [x] 会议音频处理状态：`audio_processing.noise_suppression` 与 `vad_mode`
 - [x] LLM 反思：`/api/reflect`（情绪日记生成）
 - [x] API 快照：`/api/snapshot`（当前帧 JPEG）
@@ -369,6 +385,10 @@ Debounce:
   - PWA 支持（manifest + service worker）
 
 DeepSeek 默认模型保留 `deepseek-v4-flash`。旧截图中“模型不存在”的判断已过期，不作为回退依据。云端 LLM 路由失败时返回空字符串，由 `/api/chat`、`/api/reflect`、`/api/emotion/infer` 和 `/api/meeting/summarize` 各自的既有 fallback 逻辑处理，避免把本地模板误标为云端 provider。`/api/emotion/infer` 是低频语义接口，不进入 `/ws` 实时状态流。
+
+会议 pipeline 当前只实现轻量 speaker label，不执行 pitch 搜索、唇动验证、ArcFace 重识别或重型 diarization。暂未执行功能和后续落地路径见 `docs/FUTURE_MEETING_PIPELINE_UPGRADES.md`。
+
+TTS 初版只广播 `voice_utterance` / `voice_stop` 事件，`/home` 使用浏览器 Web Speech API 播放或降级为文字/toast，`/control` 展示 voice debug。云端 TTS、主机扬声器输出、流式 TTS 和语音输入 ASR 见 `docs/FUTURE_TTS_VOICE_UPGRADES.md`。
 
 ---
 
@@ -406,6 +426,8 @@ export RECAMERA_DEVICE_IP=<RECAMERA_IP>
 export DEEPSEEK_API_KEY=sk-xxx   # 可选：LLM 首选
 export ZHIPU_API_KEY=sk-xxx      # 可选：LLM 兜底 + 云端 ASR
 export ASR_PROVIDER=zhipu        # 可选：zhipu(默认) 或 local
+export ENABLE_WAKE_WORD=false    # 可选：默认 false；true 时尝试启动 openWakeWord
+export ENABLE_TTS_VOICE=true     # 可选：默认 true；后端广播 voice event，浏览器播放
 python3 recamera_fastapi.py --device-ip "$RECAMERA_DEVICE_IP"
 python3 main_phase3.py --enable-control --gimbal-ip "$RECAMERA_DEVICE_IP" --manual-control
 ```
@@ -422,7 +444,7 @@ Dashboard UI -> FastAPI UI Event -> EventBus -> main_phase3.py -> FSM -> Orchest
 
 - **首页**：今日情绪/专注摘要 + 快捷入口
 - **陪伴**（单人场景）：人脸追踪与分析、情绪/专注/眼部指标/手势/gaze、小屿对话（每日持久化）、主动关怀气泡
-- **会议**：声源 yaw 跟随 + 会议录音（`/api/conversation/start {control_session:true, save_audio:true}`）；会议整理 + 摘要
+- **会议**：声源 yaw 跟随 + 会议录音（`/api/conversation/start {control_session:true, save_audio:true}`）；会议整理 + 带说话人标签摘要；`/api/meeting/speakers` 查询临时说话人映射
 - **记录**：情绪日历、日记详情 + 对话链、周报生成、会议历史
 - **我的**：昵称/提醒设置、设备动作、数据重置
 
