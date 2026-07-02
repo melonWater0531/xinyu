@@ -1970,33 +1970,23 @@ async def api_llm_reflect(payload: dict = Body(default={})):
     valence      = (_emotieff_result or {}).get("valence")
 
     if mode == "diary":
-        val_desc = ("正向" if (valence or 0) > 0.1
-                    else "负向" if (valence or 0) < -0.1 else "中性") if valence is not None else ""
-        ds_sys = (
-            "你是心屿，请以用户视角（'我'）生成今日日记条目。"
-            "规则：不超过60字；不编造未提及的事件；时间词只用'今天'或'今日'；"
-            "输出严格JSON，两个字段：{\"diary\":\"...\",\"reply\":\"一句温柔回应，不超过40字\"}"
+        from services.emotion_prompt import build_reflect_messages
+
+        current_state = build_state_snapshot().get("data", {})
+        result = await _cloud_llm_complete(
+            build_reflect_messages(user_text, current_state, str(payload.get("user_name", "")), payload),
+            max_tokens=200,
         )
-        ds_user = (
-            f"情绪：{emotion}（置信度{conf:.0%}"
-            f"{f'，监测{duration_min}分钟' if duration_min else ''}）；"
-            f"专注分：{attn}/100{f'；情感效价：{val_desc}' if val_desc else ''}。"
-            f"\n{f'用户自写：{user_text}' if user_text else '用户未填写文字。'}"
-        )
-        ds_raw = await _deepseek_chat([
-            {"role": "system", "content": ds_sys},
-            {"role": "user",   "content": ds_user},
-        ], max_tokens=200)
+        ds_raw = str(result.get("text") or "")
 
         diary_entry = reply_text = ""
         source = "template"
+        parsed = _extract_json_object(ds_raw)
         try:
-            import json as _j
-            parsed = _j.loads(ds_raw)
             diary_entry = parsed.get("diary", "")
             reply_text  = parsed.get("reply", "")
             if diary_entry:
-                source = "deepseek"
+                source = result.get("provider") if result.get("provider") != "none" else "template"
         except Exception:
             pass
 
@@ -2020,46 +2010,23 @@ async def api_llm_reflect(payload: dict = Body(default={})):
         return {"text": text, "time": round(_llm_engine._last_time, 2)}
 
 
-# 鈹€鈹€ DeepSeek API client 鈹€鈹€
+# LLM cloud client wrapper
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_API_URL = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/chat/completions")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 DEEPSEEK_MAX_TOKENS = int(os.getenv("DEEPSEEK_MAX_TOKENS", "600"))
+ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "")
 
 async def _deepseek_chat(messages: list, max_tokens: int | None = None) -> str:
-    """Call DeepSeek API. Returns reply text or empty string on failure."""
-    import aiohttp
-    if not DEEPSEEK_API_KEY:
-        logger.info("DeepSeek API key not configured; using local/fallback chat")
-        return ""
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": DEEPSEEK_MODEL,
-        "messages": messages,
-        "max_tokens": max_tokens or DEEPSEEK_MAX_TOKENS,
-        "temperature": 0.8,
-        "top_p": 0.9,
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(DEEPSEEK_API_URL, json=payload,
-                                     headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    choice = data["choices"][0]
-                    finish_reason = choice.get("finish_reason")
-                    if finish_reason and finish_reason != "stop":
-                        logger.warning("DeepSeek finish_reason=%s; reply may be truncated", finish_reason)
-                    return choice["message"]["content"].strip()
-                else:
-                    logger.warning("DeepSeek API returned %d: %s", resp.status, await resp.text())
-                    return ""
-    except Exception as e:
-        logger.warning("DeepSeek API error: %s", str(e)[:100])
-        return ""
+    """Route to cloud LLM providers; endpoint handlers own local fallback."""
+    from services.llm_router import router as _llm_router
+    return await _llm_router.complete(messages, max_tokens or DEEPSEEK_MAX_TOKENS)
+
+
+async def _cloud_llm_complete(messages: list, max_tokens: int | None = None) -> dict:
+    """Route to cloud LLM providers and include provider metadata."""
+    from services.llm_router import router as _llm_router
+    return await _llm_router.complete_with_provider(messages, max_tokens or DEEPSEEK_MAX_TOKENS)
 
 
 def _reply_looks_incomplete(text: str) -> bool:
@@ -2081,6 +2048,98 @@ _EMO_ZH_EN = {
     "快乐": "Happiness", "低落": "Sadness", "不安": "Fear", "不适": "Disgust",
 }
 
+_EMO_CN = {
+    "Happy": "开心",
+    "Happiness": "开心",
+    "Sad": "难过",
+    "Sadness": "难过",
+    "Angry": "生气",
+    "Anger": "生气",
+    "Fear": "紧张",
+    "Surprise": "惊讶",
+    "Disgust": "不适",
+    "Contempt": "有些疏离",
+    "Neutral": "平静",
+}
+
+
+def _extract_json_object(text: str) -> dict:
+    import json as _json
+    if not text:
+        return {}
+    try:
+        return _json.loads(text)
+    except Exception:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                return _json.loads(text[start:end + 1])
+            except Exception:
+                return {}
+    return {}
+
+
+def _has_observed_face(state_data: dict) -> bool:
+    attention = state_data.get("attention") or {}
+    if attention.get("has_face") is False:
+        return False
+    emotieff = state_data.get("emotieff") or {}
+    return bool(attention.get("has_face") or emotieff.get("emotion"))
+
+
+def _local_emotion_inference(state_data: dict) -> dict:
+    emotieff = state_data.get("emotieff") or {}
+    emotion = str(emotieff.get("emotion") or "Neutral")
+    confidence = float(emotieff.get("confidence") or 0.0)
+    valence = emotieff.get("valence")
+    label = _EMO_CN.get(emotion, emotion or "平静")
+    if valence is not None:
+        if float(valence or 0.0) > 0.25 and emotion == "Neutral":
+            label = "平静中带一点积极"
+        elif float(valence or 0.0) < -0.25 and emotion == "Neutral":
+            label = "平静中带一点低落"
+    intensity = max(1, min(10, int(round(3 + confidence * 6))))
+    explanation = f"基于当前 EmotiEff 分类和实时状态，主要线索偏向“{label}”。"
+    return {"ok": True, "label": label, "intensity": intensity, "explanation": explanation, "provider": "local"}
+
+
+@app.post("/api/emotion/infer")
+async def api_emotion_infer():
+    """Low-frequency open-vocabulary emotion inference using current state."""
+    state_data = build_state_snapshot().get("data", {})
+    if not _has_observed_face(state_data):
+        return {
+            "ok": True,
+            "label": "暂未观察到",
+            "intensity": 0,
+            "explanation": "当前没有检测到稳定的人脸，暂不推断具体情绪。",
+            "provider": "local",
+        }
+
+    from services.emotion_prompt import build_emotion_inference_messages
+
+    result = await _cloud_llm_complete(build_emotion_inference_messages(state_data), max_tokens=180)
+    raw = str(result.get("text") or "")
+    parsed = _extract_json_object(raw)
+    label = str(parsed.get("label") or "").strip()
+    explanation = str(parsed.get("explanation") or "").strip()
+    try:
+        intensity = int(float(parsed.get("intensity")))
+    except Exception:
+        intensity = 0
+    intensity = max(1, min(10, intensity))
+
+    if label and explanation:
+        return {
+            "ok": True,
+            "label": label[:40],
+            "intensity": intensity,
+            "explanation": explanation[:120],
+            "provider": result.get("provider") if result.get("provider") != "none" else "local",
+        }
+    return _local_emotion_inference(state_data)
+
 
 @app.post("/api/chat")
 async def api_chat(payload: dict = Body(default={})):
@@ -2097,42 +2156,27 @@ async def api_chat(payload: dict = Body(default={})):
     user_name  = str(payload.get("user_name", ""))
 
     emo_key = _EMO_ZH_EN.get(emotion_zh, (_emotieff_result or {}).get("emotion", "Neutral"))
-    attn    = (_attn_result or {}).get("score", 75)
-    conf    = (_emotieff_result or {}).get("confidence", 0.0)
-    valence = (_emotieff_result or {}).get("valence")
+    from services.emotion_prompt import build_chat_system_prompt
 
-    val_desc = ("正向" if (valence or 0) > 0.1
-                else "负向" if (valence or 0) < -0.1 else "中性") if valence is not None else ""
-
-    sys_prompt = (
-        "你是心屿（XINYU），一个温柔陪伴型AI。"
-        "风格：用第二人称；语气温柔、不过分热情，像熟悉的老朋友；"
-        "接受负面情绪而不是急于解决；"
-        "只引用给你的实测数字，绝不编造未提及的内容；"
-        "每次回复不超过80字，自然段落，不使用列表或标题。"
-    )
-    user_ctx = (
-        f"【实测状态】情绪：{emotion_zh or emo_key}（置信度{conf:.0%}）；"
-        f"专注分：{attn}/100。"
-    )
-    if val_desc:
-        user_ctx += f" 情感效价：{val_desc}。"
+    sys_prompt = build_chat_system_prompt(build_state_snapshot().get("data", {}), user_name)
+    user_ctx = f"用户当前选择/输入的情绪标签：{emotion_zh or emo_key}。"
     if diary_text:
         user_ctx += f"\n【今日日记】{diary_text[:200]}"
     if context_s:
         user_ctx += f"\n【背景】{context_s[:300]}"
     user_ctx += f"\n\n{msg or '请结合我今天的状态，给我一句有温度的话。'}"
 
-    reply = await _deepseek_chat([
+    result = await _cloud_llm_complete([
         {"role": "system", "content": sys_prompt},
         {"role": "user",   "content": user_ctx},
     ], max_tokens=150)
+    reply = str(result.get("text") or "")
 
     if not reply or _reply_looks_incomplete(reply):
         reply  = _llm_engine.respond_to_user(msg, emo_key, user_name=user_name, context=context_s)
         source = "template"
     else:
-        source = "deepseek"
+        source = result.get("provider") if result.get("provider") != "none" else "template"
 
     return {"reply": reply, "source": source, "emotion": emo_key}
 
@@ -2150,7 +2194,7 @@ async def api_chat_status():
 async def api_meeting_summarize(payload: dict = Body(default={})):
     """Transcribe WAV segments from ConversationRecorder, summarize with DeepSeek."""
     from pathlib import Path as _Path
-    from audio.transcriber import transcribe_wav
+    from services.cloud_asr import cloud_asr as _cloud_asr
 
     recorder = _conversation_recorder
     if recorder is None:
@@ -2166,7 +2210,7 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
         wav = turn.get("wav_path", "")
         doa = turn.get("doa_mean")
         if wav and _Path(wav).exists():
-            text = await transcribe_wav(wav)
+            text = await _cloud_asr.transcribe(wav)
             if text:
                 zone = "左侧" if (doa or 180) < 135 else "右侧" if (doa or 180) > 225 else "正前方"
                 transcripts.append(f"[{zone}] {text}")

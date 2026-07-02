@@ -1,0 +1,23 @@
+# Cloud provider reference config. Runtime configuration comes from env vars.
+llm:
+  providers:
+    - name: deepseek
+      api_url: "https://api.deepseek.com/chat/completions"
+      model: "deepseek-v4-flash"
+      max_tokens: 600
+      timeout: 15
+    - name: zhipu
+      api_url: "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+      model: "glm-4-flash"
+      max_tokens: 600
+      timeout: 15
+    - name: endpoint_fallback
+
+asr:
+  provider: "zhipu"    # zhipu | local
+  zhipu:
+    model: "glm-asr"
+    timeout: 60
+  local:
+    model: "Systran/faster-whisper-tiny"
+    device: "cpu"

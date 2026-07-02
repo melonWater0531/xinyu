@@ -156,11 +156,12 @@ Bridge 不可达时真实控制 fail closed，不会静默降级为 dry-run。
 | `RECAMERA_DEVICE_IP` | `192.168.x.x` | **始终必填**，两个终端都要设置 |
 | `RECAMERA_DOA_SOURCE` | `usb` | ReSpeaker USB 直连时（生产环境） |
 | `RECAMERA_AUDIO_DEVICE` | `2` | 会议录音时；值来自 1.2 第 5 步 |
-| `DEEPSEEK_API_KEY` | `sk-xxx` | 启用 LLM 对话、日记自动回复、会议摘要 |
+| `DEEPSEEK_API_KEY` | `sk-xxx` | 启用首选 LLM provider（对话、日记自动回复、会议摘要） |
+| `ZHIPU_API_KEY` | `sk-xxx` | 启用智谱 GLM-4-Flash 兜底和 GLM-ASR 云端转写 |
 
 **可选覆盖（有合理默认值，通常无需设置）：**
 
-`DEEPSEEK_API_URL` / `DEEPSEEK_MODEL` / `DEEPSEEK_MAX_TOKENS` / `RECAMERA_WHISPER_MODEL` / `RECAMERA_DOA_HOST` / `RECAMERA_DOA_PORT` / `RECAMERA_DOA_SPEECH_HOLD`
+`DEEPSEEK_API_URL` / `DEEPSEEK_MODEL` / `DEEPSEEK_MAX_TOKENS` / `ASR_PROVIDER` / `RECAMERA_WHISPER_MODEL` / `RECAMERA_DOA_HOST` / `RECAMERA_DOA_PORT` / `RECAMERA_DOA_SPEECH_HOLD`
 
 完整变量说明见第四章 4.4 节。
 
@@ -187,7 +188,9 @@ cd ~/recamera_multimodal
 export RECAMERA_DEVICE_IP=<RECAMERA_IP>
 export RECAMERA_DOA_SOURCE=usb
 export RECAMERA_AUDIO_DEVICE=<AUDIO_DEVICE_INDEX>
-export DEEPSEEK_API_KEY=sk-xxx          # 可选
+export DEEPSEEK_API_KEY=sk-xxx          # 可选；LLM 首选
+export ZHIPU_API_KEY=sk-xxx             # 可选；LLM 兜底 + 云端 ASR
+export ASR_PROVIDER=zhipu               # 可选；zhipu(默认) 或 local
 
 python3 recamera_fastapi.py --device-ip "$RECAMERA_DEVICE_IP"
 ```
@@ -311,7 +314,7 @@ python3 -m pip install -r requirements.txt --break-system-packages
 # FaceTrackerV2 推荐依赖
 python3 -m pip install insightface --break-system-packages
 
-# 会议转写
+# 本地会议转写 fallback；使用 ZHIPU_API_KEY + ASR_PROVIDER=zhipu 时可不安装
 python3 -m pip install faster-whisper --break-system-packages
 
 # 可选：会议降噪与 WebRTC VAD；缺失时系统自动回退 RMS 分段
@@ -328,7 +331,7 @@ curl -L --fail \
   -o models/gesture_recognizer.task \
   https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task
 
-# ASR tiny 模型预热；模型会进入 Hugging Face 本地缓存
+# 本地 ASR tiny 模型预热；模型会进入 Hugging Face 本地缓存
 python3 - <<'PY'
 from faster_whisper import WhisperModel
 WhisperModel("Systran/faster-whisper-tiny", device="cpu", compute_type="int8")
@@ -336,7 +339,7 @@ print("faster-whisper tiny ready")
 PY
 ```
 
-可通过 `RECAMERA_WHISPER_MODEL` 覆盖默认 ASR 模型；默认值为 `Systran/faster-whisper-tiny`。
+ASR 默认优先使用智谱 GLM-ASR（需要 `ZHIPU_API_KEY`）；云端不可用、未配置 key 或 `ASR_PROVIDER=local` 时回退本地 `faster-whisper`。可通过 `RECAMERA_WHISPER_MODEL` 覆盖本地 ASR 模型；默认值为 `Systran/faster-whisper-tiny`。
 
 ### 4.3 统一控制面板验收
 
@@ -349,7 +352,7 @@ PY
 | 会议录音 | 启动功能 | 终止并保存 | 录音状态、VAD 分段、音频处理状态、可选 yaw 跟随和摘要接口可用 |
 | 手势交互 | 启动功能 | 终止功能 | `gesture.available=true`，五类 intent 只更新 UI，不控制云台 |
 | 健康与 PWA | 启动功能 | 终止功能 | 护眼/久坐/喝水/疲劳/低专注/情绪关心状态可观察 |
-| LLM 与日记 | 启动功能 | 终止功能 | DeepSeek 有 key 时在线回复，无 key 时本地 fallback |
+| LLM 与日记 | 启动功能 | 终止功能 | DeepSeek 优先，智谱兜底；云端不可用时端点本地 fallback |
 | 手动云台 | 启动功能 | 终止功能 | D-Pad 只在当前 manual session 有效 |
 
 每个页面的 `Standby`、`Sleep`、`Stop`、`Calibrate`：
@@ -368,18 +371,20 @@ PY
 |---|---|---|
 | `RECAMERA_DEVICE_IP` | 空 | reCamera 地址，推荐配置 |
 | `RECAMERA_BASE_URL` | 空 | 兼容性的 HTTP base URL fallback |
-| `DEEPSEEK_API_KEY` | 空 | LLM 对话、日记和会议摘要 |
+| `DEEPSEEK_API_KEY` | 空 | 首选 LLM provider：对话、日记和会议摘要 |
 | `DEEPSEEK_API_URL` | DeepSeek API | OpenAI-compatible API 地址 |
 | `DEEPSEEK_MODEL` | 项目默认模型 | 模型名称 |
 | `DEEPSEEK_MAX_TOKENS` | `600` | 单次输出上限 |
+| `ZHIPU_API_KEY` | 空 | 智谱 GLM-4-Flash LLM 兜底；GLM-ASR 云端转写 |
+| `ASR_PROVIDER` | `zhipu` | `zhipu` 优先云端 ASR；`local` 强制本地 whisper |
 | `RECAMERA_DOA_SOURCE` | `usb` | 生产环境使用 `usb`；`tcp` 为无 USB attach 时的备用 |
 | `RECAMERA_DOA_HOST` | `0.0.0.0` | TCP DOA 监听地址 |
 | `RECAMERA_DOA_PORT` | `9999` | TCP DOA 监听端口 |
 | `RECAMERA_DOA_SPEECH_HOLD` | `0.8` | speech hold 秒数 |
 | `RECAMERA_AUDIO_DEVICE` | 系统默认 | 会议录音设备索引（来自 1.2 第 5 步） |
-| `RECAMERA_WHISPER_MODEL` | `Systran/faster-whisper-tiny` | ASR 模型 |
+| `RECAMERA_WHISPER_MODEL` | `Systran/faster-whisper-tiny` | 本地 whisper fallback 模型 |
 
-LLM 未配置时，相关接口回退到本地轻量逻辑，不影响视频和基础感知。
+LLM 路由顺序为 DeepSeek → 智谱 GLM-4-Flash → 端点本地 fallback。云端 LLM 未配置或调用失败时，相关接口回退到本地轻量逻辑，不影响视频和基础感知。ASR 路由顺序为智谱 GLM-ASR → 本地 `faster-whisper`；全部失败时 `/api/meeting/summarize` 返回 `asr_empty`。
 
 ---
 
@@ -598,7 +603,23 @@ curl -X POST http://localhost:8001/api/gimbal/home
 
 EventBus 未启动时响应包含 `accepted=false`、`authority=unreachable`；可达时包含 `accepted=true`、`authority=main_phase3`。
 
-### 7.4 录音和会议摘要
+### 7.4 LLM 与开放词汇情绪推理
+
+```bash
+curl -X POST http://localhost:8001/api/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"我有点累","context":"","user_name":"测试"}'
+
+curl -X POST http://localhost:8001/api/reflect \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"diary","emotion":"Happiness","attention":75}'
+
+curl -X POST http://localhost:8001/api/emotion/infer
+```
+
+`/api/emotion/infer` 是低频语义接口，不进入 `/ws` 的 200ms 实时状态流；建议手动触发或 30 秒以上间隔调用。它保留 EmotiEffLib 8 类实时分类作为底层信号，额外输出开放中文情绪标签、`1-10` 强度和一句解释。无人脸时返回 `label="暂未观察到"`、`intensity=0`、`provider="local"`；云端 LLM 不可用或 JSON 解析失败时使用本地 EmotiEff 映射 fallback。
+
+### 7.5 录音和会议摘要
 
 ```bash
 curl -X POST http://localhost:8001/api/conversation/start \
@@ -620,9 +641,9 @@ curl -X POST http://localhost:8001/api/meeting/summarize \
 |---|---|---|
 | `recording_not_started` | 未启动会议录音 | 先启动会议录音 |
 | `no_segments` | 已启动但没有有效语音片段 | 先录到语音片段 |
-| `asr_empty` | ASR 返回空文本或依赖不可用 | 检查语音时长、`faster-whisper` 和模型缓存 |
+| `asr_empty` | 智谱 ASR 和本地 ASR 均未返回文本 | 检查语音时长、`ZHIPU_API_KEY`、`ASR_PROVIDER`、`faster-whisper` 和模型缓存 |
 
-### 7.5 EventBus 端口
+### 7.6 EventBus 端口
 
 ```bash
 ss -lntp | grep 8765
@@ -703,18 +724,19 @@ Session 和心跳：
 10. 保存日记 → emotion 字段使用用户选择而非无条件 `Neutral`；10s 内出现小屿 LLM 回复气泡，`conversation[0]` 有内容。
 11. 日记详情页发送追加消息 → 出现用户气泡 + 小屿回复气泡 → 关闭再打开，对话内容仍在。
 12. 修改昵称 → 发起聊天 → payload 包含 `user_name`；`emotion` 字段为中文（如"快乐"）。
-13. DevTools 模拟限速超过 10s → 应出现降级提示，不出现未捕获异常。
+13. DevTools 模拟限速超过 10s → 应出现降级提示，不出现未捕获异常；无云端 key 时 `/api/chat` 返回 `source=template`。
+14. 调用 `POST /api/emotion/infer`：无人脸时返回 `provider=local,label=暂未观察到,intensity=0`；有人脸且云端可用时返回开放词汇标签、强度和解释；云端不可用时仍返回本地 fallback。
 
 周报：
 
-14. 点击"让小屿写周报" → 请求 `/api/chat`；文本更新到页面；`xinyu_weekly_reports` 有新条目。
-15. 切换到其他标签再回来 → 周报文本从 localStorage 重新渲染（非空白或旧文案）。
+15. 点击"让小屿写周报" → 请求 `/api/chat`；文本更新到页面；`xinyu_weekly_reports` 有新条目。
+16. 切换到其他标签再回来 → 周报文本从 localStorage 重新渲染（非空白或旧文案）。
 
 存储：
 
-16. 三种情况调用 `/api/meeting/summarize`：确认分别得到 `recording_not_started`、`no_segments`、`asr_empty`。
-17. 会议录音启动后，`audio_processing.vad_mode` 应为 `webrtcvad` 或 `rms`。
-18. `navigator.storage.estimate()` 报告 >85% → 出现存储配额警告 toast。
+17. 三种情况调用 `/api/meeting/summarize`：确认分别得到 `recording_not_started`、`no_segments`、`asr_empty`；有 `ZHIPU_API_KEY` 时优先云端转写，无 key 或 `ASR_PROVIDER=local` 时走本地 whisper fallback。
+18. 会议录音启动后，`audio_processing.vad_mode` 应为 `webrtcvad` 或 `rms`。
+19. `navigator.storage.estimate()` 报告 >85% → 出现存储配额警告 toast。
 
 ### 8.6 真实硬件动作
 
