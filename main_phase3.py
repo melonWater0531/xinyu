@@ -15,7 +15,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from core.device_config import DEVICE_IP_ENV, device_http_url, device_sscma_ws_url, normalize_device_ip
+from core.device_config import DEVICE_IP_ENV, bypass_proxy_for_device, device_http_url, device_sscma_ws_url, normalize_device_ip
 from core.event import BBox, ControlCommand, Event
 from core.event_bus import EventBusServer
 from core.control_session import ControlMode
@@ -129,7 +129,8 @@ class Phase3Runner:
 
         self._orchestrator = Orchestrator(frame_width=1920, frame_height=1080)
         self._safety = SafetyLayer(safe_mode=not enable_control, enable_real_control=enable_control)
-        self._hw = RecameraClient(base_url=device_http_url(device_ip, required=enable_control), timeout_ms=200, retry=3)
+        bypass_proxy_for_device(device_ip)
+        self._hw = RecameraClient(base_url=device_http_url(device_ip, required=enable_control), timeout_ms=2000, retry=3)
         if not self._hw.connect(dry_run=not enable_control):
             raise ValueError("reCamera Node-RED control bridge is unreachable")
         if enable_control:

@@ -52,3 +52,16 @@ def device_sscma_ws_url(value: str | None = None, *, required: bool = False) -> 
     if ":" in host and not (host.startswith("[") and "]" in host):
         return f"ws://{host}/"
     return f"ws://{host}:{SSCMA_PORT}/"
+
+
+def bypass_proxy_for_device(device_ip: str) -> None:
+    """Add device IP and loopback to NO_PROXY so urllib doesn't route through local proxies."""
+    hosts = [h for h in [normalize_device_ip(device_ip), "localhost", "127.0.0.1"] if h]
+    existing = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    parts = [p.strip() for p in existing.split(",") if p.strip()]
+    for host in hosts:
+        if host not in parts:
+            parts.append(host)
+    no_proxy = ",".join(parts)
+    os.environ["NO_PROXY"] = no_proxy
+    os.environ["no_proxy"] = no_proxy

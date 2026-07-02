@@ -44,6 +44,7 @@ from fastapi.staticfiles import StaticFiles
 
 from core.device_config import (
     DEVICE_IP_ENV,
+    bypass_proxy_for_device,
     device_sscma_ws_url,
     normalize_device_ip,
 )
@@ -59,19 +60,6 @@ logger = get_logger(__name__)
 # EventBus and never imports or calls the hardware control layer.
 
 
-def _bypass_proxy_for_device(device_ip: str) -> None:
-    """Keep LAN device traffic off local HTTP/WebSocket proxies."""
-    import os
-
-    hosts = [device_ip, "localhost", "127.0.0.1"]
-    existing = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
-    parts = [p.strip() for p in existing.split(",") if p.strip()]
-    for host in hosts:
-        if host and host not in parts:
-            parts.append(host)
-    no_proxy = ",".join(parts)
-    os.environ["NO_PROXY"] = no_proxy
-    os.environ["no_proxy"] = no_proxy
 
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  Configuration
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
@@ -157,7 +145,7 @@ class SSCMAVideoClient:
 
     def _recv_loop(self):
         import websocket
-        _bypass_proxy_for_device(self._device_ip)
+        bypass_proxy_for_device(self._device_ip)
         fps_t0 = time.monotonic()
         fps_count = 0
 
@@ -411,7 +399,7 @@ def _restart_video_client(device_ip: str) -> tuple[bool, str]:
         video_client = new_client
     if app_config:
         app_config.device_ip = ip
-    _bypass_proxy_for_device(ip)
+    bypass_proxy_for_device(ip)
     return True, "video_client_restarted"
 
 
