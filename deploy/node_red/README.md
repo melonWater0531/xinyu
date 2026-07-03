@@ -16,12 +16,24 @@ motor readback.
 3. Verify the bridge before starting `main_phase3.py`:
 
 ```bash
-curl "http://<RECAMERA_IP>:1880/recamera-control/v1/status"
-curl -X POST "http://<RECAMERA_IP>:1880/recamera-control/v1/command" \
+export RECAMERA_DEVICE_IP=<RECAMERA_IP>
+SID="bridge-test-$(date +%s)"
+
+curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
+  "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/status"
+curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
+  -X POST "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/session/start" \
   -H 'Content-Type: application/json' \
-  -d '{"mode":"absolute","yaw":180,"pitch":90,"yaw_speed":180,"pitch_speed":180}'
-curl -X POST "http://<RECAMERA_IP>:1880/recamera-control/v1/stop" \
-  -H 'Content-Type: application/json' -d '{"stop":true}'
+  -d "{\"session_id\":\"$SID\",\"lease_ms\":5000}"
+NOW=$(date +%s)
+curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
+  -X POST "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/command" \
+  -H 'Content-Type: application/json' \
+  -d "{\"mode\":\"absolute\",\"yaw\":180,\"pitch\":90,\"yaw_speed\":180,\"pitch_speed\":180,\"session_id\":\"$SID\",\"sequence\":1,\"issued_at\":$NOW,\"expires_at\":$((NOW+5))}"
+curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
+  -X POST "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/stop" \
+  -H 'Content-Type: application/json' \
+  -d "{\"stop\":true,\"session_id\":\"$SID\"}"
 ```
 
 The status endpoint returns HTTP 503 until both motor angles have been read.

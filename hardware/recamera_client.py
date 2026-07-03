@@ -39,6 +39,9 @@ class RecameraClient:
         self._session_id = ""
         self._sequence = 0
         self._lease_deadline = 0.0
+        # Device traffic must never be sent through a desktop HTTP proxy.
+        # Cloud clients retain their normal environment-based proxy behavior.
+        self._direct_opener = request.build_opener(request.ProxyHandler({}))
 
     def connect(self, dry_run: bool = False) -> bool:
         if dry_run:
@@ -215,7 +218,7 @@ class RecameraClient:
             started = time.monotonic()
             try:
                 req = request.Request(f"{self._bridge_url}/{path}", data=body, headers=headers, method=method)
-                with request.urlopen(req, timeout=self._timeout_sec) as response:
+                with self._direct_opener.open(req, timeout=self._timeout_sec) as response:
                     self._last_latency_ms = (time.monotonic() - started) * 1000.0
                     raw = response.read().decode("utf-8", errors="replace")
                     data = json.loads(raw) if raw else {}

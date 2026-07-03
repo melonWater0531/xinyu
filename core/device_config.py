@@ -55,13 +55,21 @@ def device_sscma_ws_url(value: str | None = None, *, required: bool = False) -> 
 
 
 def bypass_proxy_for_device(device_ip: str) -> None:
-    """Add device IP and loopback to NO_PROXY so urllib doesn't route through local proxies."""
-    hosts = [h for h in [normalize_device_ip(device_ip), "localhost", "127.0.0.1"] if h]
-    existing = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
-    parts = [p.strip() for p in existing.split(",") if p.strip()]
+    """Add exact device/loopback hosts to both proxy-bypass variables.
+
+    Shell patterns such as ``192.168.*`` are not portable across curl and
+    urllib.  Preserve both existing variable variants, but always append the
+    exact host used by the current device connection.
+    """
+    normalized = normalize_device_ip(device_ip)
+    parsed = urlparse(normalized if "://" in normalized else f"//{normalized}")
+    exact_host = parsed.hostname or normalized
+    hosts = [h for h in [exact_host, normalized, "localhost", "127.0.0.1"] if h]
+    existing = ",".join(filter(None, [os.environ.get("NO_PROXY", ""), os.environ.get("no_proxy", "")]))
+    parts = list(dict.fromkeys(p.strip() for p in existing.split(",") if p.strip()))
     for host in hosts:
         if host not in parts:
             parts.append(host)
-    no_proxy = ",".join(parts)
+    no_proxy = ",".join(dict.fromkeys(parts))
     os.environ["NO_PROXY"] = no_proxy
     os.environ["no_proxy"] = no_proxy

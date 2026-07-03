@@ -31,7 +31,10 @@ from vision.data_source import VisionDataSource, create_vision_source
 logger = get_logger(__name__)
 
 DEVICE_LEASE_MS = 5000
-DEVICE_REQUEST_TIMEOUT_MS = 300
+# Direct Wi-Fi status latency on the device can exceed 250 ms. Hardware I/O is
+# isolated in its worker, so a 500 ms boundary avoids false disconnects without
+# blocking EventBus or video processing.
+DEVICE_REQUEST_TIMEOUT_MS = 500
 DEVICE_REQUEST_RETRY = 2
 
 _global_hw_client: Optional[RecameraClient] = None

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -86,6 +88,25 @@ class HardwareAdapterTests(unittest.TestCase):
             self.assertTrue(any(path.endswith("/command") for path, _ in BridgeHandler.commands))
             self.assertTrue(any(path.endswith("/stop") for path, _ in BridgeHandler.commands))
             self.assertTrue(any(path.endswith("/calibrate") for path, _ in BridgeHandler.commands))
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_node_red_client_ignores_broken_environment_proxy(self) -> None:
+        server = ThreadingHTTPServer(("0.0.0.0", 0), BridgeHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        proxy_env = {
+            "http_proxy": "http://127.0.0.1:9",
+            "HTTP_PROXY": "http://127.0.0.1:9",
+            "no_proxy": "",
+            "NO_PROXY": "",
+        }
+        try:
+            with mock.patch.dict(os.environ, proxy_env, clear=False):
+                client = RecameraClient(base_url=f"http://127.0.0.2:{server.server_port}")
+                self.assertTrue(client.connect())
+                self.assertAlmostEqual(client.get_status()["yaw"], 181.2)
         finally:
             server.shutdown()
             server.server_close()

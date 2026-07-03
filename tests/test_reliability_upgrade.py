@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from audio.conversation_recorder import ConversationRecorder
 from core.device_config_store import DeviceConfigStore
+from core.device_config import bypass_proxy_for_device
 from core.event import ControlCommand
 from hardware.control_worker import HardwareControlWorker
 
@@ -76,6 +79,19 @@ class ReliabilityUpgradeTests(unittest.TestCase):
             self.assertEqual(first["version"], 1)
             self.assertEqual(second["version"], 2)
             self.assertEqual(store.read()["device_ip"], "10.7.172.99")
+
+    def test_proxy_bypass_merges_both_env_variants_and_exact_host(self) -> None:
+        with mock.patch.dict(os.environ, {
+            "NO_PROXY": "localhost,upper.example",
+            "no_proxy": "127.0.0.1,lower.example,192.168.*",
+        }, clear=False):
+            bypass_proxy_for_device("192.168.225.84")
+            upper = os.environ["NO_PROXY"].split(",")
+            lower = os.environ["no_proxy"].split(",")
+            self.assertEqual(upper, lower)
+            self.assertIn("192.168.225.84", upper)
+            self.assertIn("upper.example", upper)
+            self.assertIn("lower.example", upper)
 
     def test_stale_recording_is_closed_during_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
