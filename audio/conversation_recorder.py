@@ -102,6 +102,7 @@ class ConversationRecorder:
         self._error = ""
         self._segment_idx = 0
         self._audio_processor = MeetingAudioProcessor(sample_rate=self.sample_rate)
+        self._recover_incomplete_sessions()
 
     @property
     def active(self) -> bool:
@@ -161,7 +162,10 @@ class ConversationRecorder:
         if self._worker:
             self._worker.join(timeout=2.0)
             self._worker = None
-        self._write_session_json(ended_at=time.time() if finalize else None)
+        self._write_session_json(
+            ended_at=time.time() if finalize else None,
+            end_reason="completed" if self._turns else "completed_without_speech",
+        )
         with self._lock:
             self._current.update({"recording": False, "has_speech": False, "elapsed": 0.0})
         logger.info("🎙️ Conversation recording stopped: %s", self._session_id)
@@ -353,7 +357,7 @@ class ConversationRecorder:
             start=start_ts - self._started_at,
             end=end_ts - self._started_at,
             text="",
-            confidence=0.0,
+            confidence=round(max(0.0, min(1.0, stability)), 3),
             doa_mean=doa_mean,
             doa_stability=stability,
             wav_path=str(wav_path),
@@ -380,7 +384,7 @@ class ConversationRecorder:
         with (self._session_dir / "timeline.jsonl").open("a", encoding="utf-8") as f:
             f.write(line + "\n")
 
-    def _write_session_json(self, ended_at: Optional[float]) -> None:
+    def _write_session_json(self, ended_at: Optional[float], end_reason: str = "") -> None:
         if self._session_dir is None:
             return
         data = {
@@ -390,11 +394,28 @@ class ConversationRecorder:
             "sample_rate": self.sample_rate,
             "channels": 1,
             "turns": len(self._turns),
+            "end_reason": end_reason or ("recording" if ended_at is None else "completed"),
         }
         (self._session_dir / "session.json").write_text(
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def _recover_incomplete_sessions(self) -> None:
+        """Close sessions left open by an unclean process exit."""
+        if not self.root.exists():
+            return
+        recovered_at = time.time()
+        for path in self.root.glob("session_*/session.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if data.get("ended_at") is not None:
+                    continue
+                data["ended_at"] = recovered_at
+                data["end_reason"] = "recovered_after_unclean_shutdown"
+                path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            except (OSError, ValueError, TypeError):
+                logger.warning("Unable to recover stale meeting session: %s", path)
 
     @staticmethod
     def _speaker_hint(doa: Optional[float]) -> str:

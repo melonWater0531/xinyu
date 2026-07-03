@@ -1087,11 +1087,18 @@
     }
     async function startMeetingRecording(){
       const data=await apiPost("/api/conversation/start",{control_session:true,save_audio:true});
-      if(data.session_id){App.meetingSid=data.session_id;localStorage.setItem(LS.RECORDING_SID,data.session_id);}
+      if(data.session_id){
+        App.meetingSid=data.session_id;localStorage.setItem(LS.RECORDING_SID,data.session_id);
+        clearInterval(App.heartbeatTimer);
+        App.heartbeatTimer=setInterval(()=>{
+          if(App.meetingSid)apiPost("/api/control/heartbeat",{session_id:App.meetingSid}).catch(()=>{});
+        },1000);
+      }
       return data;
     }
     async function stopMeetingRecording(){
       if(!App.meetingSid)return;
+      clearInterval(App.heartbeatTimer);App.heartbeatTimer=0;
       await apiPost("/api/conversation/stop",{session_id:App.meetingSid,finalize:true}).catch(()=>{});
       App.meetingSid=""; localStorage.removeItem(LS.RECORDING_SID);
     }
@@ -1851,7 +1858,12 @@
     renderHeader();renderHome();renderServiceStatus();
     connectWS();startPolling();
     checkStorageQuota();
-    if("serviceWorker"in navigator)navigator.serviceWorker.register("/sw.js",{scope:"/"}).catch(()=>{});
+    if("serviceWorker"in navigator){
+      navigator.serviceWorker.register("/sw.js",{scope:"/"}).catch(()=>{});
+      navigator.serviceWorker.addEventListener("message",event=>{
+        if(event.data?.type==="SW_UPDATED")showToast("控制面板已更新，刷新页面即可使用最新版");
+      });
+    }
     // Stop any orphaned companion session from a previous page load
     const orphan=localStorage.getItem(LS.CONTROL_SID);
     if(orphan){apiPost("/api/single_track/stop",{session_id:orphan}).catch(()=>{});localStorage.removeItem(LS.CONTROL_SID);}

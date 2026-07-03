@@ -21,10 +21,10 @@ ZHIPU_MODEL   = "glm-4-flash"
 _TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
-async def _call_openai_compat(url, api_key, model, messages, max_tokens) -> str:
+async def _call_openai_compat(url, api_key, model, messages, max_tokens, temperature=0.8) -> str:
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {"model": model, "messages": messages, "max_tokens": max_tokens,
-               "temperature": 0.8, "top_p": 0.9}
+               "temperature": float(temperature), "top_p": 0.9}
     try:
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
             async with s.post(url, json=payload, headers=headers) as resp:
@@ -38,23 +38,23 @@ async def _call_openai_compat(url, api_key, model, messages, max_tokens) -> str:
 
 
 class LLMRouter:
-    async def complete(self, messages: list, max_tokens: int = 600) -> str:
+    async def complete(self, messages: list, max_tokens: int = 600, temperature: float = 0.8) -> str:
         """Try DeepSeek first, then Zhipu. Return "" when cloud providers fail."""
-        result = await self.complete_with_provider(messages, max_tokens)
+        result = await self.complete_with_provider(messages, max_tokens, temperature)
         return result["text"]
 
-    async def complete_with_provider(self, messages: list, max_tokens: int = 600) -> dict:
+    async def complete_with_provider(self, messages: list, max_tokens: int = 600, temperature: float = 0.8) -> dict:
         """Try cloud providers and report which one produced the text."""
         if DEEPSEEK_API_KEY:
             reply = await _call_openai_compat(
-                DEEPSEEK_API_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL, messages, max_tokens)
+                DEEPSEEK_API_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL, messages, max_tokens, temperature)
             if reply:
                 logger.info("LLM routed to deepseek")
                 return {"text": reply, "provider": "deepseek"}
 
         if ZHIPU_API_KEY:
             reply = await _call_openai_compat(
-                ZHIPU_API_URL, ZHIPU_API_KEY, ZHIPU_MODEL, messages, max_tokens)
+                ZHIPU_API_URL, ZHIPU_API_KEY, ZHIPU_MODEL, messages, max_tokens, temperature)
             if reply:
                 logger.info("LLM routed to zhipu")
                 return {"text": reply, "provider": "zhipu"}

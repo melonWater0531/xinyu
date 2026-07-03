@@ -8,8 +8,8 @@
     if (state) window.drawOverlay(state);
   };
   window.drawOverlay = function(s){
-    drawScene($('overlay'), $('videoWrap'), $('videoStream'), s);
-    drawScene($('multiOverlay'), $('multiVideoWrap'), $('multiVideoMirror'), s);
+    try{drawScene($('overlay'), $('videoWrap'), $('videoStream'), s)}catch(e){console.warn('overlay render skipped',e)}
+    try{drawScene($('multiOverlay'), $('multiVideoWrap'), $('multiVideoMirror'), s)}catch(e){console.warn('multi overlay render skipped',e)}
   };
   function drawScene(canvas,wrap,img,s){
     if(!canvas||!wrap||!img)return;
@@ -43,6 +43,10 @@
         ctx.beginPath();ctx.arc(rs.x+p[0]*rs.sx,rs.y+p[1]*rs.sy,1,0,Math.PI*2);ctx.fill();
       });
     }
+  }
+  if('ResizeObserver' in window){
+    const observer=new ResizeObserver(()=>{if(window.state)window.drawOverlay(window.state)});
+    ['videoWrap','multiVideoWrap'].forEach(id=>{const el=document.getElementById(id);if(el)observer.observe(el)});
   }
   function finishStop(result,label){
     const runtime=(result&&result.runtime)||{};

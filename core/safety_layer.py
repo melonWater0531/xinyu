@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import Optional
 
 from core.event import ControlCommand
@@ -67,6 +68,14 @@ class SafetyLayer:
                 return self._block("pitch_range")
         if command.speed is not None and not (1 <= command.speed <= 720):
             return self._block("speed_range")
+
+        # Slew speed changes instead of sending abrupt motor acceleration.
+        if command.speed is not None and self._last_output and self._last_output.speed:
+            previous = int(self._last_output.speed)
+            span = max(20, int(previous * self._max_accel))
+            constrained = max(previous - span, min(previous + span, int(command.speed)))
+            if constrained != command.speed:
+                command = replace(command, speed=constrained)
 
         self._last_cmd_time = now
         self._last_output = command

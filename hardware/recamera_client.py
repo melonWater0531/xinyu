@@ -56,6 +56,19 @@ class RecameraClient:
         logger.info("CONNECTED to Node-RED gimbal bridge: %s", self._bridge_url)
         return self._connected
 
+    def reconfigure(self, base_url: str) -> bool:
+        """Switch bridge address; call only from the hardware I/O worker."""
+        raw = (base_url or "").rstrip("/")
+        parsed = parse.urlparse(raw)
+        host = parsed.hostname or ""
+        scheme = parsed.scheme or "http"
+        port = parsed.port or 1880
+        self._bridge_url = f"{scheme}://{host}:{port}/recamera-control/v1" if host else ""
+        self._session_id = ""
+        self._lease_deadline = 0.0
+        self._connected = False
+        return bool(self._bridge_url) and self.connect(dry_run=False)
+
     def apply_command(self, command: ControlCommand) -> bool:
         if not isinstance(command, ControlCommand):
             raise TypeError("RecameraClient.apply_command requires ControlCommand")
@@ -166,6 +179,12 @@ class RecameraClient:
             "device_lease": dict(data.get("device_lease") or {}),
             "authorized_session": str(data.get("authorized_session", "")),
             "last_sequence": int(data.get("last_sequence", 0) or 0),
+            "bridge_state": str(data.get("bridge_state", "ready" if data.get("connected", True) else "degraded")),
+            "last_error": str(data.get("last_error", "")),
+            "last_command": dict(data.get("last_command") or {}),
+            "target": dict(data.get("target") or {}),
+            "readback": dict(data.get("readback") or {}),
+            "verified": bool(data.get("verified", False)),
         }
         self._connected = result["connected"] and result["age_ms"] <= 2000
         result["connected"] = self._connected

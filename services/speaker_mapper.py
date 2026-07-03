@@ -15,7 +15,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 CAMERA_HFOV = 62.0
-DOA_ZONE_TOLERANCE = 15.0
+DOA_ZONE_TOLERANCE = 20.0
 LIP_MOVEMENT_THRESHOLD = 2.0
 
 
@@ -38,7 +38,11 @@ class SpeakerMapper:
         diff = abs((float(a) % 360.0) - (float(b) % 360.0))
         return min(diff, 360.0 - diff)
 
-    def _find_matching_zone(self, doa_deg: float) -> dict[str, Any] | None:
+    def _find_matching_zone(self, doa_deg: float, track_id: int | None = None) -> dict[str, Any] | None:
+        if track_id is not None:
+            for info in self.speaker_map.values():
+                if info.get("track_id") == track_id:
+                    return info
         for info in self.speaker_map.values():
             if self._angle_diff(doa_deg, info["doa_center"]) <= DOA_ZONE_TOLERANCE:
                 return info
@@ -50,6 +54,8 @@ class SpeakerMapper:
         match = self._find_matching_zone(float(doa_deg))
         if match:
             match["last_seen"] = time.time()
+            age = max(0.0, time.time() - float(match.get("confirmed_at", match["last_seen"])))
+            match["confidence"] = max(0.35, float(match.get("confidence", 0.65)) * (0.995 ** age))
             return match
         return None
 
@@ -59,13 +65,18 @@ class SpeakerMapper:
         track_id: int | None = None,
         pitch: float | None = None,
         face_embedding: list[float] | None = None,
+        confidence: float = 0.65,
     ) -> dict[str, Any]:
-        existing = self._find_matching_zone(float(doa_deg))
+        existing = self._find_matching_zone(float(doa_deg), track_id)
         if existing:
+            previous = float(existing.get("doa_center", doa_deg))
+            delta = ((float(doa_deg) - previous + 180.0) % 360.0) - 180.0
             existing.update({
+                "doa_center": (previous + 0.2 * delta) % 360.0,
                 "track_id": track_id if track_id is not None else existing.get("track_id"),
                 "pitch": float(pitch) if pitch is not None else existing.get("pitch"),
                 "last_seen": time.time(),
+                "confidence": max(float(existing.get("confidence", 0.0)), float(confidence)),
             })
             return existing
 
@@ -80,6 +91,8 @@ class SpeakerMapper:
             "label": label,
             "face_embedding": face_embedding,
             "last_seen": time.time(),
+            "confirmed_at": time.time(),
+            "confidence": max(0.0, min(1.0, float(confidence))),
         }
         self.speaker_map[self._zone_key(doa_deg)] = info
         logger.info(
@@ -100,6 +113,7 @@ class SpeakerMapper:
                 "track_id": info.get("track_id"),
                 "pitch": round(float(info["pitch"]), 1) if info.get("pitch") is not None else None,
                 "last_seen": round(float(info.get("last_seen", 0.0)), 3),
+                "confidence": round(float(info.get("confidence", 0.0)), 3),
             })
         return sorted(speakers, key=lambda item: item["label"])
 
@@ -131,7 +145,11 @@ class SpeakerMapper:
             if diff < best_diff:
                 best = face
                 best_diff = diff
-        return best if best is not None and best_diff <= DOA_ZONE_TOLERANCE * 2 else None
+        if best is not None and best_diff <= DOA_ZONE_TOLERANCE * 2:
+            best = dict(best)
+            best["association_confidence"] = round(max(0.0, 1.0 - best_diff / (DOA_ZONE_TOLERANCE * 2)), 3)
+            return best
+        return None
 
     @staticmethod
     def detect_lip_movement(landmarks_prev: list, landmarks_curr: list) -> bool:

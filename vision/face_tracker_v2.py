@@ -431,7 +431,7 @@ class FaceTrackerV2:
 
     def __init__(
         self,
-        detection_size: Tuple[int, int] = (640, 640),
+        detection_size: Tuple[int, int] = (512, 512),
         det_thresh: float = 0.35,
         track_thresh: float = 0.55,
         max_lost: int = MAX_LOST_FRAMES,

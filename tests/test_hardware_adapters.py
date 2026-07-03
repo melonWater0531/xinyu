@@ -105,7 +105,10 @@ class HardwareAdapterTests(unittest.TestCase):
         }.issubset(urls))
         status_tick = next(node for node in flow if node.get("id") == "rc-status-tick")
         self.assertEqual(status_tick["repeat"], "1")
-        self.assertEqual(status_tick["wires"], [["rc-get-yaw", "rc-get-pitch"]])
+        self.assertEqual(status_tick["wires"], [["rc-get-yaw"]])
+        yaw_cache = next(node for node in flow if node.get("id") == "rc-cache-yaw")
+        self.assertEqual(yaw_cache["wires"], [["rc-get-pitch"]])
+        self.assertTrue(any(node.get("type") == "catch" and node.get("id") == "rc-motor-catch" for node in flow))
 
 
 if __name__ == "__main__":

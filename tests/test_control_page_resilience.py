@@ -15,47 +15,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ControlPageResilienceTests(unittest.TestCase):
-    def test_device_lease_failure_keeps_feature_active_and_recovers(self) -> None:
-        class FlakyHardware:
-            def __init__(self) -> None:
-                self.starts = 0
-
-            def start_session(self, _session_id, lease_ms=0):
-                self.starts += 1
-                return True
-
-            def renew_session(self, _session_id, lease_ms=0):
-                return False
-
-            def stop_session(self, _session_id=""):
-                return True
-
+    def test_hardware_io_is_queued_without_clearing_feature_session(self) -> None:
         runner = main_phase3.Phase3Runner(enable_control=False, max_cycles=0)
-        runner._hw = FlakyHardware()
         start = runner.process_event(Event.make("ui", "feature_start", "test", payload={
             "feature": "multi_sound_yaw", "session_id": "multi-test", "lease_ms": 5000,
         }))
         self.assertTrue(start["accepted"])
-
-        degraded = runner.process_event(Event.make("ui", "feature_heartbeat", "test", payload={
+        heartbeat = runner.process_event(Event.make("ui", "feature_heartbeat", "test", payload={
             "session_id": "multi-test", "lease_ms": 5000,
         }))
-        self.assertTrue(degraded["accepted"])
-        self.assertFalse(degraded["hardware_ready"])
-        self.assertEqual(degraded["runtime"]["active_feature"], "multi_sound_yaw")
-        self.assertEqual(degraded["runtime"]["stop_state"], "hardware_lease_degraded")
-
-        recovered = runner.process_event(Event.make("ui", "feature_heartbeat", "test", payload={
-            "session_id": "multi-test", "lease_ms": 5000,
-        }))
-        self.assertTrue(recovered["accepted"])
-        self.assertTrue(recovered["hardware_ready"])
-        self.assertEqual(recovered["runtime"]["active_feature"], "multi_sound_yaw")
-        self.assertEqual(runner._hw.starts, 2)
+        self.assertTrue(heartbeat["accepted"])
+        self.assertEqual(heartbeat["runtime"]["active_feature"], "multi_sound_yaw")
+        self.assertIn(heartbeat["runtime"]["hardware_io"]["queue_state"], {"pending", "executing", "idle"})
+        runner._hardware_worker.close()
 
     def test_lease_windows_allow_a_missed_heartbeat(self) -> None:
         self.assertEqual(recamera_fastapi.CONTROL_LEASE_MS, 5000)
-        self.assertEqual(main_phase3.DEVICE_LEASE_MS, 2000)
+        self.assertEqual(main_phase3.DEVICE_LEASE_MS, 5000)
         worst_case_seconds = (
             main_phase3.DEVICE_REQUEST_TIMEOUT_MS * main_phase3.DEVICE_REQUEST_RETRY / 1000
             + 0.05 * (main_phase3.DEVICE_REQUEST_RETRY - 1)
@@ -96,14 +72,16 @@ class ControlPageResilienceTests(unittest.TestCase):
 
     def test_service_worker_refreshes_static_assets_before_cache_fallback(self) -> None:
         sw = (ROOT / "dashboard" / "sw.js").read_text(encoding="utf-8")
-        self.assertIn('CACHE_NAME = "xinyu-pwa-v9"', sw)
+        self.assertIn('CACHE_NAME = "xinyu-pwa-v10"', sw)
         static_branch = sw.split('url.pathname.startsWith("/static/")', 1)[1]
         self.assertLess(static_branch.index("fetch(request)"), static_branch.index("caches.match(request)"))
 
     def test_node_red_watchdog_matches_device_lease(self) -> None:
         flow = json.loads((ROOT / "deploy" / "node_red" / "recamera_control_bridge.json").read_text(encoding="utf-8"))
         status_node = next(node for node in flow if node.get("name") == "Build real readback")
-        self.assertIn("watchdog_ms:2000", status_node["func"])
+        self.assertIn("watchdog_ms:5000", status_node["func"])
+        self.assertIn("last_command", status_node["func"])
+        self.assertIn("verified", status_node["func"])
 
     def test_multi_mode_throttles_nonessential_perception(self) -> None:
         backend = (ROOT / "recamera_fastapi.py").read_text(encoding="utf-8")

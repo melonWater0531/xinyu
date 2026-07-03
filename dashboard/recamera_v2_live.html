@@ -203,6 +203,8 @@ button,input,select{font:inherit}
         <span class="pill">FSM <span id="fsmText">--</span></span>
         <span class="pill">EventBus <span id="eventBusText">--</span></span>
         <span class="pill">租约 <span id="leaseText">--</span></span>
+        <span class="pill">系统 <span id="systemHealthText">检查中</span></span>
+        <span class="pill">硬件任务 <span id="hardwareIoText">--</span></span>
       </div>
       <div class="device-config">
         <label class="pill" for="deviceIpInput">设备地址</label>
@@ -502,7 +504,13 @@ button,input,select{font:inherit}
 
 <script>
 let state=null,ws=null,wsRetry=null,lastWsAt=0,lastLog='',lastStopState='',activePage='single_face_analysis',switching=false,currentSessionId='',landmarkMesh=false;
-let heartbeatInFlight=false,heartbeatFailures=0;
+let heartbeatInFlight=false,heartbeatFailures=0,remoteControlOwner=false;
+const controlChannel=('BroadcastChannel' in window)?new BroadcastChannel('recamera-control-owner'):null;
+if(controlChannel)controlChannel.onmessage=ev=>{
+  const m=ev.data||{};
+  if(m.type==='acquired'&&m.session_id!==currentSessionId){remoteControlOwner=true;log('另一个页面已取得云台控制权，本页保持只读')}
+  if(m.type==='released'){remoteControlOwner=false}
+};
 let meetingStarting=false,meetingCompleting=false;
 const featureActive={
   single_face_analysis:false,
@@ -564,13 +572,15 @@ async function voiceStopTest(){
   log(r&&r.ok?'Voice stop event sent':'Voice stop failed');
 }
 function adoptSession(result,page){
+  if(remoteControlOwner){log('另一个页面正在控制云台，请先在该页面终止功能');return false}
   if(!result||!result.accepted||!result.session_id){log(`启动失败：${result&&result.reason||'EventBus 不可达'}`);return false}
   currentSessionId=result.session_id;
   featureActive[page]=true;
+  if(controlChannel)controlChannel.postMessage({type:'acquired',session_id:currentSessionId,page});
   updateFeatureLocks();
   return true;
 }
-function clearSession(){currentSessionId='';heartbeatFailures=0;Object.keys(featureActive).forEach(k=>featureActive[k]=false);updateFeatureLocks()}
+function clearSession(){const old=currentSessionId;currentSessionId='';heartbeatFailures=0;Object.keys(featureActive).forEach(k=>featureActive[k]=false);if(old&&controlChannel)controlChannel.postMessage({type:'released',session_id:old});updateFeatureLocks()}
 function setParamLabel(id,val){$(id).textContent=val}
 function setDeviceConfigText(text){const el=$('deviceConfigText');if(el)el.textContent=text}
 function applyDeviceState(device){
@@ -597,7 +607,7 @@ async function saveDeviceConfig(){
     const src=`${location.origin}/video_feed?t=${Date.now()}`;
     videoEl.src=src;
     multiMirror.src=src;
-    log('设备地址已保存，FastAPI 视频源正在重连');
+    log(r.reconnect_state==='pending'?'设备地址已保存，视频和控制运行时正在重连':'设备地址已保存；控制运行时离线，目前仅连接视频');
   }else{
     setDeviceConfigText(r&&r.reason?r.reason:'保存失败');
   }
@@ -642,6 +652,7 @@ async function deactivatePage(pageId,keepalive=false){
   clearSession();
 }
 async function startSinglePage(){
+  if(remoteControlOwner){log('另一个页面正在控制云台，本页保持只读');return}
   const r=await apiPost('/api/single_track/start');
   if(adoptSession(r,'single_face_analysis'))log('单人追踪已接管：reCamera 找脸并进行双轴对准');
 }
@@ -649,6 +660,7 @@ async function stopSinglePage(){await apiPost('/api/single_track/stop',{session_
 async function restartSinglePage(){await stopSinglePage();await startSinglePage();log('重新找人脸')}
 async function startMeetingWorkflow(){
   if(currentSessionId||meetingStarting||meetingCompleting)return;
+  if(remoteControlOwner){log('另一个页面正在控制云台，本页保持只读');return}
   meetingStarting=true;updateFeatureLocks();
   $('meetingRecordState').textContent='正在启动设备与录音';
   try{
@@ -673,21 +685,23 @@ async function completeMeetingWorkflow(){
   if(r&&r.accepted){
     clearSession();
     if(r.state)renderMeetingWorkflow(r.state,{});
-    log(r.ok?'会议闭环完成，逐句转写与纪要已生成':`会议已停止，但纪要生成失败：${r.error||'未知错误'}`);
+    log(r.processing?'会议录音已封存，转写与纪要正在后台生成':(r.ok?'会议闭环完成，逐句转写与纪要已生成':`会议已停止，但纪要生成失败：${r.error||'未知错误'}`));
   }else{
     updateFeatureLocks();
     log(`终止失败：${r&&r.error||r&&r.reason||'服务不可达'}`);
   }
 }
-function startLocalFeature(pageId,label){
-  featureActive[pageId]=true;
+async function startLocalFeature(pageId,label){
+  const r=await apiPost(`/api/features/${pageId}/start`,{});
+  featureActive[pageId]=!!(r&&r.accepted);
   updateFeatureLocks();
-  log(`${label}已启动`);
+  log(r&&r.accepted?`${label}已启动`:`${label}启动失败：${r&&r.reason||'服务不可达'}`);
 }
-function stopLocalFeature(pageId,label){
-  featureActive[pageId]=false;
+async function stopLocalFeature(pageId,label){
+  const r=await apiPost(`/api/features/${pageId}/stop`,{});
+  if(r&&r.accepted)featureActive[pageId]=false;
   updateFeatureLocks();
-  log(`${label}已终止`);
+  log(r&&r.accepted?`${label}已终止`:`${label}终止失败`);
 }
 function startGesturePage(){startLocalFeature('gesture_interaction','手势交互')}
 function stopGesturePage(){stopLocalFeature('gesture_interaction','手势交互')}
@@ -696,6 +710,7 @@ function stopHealthPage(){stopLocalFeature('health_pwa','健康与 PWA 通知')}
 function startLlmPage(){startLocalFeature('llm_diary','LLM 与日记')}
 function stopLlmPage(){stopLocalFeature('llm_diary','LLM 与日记')}
 async function startManualPage(){
+  if(remoteControlOwner){log('另一个页面正在控制云台，本页保持只读');return}
   const r=await apiPost('/api/control/manual/start');
   if(adoptSession(r,'manual_gimbal_debug'))log('手动云台会话已接管');
 }
@@ -801,7 +816,7 @@ function renderMeetingWorkflow(conv={},context={}){
   }).join(''):'<div class="empty-state">启动会议后，完成的语音片段会按说话人和时间显示在这里。</div>';
 
   const ready=reportStatus==='ready';
-  $('meetingReportState').textContent=ready?'已生成':reportStatus==='summarizing'?'生成中':reportStatus==='error'?'生成失败':'尚未生成';
+  $('meetingReportState').textContent=ready?'已生成':reportStatus==='summarizing'?`生成中 ${Number(report.progress||0)}%`:reportStatus==='error'?'生成失败':'尚未生成';
   $('meetingSummary').textContent=ready?(report.summary||'会议纪要已生成'):(reportStatus==='summarizing'?'正在整理逐句记录…':'等待会议结束');
   $('meetingMinutes').textContent=ready?(report.minutes||report.diary||''):'点击“终止并生成纪要”后，系统会先完成逐段转写，再整理不同说话人的观点和会议结论。';
   $('meetingAsrStatus').textContent=reportStatus;
@@ -923,13 +938,13 @@ function renderTrace(items){
   $('trace').innerHTML=items.slice().reverse().map(t=>{
     const ev=t.event?`${t.event.type}/${t.event.name}`:'event';
     const cmd=t.command?(t.command.reason||'cmd'):'hold';
-    return `<div class="trace-row">${fmtClock(t.t)} ${ev} -> ${t.state||'--'} -> ${cmd}</div>`;
+    return `<div class="trace-row">${escapeHtml(fmtClock(t.t))} ${escapeHtml(ev)} -&gt; ${escapeHtml(t.state||'--')} -&gt; ${escapeHtml(cmd)}</div>`;
   }).join('')||'暂无控制链路记录';
 }
 function fmtClock(t){return new Date((t||0)*1000).toLocaleTimeString()}
 function drawOverlay(s){
   const img=$('videoStream'),canvas=$('overlay'),wrap=$('videoWrap'),ctx=canvas.getContext('2d');
-  const w=wrap.clientWidth,h=wrap.clientHeight;if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}
+  const w=wrap.clientWidth,h=wrap.clientHeight;if(w<=0||h<=0)return;if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}
   ctx.clearRect(0,0,w,h);
   const video=s.video||{},pose=s.pose||{},rs=getImageDrawRect(img,w,h);
   ctx.lineWidth=2;ctx.font='12px sans-serif';
@@ -957,12 +972,21 @@ async function poll(){
   if(ws&&ws.readyState===WebSocket.OPEN&&Date.now()-lastWsAt<1500)return;
   try{const r=await fetch('/api/state',{cache:'no-store'});const s=normalizeState(await r.json());if(s){state=s;renderState(state)}}catch(e){setConn('warn','HTTP state failed')}
 }
+async function pollSystemHealth(){
+  try{
+    const r=await fetch('/api/system/health',{cache:'no-store'}),h=await r.json();
+    $('systemHealthText').textContent=h.status==='ready'?'全部就绪':'存在降级';
+    const io=(state&&state.control&&state.control.hardware_io)||{};
+    $('hardwareIoText').textContent=io.command_state||io.queue_state||'idle';
+  }catch(e){$('systemHealthText').textContent='检查失败'}
+}
 const videoEl=$('videoStream'),multiMirror=$('multiVideoMirror'),gestureMirror=$('gestureVideoMirror');
 videoEl.src=`${location.origin}/video_feed?t=${Date.now()}`;
 multiMirror.src=videoEl.src;
 if(gestureMirror)gestureMirror.src=videoEl.src;
 videoEl.onerror=()=>{log('video_feed failed; retrying');setTimeout(()=>{const src=`${location.origin}/video_feed?t=${Date.now()}`;videoEl.src=src;multiMirror.src=src;if(gestureMirror)gestureMirror.src=src},1200)};
-connectWS();loadDeviceConfig();poll();setInterval(poll,350);setInterval(heartbeat,1000);addEventListener('resize',()=>state&&drawOverlay(state));
+connectWS();loadDeviceConfig();poll();pollSystemHealth();setInterval(poll,350);setInterval(pollSystemHealth,2000);setInterval(heartbeat,1000);addEventListener('resize',()=>state&&drawOverlay(state));
+if('ResizeObserver' in window)new ResizeObserver(()=>state&&drawOverlay(state)).observe(document.querySelector('.main'));
 addEventListener('beforeunload',()=>{deactivatePage(activePage,true)});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&currentSessionId)log('页面恢复可见，控制会话仍在运行')});
 updateFeatureLocks();

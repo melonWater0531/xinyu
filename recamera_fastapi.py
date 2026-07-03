@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +49,7 @@ from core.device_config import (
     device_sscma_ws_url,
     normalize_device_ip,
 )
+from core.device_config_store import device_config_store
 from core.event import Event
 from core.event_bus import EventBusClient
 from utils.logger import get_logger, setup_root_logger
@@ -322,6 +324,7 @@ _meeting_report = {
     "status": "idle", "summary": "", "minutes": "", "transcript": "",
     "turns": 0, "duration_min": 0.0, "error": "",
 }
+_meeting_summary_task = None
 _wake_word_service = None
 try:
     from services.voice_policy import voice_policy
@@ -343,6 +346,12 @@ _runtime_cache = {
 _led_runtime_mode = ""
 _last_audio_event_active = False
 _last_audio_event_session_id = ""
+_lip_motion_history = {}
+_analysis_features = {
+    "gesture_interaction": False,
+    "health_pwa": False,
+    "llm_diary": False,
+}
 
 
 def _current_running_loop():
@@ -374,11 +383,17 @@ def _emotion_valence(emotion: str = "", probabilities: dict | None = None, fallb
 
 def _device_config_state() -> dict:
     ip = app_config.device_ip if app_config else ""
+    stored = device_config_store.read()
+    control_connected = bool(_runtime_cache.get("connected"))
     return {
         "ip": ip,
         "configured": bool(ip),
         "sscma_url": device_sscma_ws_url(ip) if ip else "",
         "video_connected": bool(video_client.connected) if video_client else False,
+        "control_connected": control_connected,
+        "control_state": "ready" if control_connected else "video_only",
+        "version": int(stored.get("version", 0)),
+        "updated_at": stored.get("updated_at"),
     }
 
 
@@ -583,6 +598,12 @@ def _apply_runtime_result(result: dict) -> None:
         "last_event": runtime.get("last_event"),
         "command": runtime.get("last_command"),
         "safety": runtime.get("safety", {}),
+        "hardware_io": runtime.get("hardware_io", {}),
+        "hardware_ready": bool(runtime.get("hardware_ready")),
+        "resource_locks": {
+            "gimbal": runtime.get("active_feature", "inactive"),
+            "analytics": [name for name, active in _analysis_features.items() if active],
+        },
         "eventbus": {
             "host": _eventbus.host, "port": _eventbus.port,
             "last_result": {"ok": True, "accepted": True},
@@ -638,9 +659,14 @@ async def doa_event_loop() -> None:
         )
         if active:
             _last_audio_event_session_id = session_id
+            lip_motion, lip_score, lip_track_id = _lip_motion_evidence()
             event = Event.make(
                 "audio", "speech_detected", "respeaker",
-                payload={"doa_deg": float(_doa_reader.doa), "speech": True, "session_id": session_id},
+                payload={
+                    "doa_deg": float(_doa_reader.doa), "speech": True, "session_id": session_id,
+                    "vad_confidence": 0.8, "lip_motion": lip_motion,
+                    "lip_motion_score": lip_score, "lip_track_id": lip_track_id,
+                },
             )
             result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
             _apply_runtime_result(result)
@@ -665,6 +691,38 @@ def _conversation_doa_provider() -> tuple[Optional[float], bool]:
     return float(_doa_reader.doa), bool(_doa_reader.has_speech)
 
 
+def _lip_motion_evidence() -> tuple[Optional[bool], float, Optional[int]]:
+    """Return 800 ms normalized mouth-motion evidence for visible tracks."""
+    now = time.monotonic()
+    best_score, best_track, reliable = 0.0, None, False
+    active_ids = set()
+    for person in list(_latest_pose_persons):
+        track_id = int(getattr(person, "_track_id", -1) or -1)
+        points = {getattr(kp, "name", ""): (float(kp.x), float(kp.y)) for kp in getattr(person, "keypoints", [])}
+        if "left_mouth" not in points or "right_mouth" not in points:
+            continue
+        bbox = getattr(person, "bbox", (0, 0, 1, 1))
+        face_scale = max(1.0, float(bbox[2]) - float(bbox[0]))
+        mouth_width = abs(points["right_mouth"][0] - points["left_mouth"][0]) / face_scale
+        history = _lip_motion_history.setdefault(track_id, deque(maxlen=16))
+        history.append((now, mouth_width))
+        while history and now - history[0][0] > 0.8:
+            history.popleft()
+        active_ids.add(track_id)
+        if len(history) >= 4 and history[-1][0] - history[0][0] >= 0.45:
+            reliable = True
+            score = max(value for _, value in history) - min(value for _, value in history)
+            if score > best_score:
+                best_score, best_track = score, track_id
+    for track_id in list(_lip_motion_history):
+        if track_id not in active_ids:
+            _lip_motion_history.pop(track_id, None)
+    if not reliable:
+        return None, 0.0, None
+    normalized = max(0.0, min(1.0, best_score / 0.04))
+    return normalized >= 0.35, normalized, best_track
+
+
 def _meeting_speaker_provider(doa_deg: Optional[float]) -> Optional[str]:
     if doa_deg is None:
         return None
@@ -684,6 +742,7 @@ def _meeting_speaker_provider(doa_deg: Optional[float]) -> Optional[str]:
                 doa_deg=float(doa_deg),
                 track_id=face_lock.get("track_id"),
                 pitch=float(pitch) if pitch is not None else None,
+                confidence=0.8,
             )
             return str(info["label"])
 
@@ -698,6 +757,7 @@ def _meeting_speaker_provider(doa_deg: Optional[float]) -> Optional[str]:
                 doa_deg=float(doa_deg),
                 track_id=face.get("track_id"),
                 pitch=float(pitch) if pitch is not None else None,
+                confidence=float(face.get("association_confidence", 0.65)),
             )
             return str(info["label"])
     except Exception as exc:
@@ -1269,6 +1329,10 @@ async def lifespan(app: FastAPI):
 
     global video_client
 
+    stored_ip = str(device_config_store.read().get("device_ip", ""))
+    if app_config and not app_config.device_ip and stored_ip:
+        app_config.device_ip = stored_ip
+
     # Start video client only when a device address is configured. FastAPI can
     # still run as UI/telemetry viewer without a reCamera address.
     if app_config.device_ip:
@@ -1282,8 +1346,11 @@ async def lifespan(app: FastAPI):
 
     # Attention engine
     global _attention_engine
-    from vision.attention_engine import AttentionEngine
-    _attention_engine = AttentionEngine()
+    from vision.attention_engine import AttentionConfig, AttentionEngine
+    profile_id = "".join(ch for ch in os.environ.get("RECAMERA_PROFILE_ID", "default") if ch.isalnum() or ch in "-_") or "default"
+    device_key = "".join(ch for ch in (app_config.device_ip or "unconfigured") if ch.isalnum())[-24:]
+    baseline_path = Path(__file__).resolve().parent / "runtime" / f"attention_{profile_id}_{device_key}.json"
+    _attention_engine = AttentionEngine(AttentionConfig(baseline_file=str(baseline_path)))
 
     # FaceTrackerV2: Kalman + ByteTrack + ArcFace
     global _face_tracker
@@ -1513,7 +1580,7 @@ async def state_push_loop():
             pose_frame_count += 1
             multi_mode = bool(_multi_track_active and not _single_track_active)
             run_companion_detail = not multi_mode
-            face_due = pose_frame_count % 2 == 0
+            face_due = pose_frame_count % (3 if multi_mode else 2) == 0
             pose_due = pose_frame_count % (2 if multi_mode else 4) == 0
             # -- Scene gating: daily (single) runs face/emotion/eye; work (multi) runs pose only.
             #    When neither mode is active, both pipelines run (default observation mode). --
@@ -1836,8 +1903,63 @@ async def api_device_config():
 @app.post("/api/device/config")
 async def api_set_device_config(payload: dict = Body(default={})):
     device_ip = payload.get("device_ip") or payload.get("ip") or ""
-    ok, reason = _restart_video_client(str(device_ip))
-    return {"ok": ok, "reason": reason, "device": _device_config_state()}
+    try:
+        saved = device_config_store.write(str(device_ip))
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc), "device": _device_config_state()}
+    ok, reason = _restart_video_client(saved["device_ip"])
+    event = Event.make("system", "device_config_update", "fastapi", {
+        "device_ip": saved["device_ip"], "version": saved["version"],
+    })
+    loop = asyncio.get_running_loop()
+    control_result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
+    return {
+        "ok": ok,
+        "reason": reason,
+        "reconnect_state": "pending" if control_result.get("accepted") else "control_offline",
+        "control": control_result,
+        "device": _device_config_state(),
+    }
+
+
+@app.get("/api/system/health")
+async def api_system_health():
+    conversation = _conversation_state()
+    doa = _doa_status()
+    gimbal = dict(_gimbal_tlm)
+    components = {
+        "fastapi": {"status": "ready", "reason": ""},
+        "eventbus": {"status": "ready" if _runtime_cache.get("connected") else "offline", "reason": "启动 main_phase3 --manual-control" if not _runtime_cache.get("connected") else ""},
+        "sscma": {"status": "ready" if video_client and video_client.connected else "offline", "reason": "检查设备地址和 8090 端口" if not (video_client and video_client.connected) else ""},
+        "node_red": {"status": "ready" if gimbal.get("connected") else "degraded", "reason": gimbal.get("last_error") or "检查设备 1880 bridge 与电机读回"},
+        "gimbal": {"status": "ready" if gimbal.get("verified") or gimbal.get("connected") else "degraded", "reason": "尚未验证电机动作" if not gimbal.get("verified") else ""},
+        "respeaker": {"status": "ready" if doa.get("available") or doa.get("connected") else "offline", "reason": str(doa.get("error", "检查 USB/DOA 输入"))},
+        "recorder": {"status": "ready" if conversation.get("available", True) else "offline", "reason": conversation.get("error", "")},
+        "llm": {"status": "ready" if os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("ZHIPU_API_KEY") else "degraded", "reason": "未配置云端模型，将使用本地回退"},
+    }
+    overall = "ready" if all(v["status"] == "ready" for v in components.values()) else "degraded"
+    return {"ok": True, "status": overall, "components": components, "device": _device_config_state()}
+
+
+@app.get("/api/features")
+async def api_features():
+    return {"ok": True, "analytics": dict(_analysis_features), "control": dict(_runtime_cache)}
+
+
+@app.post("/api/features/{feature}/start")
+async def api_feature_start(feature: str):
+    if feature not in _analysis_features:
+        return {"ok": False, "accepted": False, "reason": "unknown_or_control_feature"}
+    _analysis_features[feature] = True
+    return {"ok": True, "accepted": True, "feature": feature, "state": "running", "resource": "analytics"}
+
+
+@app.post("/api/features/{feature}/stop")
+async def api_feature_stop(feature: str):
+    if feature not in _analysis_features:
+        return {"ok": False, "accepted": False, "reason": "unknown_or_control_feature"}
+    _analysis_features[feature] = False
+    return {"ok": True, "accepted": True, "feature": feature, "state": "stopped", "resource": "analytics"}
 
 
 @app.get("/api/gimbal/state")
@@ -2097,6 +2219,13 @@ async def _emit_ui_event(name: str, payload: dict) -> dict:
 
 async def _start_feature(feature: str) -> dict:
     global _ui_session_id, _single_track_active, _multi_track_active
+    if (_runtime_cache.get("connected") and _runtime_cache.get("active_feature") not in {None, "", "inactive"}
+            and int(_runtime_cache.get("lease_remaining_ms", 0) or 0) > 0):
+        return {
+            "ok": False, "accepted": False, "reason": "control_busy",
+            "owner_feature": _runtime_cache.get("active_feature"),
+            "lease_remaining_ms": _runtime_cache.get("lease_remaining_ms", 0),
+        }
     session_id = uuid.uuid4().hex
     result = await _emit_ui_event(
         "feature_start",
@@ -2291,10 +2420,10 @@ DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 DEEPSEEK_MAX_TOKENS = int(os.getenv("DEEPSEEK_MAX_TOKENS", "600"))
 ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "")
 
-async def _deepseek_chat(messages: list, max_tokens: int | None = None) -> str:
+async def _deepseek_chat(messages: list, max_tokens: int | None = None, temperature: float = 0.8) -> str:
     """Route to cloud LLM providers; endpoint handlers own local fallback."""
     from services.llm_router import router as _llm_router
-    return await _llm_router.complete(messages, max_tokens or DEEPSEEK_MAX_TOKENS)
+    return await _llm_router.complete(messages, max_tokens or DEEPSEEK_MAX_TOKENS, temperature)
 
 
 async def _cloud_llm_complete(messages: list, max_tokens: int | None = None) -> dict:
@@ -2470,12 +2599,11 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
     global _meeting_report
     from pathlib import Path as _Path
     from services.cloud_asr import cloud_asr as _cloud_asr
-    from services.emotion_prompt import build_emotion_context
     from services.speaker_mapper import speaker_mapper
 
     recorder = _conversation_recorder
     _meeting_report = {
-        **_meeting_report, "status": "summarizing", "error": "",
+        **_meeting_report, "status": "summarizing", "error": "", "progress": 5,
     }
     if recorder is None:
         await _emit_voice_reason(
@@ -2500,16 +2628,20 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
         return {"ok": False, "error_code": "no_segments", "error": _meeting_report["error"]}
 
     transcripts = []
-    for turn in turns:
+    total_turns = max(1, len(turns))
+    for turn_index, turn in enumerate(turns):
         wav = turn.get("wav_path", "")
         if wav and _Path(wav).exists():
             text = str(turn.get("text") or "").strip() or await _cloud_asr.transcribe(wav)
             if text:
                 speaker = str(turn.get("speaker_label") or "未知说话人")
-                transcripts.append(f"[{speaker}] {text}")
+                start = float(turn.get("start", 0.0) or 0.0)
+                end = float(turn.get("end", start) or start)
+                transcripts.append(f"[{start:.1f}-{end:.1f}s][{speaker}] {text}")
                 recorder.set_transcript(str(turn.get("id") or ""), text)
             else:
                 recorder.set_transcript(str(turn.get("id") or ""), "")
+        _meeting_report["progress"] = min(65, 10 + int(55 * (turn_index + 1) / total_turns))
 
     if not transcripts:
         await _emit_voice_reason(
@@ -2528,26 +2660,45 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
     duration_min = round(session_state.get("stats", {}).get("duration", 0) / 60, 1)
     speakers = speaker_mapper.get_registered_speakers()
     speaker_list = "、".join(s["label"] for s in speakers) if speakers else "暂未识别"
-    emotion_context = build_emotion_context(build_state_snapshot().get("data", {}))
-
     sys_p = (
         "你是心屿，请将以下多人对话整理为会议记录。"
         "转写中方括号标记不同发言者；未知说话人也要如实保留。"
         "要求客观、可核查，不补写转写中不存在的事实。"
-        "minutes 必须包含参会说话人、讨论要点、形成的结论和待办事项；没有结论或待办时明确写无。"
-        "输出严格JSON：{\"summary\":\"一句话摘要，不超过40字\",\"minutes\":\"结构化会议纪要\"}"
+        "所有结论和行动项必须带可回查的发言时间；不推断情绪、身份或未出现的事实。"
+        "输出严格JSON：{\"summary\":\"不超过40字\",\"topics\":[],\"decisions\":[],"
+        "\"actions\":[{\"task\":\"\",\"owner\":\"待确认\",\"due\":\"待确认\",\"evidence\":\"时间戳\"}],"
+        "\"disputes\":[],\"open_questions\":[],\"minutes\":\"结构化会议纪要\"}"
     )
+    source_text = full_transcript
+    _meeting_report["progress"] = 70
+    if len(source_text) > 6000:
+        chunk_notes = []
+        for index in range(0, len(source_text), 5000):
+            chunk = source_text[index:index + 5000]
+            chunk_messages = [
+                {"role": "system", "content": "只提取本段可核查事实、结论、行动项和对应时间戳，不补充内容。"},
+                {"role": "user", "content": chunk},
+            ]
+            try:
+                note = await _deepseek_chat(chunk_messages, max_tokens=500, temperature=0.15)
+            except TypeError:  # compatibility with injected/test LLM callables
+                note = await _deepseek_chat(chunk_messages, max_tokens=500)
+            chunk_notes.append(note or chunk)
+        source_text = "\n\n".join(chunk_notes)
     usr_p = (
         f"对话时长：{duration_min}分钟。\n"
         f"已注册说话人：{speaker_list}\n"
-        f"现场状态线索：\n{emotion_context}\n\n"
-        f"逐句记录（说话人标注）：\n{full_transcript[:6000]}"
+        f"逐句记录或分块事实（说话人标注）：\n{source_text}"
     )
 
-    raw = await _deepseek_chat([
+    final_messages = [
         {"role": "system", "content": sys_p},
         {"role": "user",   "content": usr_p},
-    ], max_tokens=700)
+    ]
+    try:
+        raw = await _deepseek_chat(final_messages, max_tokens=1000, temperature=0.2)
+    except TypeError:
+        raw = await _deepseek_chat(final_messages, max_tokens=1000)
 
     minutes_text = summary_text = ""
     try:
@@ -2574,6 +2725,8 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
         "turns": len(transcripts),
         "duration_min": duration_min,
         "error": "",
+        "progress": 100,
+        "structured": parsed if 'parsed' in locals() and isinstance(parsed, dict) else {},
     }
     report_path = recorder.save_report(_meeting_report)
     if report_path:
@@ -2592,15 +2745,30 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
 
 @app.post("/api/meeting/complete")
 async def api_meeting_complete(payload: dict = Body(default={})):
-    """Stop the unified DOA meeting session, transcribe turns, and build minutes."""
+    """Stop recording immediately and continue ASR/LLM in the background."""
+    global _meeting_summary_task, _meeting_report
     session_id = str(payload.get("session_id", ""))
     if not session_id:
         return {"ok": False, "accepted": False, "error_code": "session_id_required", "error": "缺少会议控制会话"}
     stopped = await api_multi_track_stop({"session_id": session_id, "finalize": True})
     if not stopped.get("accepted"):
         return {**stopped, "ok": False, "error": "会议控制会话已失效，录音已尝试保存"}
-    report = await api_meeting_summarize(payload)
-    return {**report, "accepted": True, "stopped": True, "state": _conversation_state()}
+    _meeting_report = {**_meeting_report, "status": "summarizing", "error": "", "progress": 0}
+    if _meeting_summary_task is None or _meeting_summary_task.done():
+        _meeting_summary_task = asyncio.create_task(api_meeting_summarize({**payload, "background": True}))
+        def _finish_summary(task):
+            global _meeting_report
+            try:
+                task.result()
+            except Exception as exc:
+                logger.exception("meeting summary background task failed")
+                _meeting_report = {**_meeting_report, "status": "error", "error": str(exc)[:160], "progress": 100}
+        _meeting_summary_task.add_done_callback(_finish_summary)
+        await asyncio.sleep(0)
+    return {
+        "ok": True, "accepted": True, "stopped": True, "processing": True,
+        "job_state": "summarizing", "state": _conversation_state(),
+    }
 
 
 @app.get("/api/health")

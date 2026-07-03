@@ -2,9 +2,11 @@
 
 This flow is the hardware-side adapter for the single control plane. It exposes
 dual-axis command, stop, and real motor readback APIs on Node-RED port 1880.
-The bundled flow polls yaw/pitch angles at 1 Hz. Speed reads are intentionally
-excluded from the periodic tick because four concurrent motor queries can stall
-the device-side Node-RED event loop when CAN readback is unhealthy.
+The bundled flow reads yaw and then pitch serially at 1 Hz. Speed reads are
+intentionally excluded because concurrent motor queries can stall the
+device-side Node-RED event loop when CAN readback is unhealthy. `/status` only
+reads cached values and reports command acceptance separately from verified
+motor readback.
 
 ## Install
 
@@ -23,3 +25,14 @@ curl -X POST "http://<RECAMERA_IP>:1880/recamera-control/v1/stop" \
 ```
 
 The status endpoint returns HTTP 503 until both motor angles have been read.
+
+After deployment, run the repository's read-only verifier:
+
+```bash
+python3 tools/verify_control_bridge.py "$RECAMERA_DEVICE_IP"
+```
+
+`latency_ms.max` should remain below 100 ms. `verified=false` means the bridge
+accepted a command but has not yet observed the requested absolute angle.
+`last_error` records motor node, CAN, stop, or calibration failures caught by
+the flow. The device lease is five seconds and must be renewed once per second.

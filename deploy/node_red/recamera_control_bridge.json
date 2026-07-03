@@ -44,7 +44,7 @@
     "type": "function",
     "z": "rc-tab",
     "name": "Validate and route",
-    "func": "const p = msg.payload || {};\nconst now = Date.now();\nconst sid = String(p.session_id || '');\nconst active = String(flow.get('rcSession') || '');\nconst deadline = Number(flow.get('rcLeaseDeadline') || 0);\nconst seq = Number(p.sequence || 0);\nconst lastSeq = Number(flow.get('rcLastSequence') || 0);\nif (!sid || sid !== active || now >= deadline) {\n  msg.statusCode=409; msg.payload={ok:false,accepted:false,error:'control_lease_invalid'}; return [null,null,msg];\n}\nif (!Number.isFinite(seq) || seq <= lastSeq || Number(p.expires_at || 0) * 1000 <= now) {\n  msg.statusCode=409; msg.payload={ok:false,accepted:false,error:'stale_command'}; return [null,null,msg];\n}\nconst mode = p.mode === 'delta' ? 'delta' : 'absolute';\nconst yaw = p.yaw === null || p.yaw === undefined ? (mode === 'delta' ? 0 : flow.get('rcYaw')) : Number(p.yaw);\nconst pitch = p.pitch === null || p.pitch === undefined ? (mode === 'delta' ? 0 : flow.get('rcPitch')) : Number(p.pitch);\nconst ys = Math.max(1, Math.min(720, Number(p.yaw_speed || 180)));\nconst ps = Math.max(1, Math.min(720, Number(p.pitch_speed || 180)));\nif (!Number.isFinite(yaw) || !Number.isFinite(pitch)) {\n  msg.statusCode=400; msg.payload={ok:false,accepted:false,error:'invalid_angles'}; return [null,null,msg];\n}\nflow.set('rcLastSequence', seq);\nconst motor = RED.util.cloneMessage(msg);\nmotor.payload={yaw_angle:yaw,yaw_speed:ys,pitch_angle:pitch,pitch_speed:ps};\nconst response = RED.util.cloneMessage(msg);\nresponse.statusCode=202; response.payload={ok:true,accepted:true,mode,sequence:seq};\nreturn mode === 'delta' ? [null,motor,response] : [motor,null,response];",
+    "func": "const p = msg.payload || {};\nconst now = Date.now();\nconst sid = String(p.session_id || '');\nconst active = String(flow.get('rcSession') || '');\nconst deadline = Number(flow.get('rcLeaseDeadline') || 0);\nconst seq = Number(p.sequence || 0);\nconst lastSeq = Number(flow.get('rcLastSequence') || 0);\nif (!sid || sid !== active || now >= deadline) {\n  msg.statusCode=409; msg.payload={ok:false,accepted:false,error:'control_lease_invalid'}; return [null,null,msg];\n}\nif (!Number.isFinite(seq) || seq <= lastSeq || Number(p.expires_at || 0) * 1000 <= now) {\n  msg.statusCode=409; msg.payload={ok:false,accepted:false,error:'stale_command'}; return [null,null,msg];\n}\nconst mode = p.mode === 'delta' ? 'delta' : 'absolute';\nconst yaw = p.yaw === null || p.yaw === undefined ? (mode === 'delta' ? 0 : flow.get('rcYaw')) : Number(p.yaw);\nconst pitch = p.pitch === null || p.pitch === undefined ? (mode === 'delta' ? 0 : flow.get('rcPitch')) : Number(p.pitch);\nconst ys = Math.max(1, Math.min(720, Number(p.yaw_speed || 180)));\nconst ps = Math.max(1, Math.min(720, Number(p.pitch_speed || 180)));\nif (!Number.isFinite(yaw) || !Number.isFinite(pitch)) {\n  msg.statusCode=400; msg.payload={ok:false,accepted:false,error:'invalid_angles'}; return [null,null,msg];\n}\nflow.set('rcLastSequence', seq);\nflow.set('rcTarget',{yaw,pitch,mode,sequence:seq,issued_at:now});\nflow.set('rcLastCommand',{state:'executing',sequence:seq,mode,accepted_at:now});\nflow.set('rcVerified',false); flow.set('rcLastError','');\nconst motor = RED.util.cloneMessage(msg);\nmotor.payload={yaw_angle:yaw,yaw_speed:ys,pitch_angle:pitch,pitch_speed:ps};\nconst response = RED.util.cloneMessage(msg);\nresponse.statusCode=202; response.payload={ok:true,accepted:true,state:'executing',mode,sequence:seq};\nreturn mode === 'delta' ? [null,motor,response] : [motor,null,response];",
     "outputs": 3,
     "timeout": 0,
     "noerr": 0,
@@ -188,8 +188,7 @@
     "y": 300,
     "wires": [
       [
-        "rc-get-yaw",
-        "rc-get-pitch"
+        "rc-get-yaw"
       ]
     ]
   },
@@ -256,18 +255,18 @@
     "type": "function",
     "z": "rc-tab",
     "name": "Cache yaw",
-    "func": "flow.set('rcYaw',Number(msg.payload)); flow.set('rcStatusAt',Date.now()); return null;",
-    "outputs": 0,
+    "func": "flow.set('rcYaw',Number(msg.payload)); flow.set('rcStatusAt',Date.now()); return msg;",
+    "outputs": 1,
     "x": 600,
     "y": 260,
-    "wires": []
+    "wires": [["rc-get-pitch"]]
   },
   {
     "id": "rc-cache-pitch",
     "type": "function",
     "z": "rc-tab",
     "name": "Cache pitch",
-    "func": "flow.set('rcPitch',Number(msg.payload)); flow.set('rcStatusAt',Date.now()); return null;",
+    "func": "const pitch=Number(msg.payload); flow.set('rcPitch',pitch); flow.set('rcStatusAt',Date.now()); const t=flow.get('rcTarget')||{}; const yaw=Number(flow.get('rcYaw')); const verified=t.mode==='absolute'&&Number.isFinite(yaw)&&Math.abs(yaw-Number(t.yaw))<=3&&Math.abs(pitch-Number(t.pitch))<=3; flow.set('rcVerified',verified); if(verified)flow.set('rcLastCommand',{...(flow.get('rcLastCommand')||{}),state:'verified',verified_at:Date.now()}); return null;",
     "outputs": 0,
     "x": 600,
     "y": 300,
@@ -317,7 +316,7 @@
     "type": "function",
     "z": "rc-tab",
     "name": "Build real readback",
-    "func": "const ts=Number(flow.get('rcStatusAt')||0);\nconst yaw=flow.get('rcYaw'); const pitch=flow.get('rcPitch');\nconst fresh=ts>0 && Date.now()-ts<2000;\nconst deadline=Number(flow.get('rcLeaseDeadline')||0);\nconst sid=String(flow.get('rcSession')||'');\nmsg.statusCode=fresh?200:503;\nmsg.payload={connected:fresh,yaw:yaw??null,pitch:pitch??null,yaw_speed:flow.get('rcYawSpeed')??null,pitch_speed:flow.get('rcPitchSpeed')??null,timestamp:ts,source:'motor_readback',authorized_session:sid,last_sequence:Number(flow.get('rcLastSequence')||0),device_lease:{active:!!sid&&Date.now()<deadline,remaining_ms:Math.max(0,deadline-Date.now()),watchdog_ms:2000}};\nreturn msg;",
+    "func": "const ts=Number(flow.get('rcStatusAt')||0);\nconst yaw=flow.get('rcYaw'); const pitch=flow.get('rcPitch');\nconst fresh=ts>0 && Date.now()-ts<3000;\nconst deadline=Number(flow.get('rcLeaseDeadline')||0);\nconst sid=String(flow.get('rcSession')||'');\nconst lastError=String(flow.get('rcLastError')||''); const verified=!!flow.get('rcVerified');\nmsg.statusCode=fresh?200:503;\nmsg.payload={connected:fresh,bridge_state:fresh?(lastError?'degraded':'ready'):'degraded',last_error:lastError,yaw:yaw??null,pitch:pitch??null,yaw_speed:flow.get('rcYawSpeed')??null,pitch_speed:flow.get('rcPitchSpeed')??null,timestamp:ts,source:'motor_readback',readback:{yaw:yaw??null,pitch:pitch??null,timestamp:ts},target:flow.get('rcTarget')||{},last_command:flow.get('rcLastCommand')||{},verified,authorized_session:sid,last_sequence:Number(flow.get('rcLastSequence')||0),device_lease:{active:!!sid&&Date.now()<deadline,remaining_ms:Math.max(0,deadline-Date.now()),watchdog_ms:5000}};\nreturn msg;",
     "outputs": 1,
     "x": 360,
     "y": 460,
@@ -360,7 +359,7 @@
     "type": "function",
     "z": "rc-tab",
     "name": "Authorize session",
-    "func": "const p=msg.payload||{}; const sid=String(p.session_id||''); const lease=Math.max(500,Math.min(2000,Number(p.lease_ms||750))); if(!sid){msg.statusCode=400;msg.payload={ok:false,accepted:false,error:'session_id_required'};return msg;} flow.set('rcSession',sid);flow.set('rcLeaseDeadline',Date.now()+lease);flow.set('rcLastSequence',0);msg.statusCode=200;msg.payload={ok:true,accepted:true,session_id:sid,lease_ms:lease};return msg;",
+    "func": "const p=msg.payload||{}; const sid=String(p.session_id||''); const lease=Math.max(1000,Math.min(6000,Number(p.lease_ms||5000))); if(!sid){msg.statusCode=400;msg.payload={ok:false,accepted:false,error:'session_id_required'};return msg;} flow.set('rcSession',sid);flow.set('rcLeaseDeadline',Date.now()+lease);flow.set('rcLastSequence',0);msg.statusCode=200;msg.payload={ok:true,accepted:true,session_id:sid,lease_ms:lease};return msg;",
     "outputs": 1,
     "x": 360,
     "y": 540,
@@ -392,7 +391,7 @@
     "type": "function",
     "z": "rc-tab",
     "name": "Renew session",
-    "func": "const p=msg.payload||{};const sid=String(p.session_id||'');const active=String(flow.get('rcSession')||'');if(!sid||sid!==active){msg.statusCode=409;msg.payload={ok:false,accepted:false,error:'session_mismatch'};return msg;}const lease=Math.max(500,Math.min(2000,Number(p.lease_ms||750)));flow.set('rcLeaseDeadline',Date.now()+lease);msg.statusCode=200;msg.payload={ok:true,accepted:true,session_id:sid,lease_ms:lease};return msg;",
+    "func": "const p=msg.payload||{};const sid=String(p.session_id||'');const active=String(flow.get('rcSession')||'');if(!sid||sid!==active){msg.statusCode=409;msg.payload={ok:false,accepted:false,error:'session_mismatch'};return msg;}const lease=Math.max(1000,Math.min(6000,Number(p.lease_ms||5000)));flow.set('rcLeaseDeadline',Date.now()+lease);msg.statusCode=200;msg.payload={ok:true,accepted:true,session_id:sid,lease_ms:lease};return msg;",
     "outputs": 1,
     "x": 370,
     "y": 590,
@@ -577,6 +576,28 @@
     "headers": {},
     "x": 1090,
     "y": 770,
+    "wires": []
+  },
+  {
+    "id": "rc-motor-catch",
+    "type": "catch",
+    "z": "rc-tab",
+    "name": "Catch motor/CAN errors",
+    "scope": ["rc-set-absolute", "rc-set-delta", "rc-get-yaw", "rc-get-pitch", "rc-exec-stop", "rc-exec-calibrate"],
+    "uncaught": false,
+    "x": 150,
+    "y": 810,
+    "wires": [["rc-record-motor-error"]]
+  },
+  {
+    "id": "rc-record-motor-error",
+    "type": "function",
+    "z": "rc-tab",
+    "name": "Record motor error",
+    "func": "const detail=(msg.error&&msg.error.message)||msg.payload||'motor_bridge_error'; flow.set('rcLastError',String(detail).slice(0,200)); flow.set('rcVerified',false); flow.set('rcLastCommand',{...(flow.get('rcLastCommand')||{}),state:'failed',failed_at:Date.now()}); return null;",
+    "outputs": 0,
+    "x": 390,
+    "y": 810,
     "wires": []
   }
 ]

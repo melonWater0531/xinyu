@@ -1,4 +1,4 @@
-const CACHE_NAME = "xinyu-pwa-v9";
+const CACHE_NAME = "xinyu-pwa-v10";
 const APP_SHELL = [
   "/home",
   "/manifest.webmanifest",
@@ -21,6 +21,8 @@ self.addEventListener("activate", event => {
     caches.keys()
       .then(keys => Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))))
       .then(() => self.clients.claim())
+      .then(() => self.clients.matchAll({type:"window",includeUncontrolled:true}))
+      .then(clients => clients.forEach(client => client.postMessage({type:"SW_UPDATED",cache:CACHE_NAME})))
   );
 });
 

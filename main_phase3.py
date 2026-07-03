@@ -16,6 +16,7 @@ from typing import List, Optional
 import numpy as np
 
 from core.device_config import DEVICE_IP_ENV, bypass_proxy_for_device, device_http_url, device_sscma_ws_url, normalize_device_ip
+from core.device_config_store import device_config_store
 from core.event import BBox, ControlCommand, Event
 from core.event_bus import EventBusServer
 from core.control_session import ControlMode
@@ -23,12 +24,13 @@ from core.fsm import SystemState
 from core.orchestrator import Orchestrator
 from core.safety_layer import SafetyLayer
 from hardware.recamera_client import RecameraClient
+from hardware.control_worker import HardwareControlWorker
 from utils.logger import get_logger, setup_root_logger
 from vision.data_source import VisionDataSource, create_vision_source
 
 logger = get_logger(__name__)
 
-DEVICE_LEASE_MS = 2000
+DEVICE_LEASE_MS = 5000
 DEVICE_REQUEST_TIMEOUT_MS = 300
 DEVICE_REQUEST_RETRY = 2
 
@@ -40,6 +42,7 @@ def _atexit_emergency_stop() -> None:
     if _global_runner is not None:
         try:
             _global_runner.process_event(Event.make("system", "shutdown", "atexit"))
+            _global_runner._hardware_worker.close()
         except Exception:
             pass
 
@@ -106,10 +109,9 @@ class Phase3Runner:
             "yaw_speed": None, "pitch_speed": None,
             "source": "unavailable", "age_ms": None,
         }
-        self._telemetry_running = False
-        self._telemetry_thread: Optional[threading.Thread] = None
 
-        device_ip = normalize_device_ip(gimbal_ip, required=enable_control)
+        stored_ip = str(device_config_store.read().get("device_ip", ""))
+        device_ip = normalize_device_ip(gimbal_ip or stored_ip, required=enable_control)
 
         local_vision = not self._external_perception and not use_mock
         sscma_url = device_sscma_ws_url(device_ip, required=enable_control) if local_vision else ""
@@ -140,10 +142,15 @@ class Phase3Runner:
             timeout_ms=DEVICE_REQUEST_TIMEOUT_MS,
             retry=DEVICE_REQUEST_RETRY,
         )
-        if not self._hw.connect(dry_run=not enable_control):
-            raise ValueError("reCamera Node-RED control bridge is unreachable")
-        if enable_control:
-            self._start_telemetry()
+        initial_connected = self._hw.connect(dry_run=not enable_control)
+        self._device_session_degraded = bool(enable_control and not initial_connected)
+        if self._device_session_degraded:
+            logger.warning("reCamera bridge unavailable at startup; control will recover in background")
+        self._hardware_worker = HardwareControlWorker(
+            self._hw, lease_ms=DEVICE_LEASE_MS, telemetry_interval=1.0,
+            on_status=self._update_gimbal_status,
+        )
+        self._hardware_worker.start()
         self._eventbus: Optional[EventBusServer] = None
         if manual_control:
             self._eventbus = EventBusServer(self._handle_bus_event, host=eventbus_host, port=eventbus_port)
@@ -191,7 +198,7 @@ class Phase3Runner:
                 time.sleep(max(0.0, self._frame_delay - elapsed))
         finally:
             self.process_event(Event.make("system", "shutdown", "main_phase3"))
-            self._stop_telemetry()
+            self._hardware_worker.close()
             if self._eventbus is not None:
                 self._eventbus.close()
 
@@ -226,13 +233,6 @@ class Phase3Runner:
     def _apply(self, command: Optional[ControlCommand]) -> dict:
         if command is None or not command.has_motion():
             return {"command": None, "applied": False, "reason": "no_command"}
-        if self._device_session_degraded and not command.stop:
-            self._last_apply_ok = False
-            return {
-                "command": self._command_dict(command),
-                "applied": False,
-                "reason": "device_lease_degraded",
-            }
         allowed = self._safety.filter(command)
         self._last_block_reason = self._safety.last_block_reason
         if allowed is None:
@@ -242,24 +242,28 @@ class Phase3Runner:
         self._last_command = allowed
         if allowed.stop:
             if allowed.reason in {"feature_stop", "lease_expired", "shutdown", "emergency_stop"}:
-                ok = bool(self._hw.stop_session(allowed.session_id))
+                self._hardware_worker.stop_session(allowed.session_id)
             else:
-                ok = bool(self._hw.emergency_stop(allowed.session_id))
-            self._stop_state = "stopped" if ok else "hardware_stop_failed"
+                self._hardware_worker.emergency_stop(allowed.session_id)
+            ok = True
+            self._stop_state = "stopping"
         else:
-            ok = bool(self._hw.apply_command(allowed))
-            if ok:
-                self._device_session_degraded = False
-                self._stop_state = "stopped" if allowed.action == "calibrate" else "running"
-            else:
-                self._device_session_degraded = True
-                self._stop_state = "hardware_lease_degraded"
+            self._hardware_worker.submit(allowed)
+            ok = True
+            self._stop_state = "running"
         self._last_apply_ok = ok
         return {"command": self._command_dict(allowed), "applied": ok, "reason": "ok" if ok else "hardware_error"}
 
     def _handle_bus_event(self, event: Event) -> dict:
         if event.type == "system" and event.name == "runtime_snapshot_request":
             return {"ok": True, "accepted": True, "authority": "main_phase3", "runtime": self.runtime_snapshot()}
+        if event.type == "system" and event.name == "device_config_update":
+            device_ip = normalize_device_ip(str(event.payload.get("device_ip", "")), required=True)
+            self._hardware_worker.reconfigure(device_ip)
+            active_session = str(self._orchestrator.runtime_state().get("session_id", ""))
+            if active_session:
+                self._hardware_worker.start_session(active_session)
+            return {"ok": True, "accepted": True, "authority": "main_phase3", "reconnect_state": "pending"}
         return self.process_event(event)
 
     def process_event(self, event: Event) -> dict:
@@ -277,35 +281,27 @@ class Phase3Runner:
             self._last_event = event
             if event.type == "ui" and event.name == "feature_start" and before.get("active"):
                 self._stop_state = "stopping"
-                self._hw.stop_session(str(before.get("session_id", "")))
+                self._hardware_worker.stop_session(str(before.get("session_id", "")))
             command = self._orchestrator.handle_event(event)
             device_session_ok = True
             if event.type == "ui" and event.name == "feature_start":
                 candidate = self._orchestrator.runtime_state()
                 sid = str(candidate.get("session_id", ""))
-                device_session_ok = bool(sid and self._hw.start_session(sid, lease_ms=DEVICE_LEASE_MS))
-                if not device_session_ok:
-                    self._orchestrator.session.clear()
-                    self._stop_state = "hardware_stop_failed"
-                    self._device_session_degraded = True
-                else:
-                    self._device_session_degraded = False
+                device_session_ok = bool(sid)
+                if sid:
+                    self._hardware_worker.start_session(sid)
+                    self._stop_state = "recovering" if self._device_session_degraded else "starting"
             elif event.type == "ui" and event.name == "feature_heartbeat" and valid_before:
                 recovering = self._device_session_degraded
+                device_session_ok = True
                 if recovering:
-                    device_session_ok = self._hw.start_session(requested_session, lease_ms=DEVICE_LEASE_MS)
+                    self._hardware_worker.start_session(requested_session)
                 else:
-                    device_session_ok = self._hw.renew_session(requested_session, lease_ms=DEVICE_LEASE_MS)
-                self._device_session_degraded = not device_session_ok
-                if device_session_ok and recovering:
-                    self._stop_state = "running"
-                    logger.info("device control lease recovered for session %s", requested_session[:8])
-                elif not device_session_ok:
-                    self._stop_state = "hardware_lease_degraded"
-                    logger.warning("device lease unavailable; keeping feature session for automatic recovery")
+                    self._hardware_worker.renew_session(requested_session)
             apply_result = self._apply(command)
             after = self._orchestrator.runtime_state()
-            hardware_ready = not self._device_session_degraded
+            io_state = self._hardware_worker.snapshot()
+            hardware_ready = not self._device_session_degraded and int(io_state.get("consecutive_failures", 0)) < 3
             accepted = not session_bound or valid_before
             if event.name == "feature_start":
                 accepted = device_session_ok and after.get("session_id") == str(event.payload.get("session_id", ""))
@@ -360,6 +356,8 @@ class Phase3Runner:
 
     def runtime_snapshot(self) -> dict:
         with self._runtime_lock:
+            io_state = self._hardware_worker.snapshot()
+            hardware_ready = not self._device_session_degraded and int(io_state.get("consecutive_failures", 0)) < 3
             return {
                 **self._orchestrator.runtime_state(),
                 "authority": "main_phase3",
@@ -368,37 +366,20 @@ class Phase3Runner:
                 "last_apply_ok": self._last_apply_ok,
                 "safety": {**self._safety.stats, "last_block_reason": self._last_block_reason},
                 "gimbal": dict(self._gimbal_tlm),
+                "hardware_io": io_state,
                 "stop_state": self._stop_state,
-                "hardware_ready": not self._device_session_degraded,
+                "hardware_ready": hardware_ready,
                 "device_lease": dict(self._gimbal_tlm.get("device_lease") or {}),
                 "trace": list(self._trace)[-12:],
             }
 
-    def _start_telemetry(self) -> None:
-        self._telemetry_running = True
-
-        def _poll() -> None:
-            while self._telemetry_running:
-                status = self._hw.get_status()
-                if status:
-                    with self._runtime_lock:
-                        self._gimbal_tlm = dict(status)
-                        self._orchestrator.update_gimbal_readback(status.get("yaw"), status.get("pitch"))
-                elif self._gimbal_tlm.get("connected"):
-                    with self._runtime_lock:
-                        self._gimbal_tlm["connected"] = False
-                        self._gimbal_tlm["source"] = "stale"
-                delay = 0.5 if status else min(5.0, 0.5 * (2 ** min(self._hw.consecutive_fails, 4)))
-                time.sleep(delay)
-
-        self._telemetry_thread = threading.Thread(target=_poll, daemon=True, name="gimbal-telemetry")
-        self._telemetry_thread.start()
-
-    def _stop_telemetry(self) -> None:
-        self._telemetry_running = False
-        if self._telemetry_thread is not None:
-            self._telemetry_thread.join(timeout=1.0)
-            self._telemetry_thread = None
+    def _update_gimbal_status(self, status: dict) -> None:
+        with self._runtime_lock:
+            self._gimbal_tlm = dict(status)
+            self._device_session_degraded = not bool(status.get("connected"))
+            active = bool(self._orchestrator.session.snapshot().get("active"))
+            self._stop_state = "running" if status.get("connected") and active else self._stop_state
+            self._orchestrator.update_gimbal_readback(status.get("yaw"), status.get("pitch"))
 
     @staticmethod
     def _coerce_bbox(raw) -> BBox:

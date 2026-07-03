@@ -35,6 +35,7 @@ class Orchestrator:
         self._doa_candidate = self._active_doa = None
         self._doa_candidate_since = self._last_speech_at = 0.0
         self._speaker_seek = False
+        self._speaker_confidence = 0.0
 
     @property
     def state(self):
@@ -175,6 +176,10 @@ class Orchestrator:
                 self.tracking_phase = "speaker_hold"
             return None
         doa = float(event.payload.get("doa_deg", 0.0)) % 360
+        confidence = max(0.0, min(1.0, float(event.payload.get("speaker_confidence", event.payload.get("vad_confidence", 0.7)))))
+        lip_motion = event.payload.get("lip_motion")
+        if confidence < 0.55 or lip_motion is False:
+            return None
         self._last_speech_at = now
         if self._active_doa is not None and self._angle(doa, self._active_doa) <= 20:
             self._doa_candidate = None
@@ -182,9 +187,13 @@ class Orchestrator:
         if self._doa_candidate is None or self._angle(doa, self._doa_candidate) > 8:
             self._doa_candidate, self._doa_candidate_since = doa, now
             return None
-        if now - self._doa_candidate_since < 0.5:
+        switching = self._active_doa is not None
+        required_hold = 0.8 if switching else 0.5
+        required_confidence = 0.75 if switching else 0.65
+        if now - self._doa_candidate_since < required_hold or confidence < required_confidence:
             return None
         self._active_doa, self._doa_candidate, self._speaker_seek = doa, None, True
+        self._speaker_confidence = confidence
         self._unlock()
         yaw = self._doa_yaw(doa)
         self.tracking_phase = "audio_coarse"
@@ -305,6 +314,7 @@ class Orchestrator:
         self._reset_search()
         self._doa_candidate = self._active_doa = None
         self._speaker_seek = False
+        self._speaker_confidence = 0.0
 
     def _ui_allowed(self, event):
         if not self.session.matches(str(event.payload.get("session_id", ""))):
@@ -337,12 +347,16 @@ class Orchestrator:
 
     def _command(self, *, session_id=None, **kwargs):
         self._command_sequence += 1
-        return ControlCommand.make("orchestrator",session_id=self.session.session_id if session_id is None else session_id,sequence=self._command_sequence,ttl_s=.75,**kwargs)
+        # The hardware worker serializes lease and command requests; a 2.5 s
+        # TTL survives one bounded bridge timeout while latest-wins prevents
+        # stale motion from accumulating.
+        return ControlCommand.make("orchestrator",session_id=self.session.session_id if session_id is None else session_id,sequence=self._command_sequence,ttl_s=2.5,**kwargs)
 
     def runtime_state(self):
         return {**self.session.snapshot(),"fsm_state":self.state.value,"speed":self.default_speed,
                 "doa_offset_deg":self.doa_offset_deg,"doa_direction":int(self.doa_direction),
                 "locked_track_id":self.locked_track_id,"tracking_phase":self.tracking_phase,
+                "speaker_confidence":round(self._speaker_confidence,3),
                 "stop_state":self.stop_state,"last_observation_id":self._last_observation_id}
 
     def handle(self,event):
