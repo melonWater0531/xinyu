@@ -109,6 +109,7 @@ class Orchestrator:
         self._tracking_control_config, config_telemetry = _load_tracking_control_config()
         self._telemetry = _default_tracking_telemetry()
         self._telemetry.update(config_telemetry)
+        self._control_params = self._load_control_params()
         self._clear_current_target_telemetry()
 
     @property
@@ -327,19 +328,22 @@ class Orchestrator:
     def _track(self, item, reason):
         cx, cy = self._norm(item.get("cx"), self.frame_width), self._norm(item.get("cy"), self.frame_height)
         box = item.get("bbox") or []
-        if (cx is None or cy is None) and len(box) >= 4:
-            x1, y1, x2, y2 = map(float, box[:4])
+        track_box = self._normalize_bbox(item.get("track_bbox") or item.get("bbox") or box)
+        if (cx is None or cy is None) and track_box is not None:
+            x1, y1, x2, y2 = track_box
             cx = (x1 + x2) / 2 / self.frame_width
             cy = (y1 + (y2-y1) * (0.28 if reason == "body_align" else 0.5)) / self.frame_height
         if cx is None or cy is None:
             return None
-        alpha = 0.20
-        self._ema_x = cx if self._ema_x is None else alpha*cx + (1-alpha)*self._ema_x
-        self._ema_y = cy if self._ema_y is None else alpha*cy + (1-alpha)*self._ema_y
+        alpha_x = self._param("yaw_smoothing_alpha")
+        alpha_y = self._param("pitch_smoothing_alpha")
+        self._ema_x = cx if self._ema_x is None else alpha_x*cx + (1-alpha_x)*self._ema_x
+        self._ema_y = cy if self._ema_y is None else alpha_y*cy + (1-alpha_y)*self._ema_y
         ex, ey = self._ema_x - self.target_x, self._ema_y - self.target_y
+        ex, ey = self._edge_adjusted_error(ex, ey, track_box)
         self._tracking_error = {"x": round(ex, 4), "y": round(ey, 4)}
         self._update_target_telemetry(item, box, cx, cy, ex, ey)
-        enter, remain = abs(ex) <= .05 and abs(ey) <= .06, abs(ex) <= .08 and abs(ey) <= .10
+        enter, remain = self._centered_conditions(cx, cy, track_box)
         if enter or (self._centered and remain):
             self._centered = True
             self.lock_state = "centered" if self.locked_track_id is not None else self.lock_state
@@ -356,8 +360,11 @@ class Orchestrator:
         if now - self._last_motion_at < .3:
             self._command_suppressed_reason = "command_interval"
             return None
-        yaw_step = self._clamp(-ex*45.0, -5, 5)
-        pitch_step = self._clamp(ey*30.0, -3, 3)
+        elapsed_since_motion = max(0.3, now - self._last_motion_at) if self._last_motion_at else 0.3
+        yaw_limit = min(self._param("max_yaw_delta_deg_per_tick"), self._param("max_yaw_deg_per_sec") * elapsed_since_motion)
+        pitch_limit = min(self._param("max_pitch_delta_deg_per_tick"), self._param("max_pitch_deg_per_sec") * elapsed_since_motion)
+        yaw_step = self._clamp(-ex*45.0, -yaw_limit, yaw_limit)
+        pitch_step = self._clamp(ey*30.0, -pitch_limit, pitch_limit)
         yaw_pending = self._gimbal_yaw is not None and abs(self._gimbal_yaw-self._yaw_target) > 1.5
         pitch_pending = self._gimbal_pitch is not None and abs(self._gimbal_pitch-self._pitch_target) > 1.5
         yaw_step = self._damped_axis(yaw_step, "yaw", yaw_pending)
@@ -574,6 +581,108 @@ class Orchestrator:
             if key in self._telemetry:
                 self._telemetry[key] = value
 
+    def _load_control_params(self):
+        defaults = {
+            "center_deadband_x_ratio": 0.05,
+            "center_deadband_y_ratio": 0.06,
+            "safe_roi_width_ratio": 0.84,
+            "safe_roi_height_ratio": 0.84,
+            "edge_margin_x_ratio": 0.08,
+            "edge_margin_y_ratio": 0.08,
+            "max_yaw_deg_per_sec": 16.7,
+            "max_pitch_deg_per_sec": 10.0,
+            "max_yaw_delta_deg_per_tick": 5.0,
+            "max_pitch_delta_deg_per_tick": 3.0,
+            "yaw_smoothing_alpha": 0.20,
+            "pitch_smoothing_alpha": 0.20,
+        }
+        configured = self._tracking_control_config.get("control") if isinstance(self._tracking_control_config, dict) else {}
+        if not isinstance(configured, dict):
+            return defaults
+        params = dict(defaults)
+        for key, default in defaults.items():
+            try:
+                params[key] = float(configured.get(key, default))
+            except (TypeError, ValueError):
+                params[key] = default
+        params["center_deadband_x_ratio"] = self._clamp(params["center_deadband_x_ratio"], 0.0, 0.5)
+        params["center_deadband_y_ratio"] = self._clamp(params["center_deadband_y_ratio"], 0.0, 0.5)
+        params["safe_roi_width_ratio"] = self._clamp(params["safe_roi_width_ratio"], 0.01, 1.0)
+        params["safe_roi_height_ratio"] = self._clamp(params["safe_roi_height_ratio"], 0.01, 1.0)
+        params["edge_margin_x_ratio"] = self._clamp(params["edge_margin_x_ratio"], 0.0, 0.49)
+        params["edge_margin_y_ratio"] = self._clamp(params["edge_margin_y_ratio"], 0.0, 0.49)
+        params["max_yaw_deg_per_sec"] = self._clamp(params["max_yaw_deg_per_sec"], 0.01, 720.0)
+        params["max_pitch_deg_per_sec"] = self._clamp(params["max_pitch_deg_per_sec"], 0.01, 720.0)
+        params["max_yaw_delta_deg_per_tick"] = self._clamp(params["max_yaw_delta_deg_per_tick"], 0.01, 45.0)
+        params["max_pitch_delta_deg_per_tick"] = self._clamp(params["max_pitch_delta_deg_per_tick"], 0.01, 45.0)
+        params["yaw_smoothing_alpha"] = self._clamp(params["yaw_smoothing_alpha"], 0.01, 1.0)
+        params["pitch_smoothing_alpha"] = self._clamp(params["pitch_smoothing_alpha"], 0.01, 1.0)
+        return params
+
+    def _param(self, name):
+        return float(self._control_params[name])
+
+    def _centered_conditions(self, face_cx, face_cy, track_box):
+        center_x = abs(float(face_cx) - self.target_x)
+        center_y = abs(float(face_cy) - self.target_y)
+        in_deadband = (
+            center_x <= self._param("center_deadband_x_ratio")
+            and center_y <= self._param("center_deadband_y_ratio")
+        )
+        remain_deadband = (
+            center_x <= max(0.08, self._param("center_deadband_x_ratio") * 1.6)
+            and center_y <= max(0.10, self._param("center_deadband_y_ratio") * 1.6)
+        )
+        safe = self._bbox_inside_safe_roi(track_box)
+        edge_clear = self._bbox_has_edge_margin(track_box)
+        return in_deadband and safe and edge_clear, remain_deadband and safe and edge_clear
+
+    def _bbox_inside_safe_roi(self, box):
+        if box is None:
+            return True
+        x1, y1, x2, y2 = self._bbox_ratios(box)
+        x_margin = (1.0 - self._param("safe_roi_width_ratio")) / 2.0
+        y_margin = (1.0 - self._param("safe_roi_height_ratio")) / 2.0
+        return x1 >= x_margin and x2 <= 1.0 - x_margin and y1 >= y_margin and y2 <= 1.0 - y_margin
+
+    def _bbox_has_edge_margin(self, box):
+        if box is None:
+            return True
+        x1, y1, x2, y2 = self._bbox_ratios(box)
+        return (
+            x1 >= self._param("edge_margin_x_ratio")
+            and x2 <= 1.0 - self._param("edge_margin_x_ratio")
+            and y1 >= self._param("edge_margin_y_ratio")
+            and y2 <= 1.0 - self._param("edge_margin_y_ratio")
+        )
+
+    def _edge_adjusted_error(self, ex, ey, box):
+        if box is None:
+            return ex, ey
+        x1, y1, x2, y2 = self._bbox_ratios(box)
+        min_x = max(self._param("edge_margin_x_ratio"), (1.0 - self._param("safe_roi_width_ratio")) / 2.0)
+        max_x = 1.0 - min_x
+        min_y = max(self._param("edge_margin_y_ratio"), (1.0 - self._param("safe_roi_height_ratio")) / 2.0)
+        max_y = 1.0 - min_y
+        if x1 < min_x:
+            ex = min(float(ex), x1 - min_x)
+        elif x2 > max_x:
+            ex = max(float(ex), x2 - max_x)
+        if y1 < min_y:
+            ey = min(float(ey), y1 - min_y)
+        elif y2 > max_y:
+            ey = max(float(ey), y2 - max_y)
+        return ex, ey
+
+    def _bbox_ratios(self, box):
+        x1, y1, x2, y2 = box
+        return (
+            self._clamp(float(x1) / self.frame_width, 0.0, 1.0),
+            self._clamp(float(y1) / self.frame_height, 0.0, 1.0),
+            self._clamp(float(x2) / self.frame_width, 0.0, 1.0),
+            self._clamp(float(y2) / self.frame_height, 0.0, 1.0),
+        )
+
     def _phase1a_telemetry(self):
         telemetry = dict(self._telemetry)
         telemetry["tracking_state"] = self._tracking_state()
@@ -605,7 +714,7 @@ class Orchestrator:
         raw_box = item.get("raw_bbox") or item.get("bbox_raw") or box or None
         track_box = item.get("track_bbox") or item.get("bbox") or raw_box
         face_x, face_y = cx * self.frame_width, cy * self.frame_height
-        target_x, target_y = self._ema_x * self.frame_width, self._ema_y * self.frame_height
+        target_x, target_y = (self.target_x + ex) * self.frame_width, (self.target_y + ey) * self.frame_height
         control_target = {"x": round(float(target_x), 1), "y": round(float(target_y), 1)}
         self._telemetry.update({
             "target_visible": True,

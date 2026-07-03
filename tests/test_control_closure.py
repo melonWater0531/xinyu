@@ -204,6 +204,40 @@ class ControlClosureTests(unittest.TestCase):
         self.assertEqual(self.orch.locked_track_id, 13)
         self.assertEqual(self.orch.lock_state, "centered")
 
+    def test_phase1b_centered_safe_roi_suppresses_motion(self) -> None:
+        self.start("single_face_analysis")
+        face = {
+            "track_id": 31, "cx": .5, "cy": .32,
+            "bbox": [560, 190, 720, 350],
+            "confidence": .95, "lost_frames": 0,
+        }
+        for oid in range(1, 7):
+            self.assertIsNone(self.orch.handle_event(self.observation(oid, faces=[face])))
+        runtime = self.orch.runtime_state()
+        self.assertEqual(self.orch.lock_state, "centered")
+        self.assertEqual(runtime["tracking_state"], "CENTERED")
+        self.assertTrue(runtime["target_visible"])
+        self.assertEqual(runtime["command_suppressed_reason"], "inside_deadzone")
+
+    def test_phase1b_bbox_near_edge_allows_correction_even_with_small_center_error(self) -> None:
+        self.start("single_face_analysis")
+        edge_face = {
+            "track_id": 32, "cx": .5, "cy": .32,
+            "bbox": [10, 190, 170, 350],
+            "confidence": .95, "lost_frames": 0,
+        }
+        for oid in range(1, 4):
+            self.assertIsNone(self.orch.handle_event(self.observation(oid, faces=[edge_face])))
+        command = self.orch.handle_event(self.observation(4, faces=[edge_face]))
+        self.assertIsNotNone(command)
+        self.assertIsNotNone(command.yaw)
+        self.assertEqual(command.mode, "absolute")
+        self.assertNotEqual(self.orch.lock_state, "centered")
+        runtime = self.orch.runtime_state()
+        self.assertTrue(runtime["target_visible"])
+        self.assertLess(runtime["error_x_ratio"], 0)
+        self.assertNotEqual(runtime["control_target"], runtime["face_center"])
+
     def test_tracking_step_is_bounded_for_upper_body_composition(self) -> None:
         self.start("single_face_analysis")
         face = {"track_id": 14, "cx": .9, "cy": .8, "confidence": .95, "lost_frames": 0}

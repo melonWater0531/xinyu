@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Phase 1A observe-only parameter record for later Phase 1B/1C tuning. These values are documented only, never override current control behavior, and missing or malformed config must not block startup.",
+  "description": "Tracking control parameters with explicit units. Phase 1B uses deadband, safe ROI, edge margin, smoothing, and motion-limit values; later lost/search fields remain reserved for Phase 1C. Missing or malformed config must not block startup and falls back to code defaults.",
   "defaults_source": "current hardcoded runtime behavior in core/orchestrator_v2.py",
   "units": {
     "center_deadband_x_ratio": "frame_width_ratio",
