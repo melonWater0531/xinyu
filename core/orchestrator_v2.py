@@ -24,6 +24,18 @@ _TELEMETRY_FIELDS = {
     "error_y_px": None,
     "error_x_ratio": None,
     "error_y_ratio": None,
+    "deadband_x_px": None,
+    "deadband_y_px": None,
+    "safe_roi": None,
+    "edge_margin": None,
+    "target_yaw_deg": None,
+    "target_pitch_deg": None,
+    "command_yaw_deg": None,
+    "command_pitch_deg": None,
+    "yaw_cmd": None,
+    "pitch_cmd": None,
+    "centered_reason": "",
+    "centered_block_reason": "no_target",
     "frame_age_ms": None,
     "face_detection_ms": None,
     "embedding_ms": None,
@@ -208,6 +220,7 @@ class Orchestrator:
             "ui_push_hz": event.payload.get("ui_push_hz"),
         })
         if oid <= self._last_observation_id or time.time() * 1000 - captured > 600:
+            self._telemetry["centered_block_reason"] = "stale_observation"
             return None
         self._last_observation_id, self._frame_count = oid, self._frame_count + 1
         size = event.payload.get("frame_size") or {}
@@ -327,8 +340,10 @@ class Orchestrator:
 
     def _track(self, item, reason):
         cx, cy = self._norm(item.get("cx"), self.frame_width), self._norm(item.get("cy"), self.frame_height)
-        box = item.get("bbox") or []
-        track_box = self._normalize_bbox(item.get("track_bbox") or item.get("bbox") or box)
+        box = item.get("bbox")
+        track_box = self._normalize_bbox(item.get("track_bbox"))
+        if track_box is None:
+            track_box = self._normalize_bbox(box)
         if (cx is None or cy is None) and track_box is not None:
             x1, y1, x2, y2 = track_box
             cx = (x1 + x2) / 2 / self.frame_width
@@ -342,14 +357,16 @@ class Orchestrator:
         ex, ey = self._ema_x - self.target_x, self._ema_y - self.target_y
         ex, ey = self._edge_adjusted_error(ex, ey, track_box)
         self._tracking_error = {"x": round(ex, 4), "y": round(ey, 4)}
-        self._update_target_telemetry(item, box, cx, cy, ex, ey)
-        enter, remain = self._centered_conditions(cx, cy, track_box)
+        enter, remain, centered_reason, centered_block_reason = self._centered_conditions(cx, cy, track_box)
+        self._update_target_telemetry(item, box, track_box, cx, cy, ex, ey, centered_reason, centered_block_reason)
         if enter or (self._centered and remain):
             self._centered = True
             self.lock_state = "centered" if self.locked_track_id is not None else self.lock_state
             self.tracking_phase = "speaker_centered" if "speaker" in reason else "locked_centered"
             self._outside_frames = 0
             self._command_suppressed_reason = "inside_deadzone"
+            self._telemetry["centered_reason"] = centered_reason
+            self._telemetry["centered_block_reason"] = ""
             return None
         self._centered = False
         self._outside_frames += 1
@@ -379,6 +396,14 @@ class Orchestrator:
         self._yaw_target, self._pitch_target = yaw, pitch
         self._last_motion_at = now
         self._command_suppressed_reason = ""
+        self._telemetry.update({
+            "target_yaw_deg": round(float(yaw), 3),
+            "target_pitch_deg": round(float(pitch), 3),
+            "command_yaw_deg": round(float(yaw), 3),
+            "command_pitch_deg": round(float(pitch), 3),
+            "yaw_cmd": round(float(yaw), 3),
+            "pitch_cmd": round(float(pitch), 3),
+        })
         return self._command(yaw=yaw, pitch=pitch, speed=speed, reason=reason)
 
     def _search(self, now):
@@ -635,7 +660,16 @@ class Orchestrator:
         )
         safe = self._bbox_inside_safe_roi(track_box)
         edge_clear = self._bbox_has_edge_margin(track_box)
-        return in_deadband and safe and edge_clear, remain_deadband and safe and edge_clear
+        if in_deadband and safe and edge_clear:
+            return True, remain_deadband and safe and edge_clear, "inside_deadband_safe_roi_edge_clear", ""
+        reasons = []
+        if not in_deadband:
+            reasons.append("face_center_outside_deadband")
+        if not safe:
+            reasons.append("bbox_outside_safe_roi")
+        if not edge_clear:
+            reasons.append("bbox_too_close_to_edge")
+        return False, remain_deadband and safe and edge_clear, "", ",".join(reasons) or "not_centered"
 
     def _bbox_inside_safe_roi(self, box):
         if box is None:
@@ -683,6 +717,24 @@ class Orchestrator:
             self._clamp(float(y2) / self.frame_height, 0.0, 1.0),
         )
 
+    def _geometry_telemetry(self):
+        safe_x_margin = (1.0 - self._param("safe_roi_width_ratio")) / 2.0
+        safe_y_margin = (1.0 - self._param("safe_roi_height_ratio")) / 2.0
+        return {
+            "deadband_x_px": round(float(self._param("center_deadband_x_ratio") * self.frame_width), 1),
+            "deadband_y_px": round(float(self._param("center_deadband_y_ratio") * self.frame_height), 1),
+            "safe_roi": {
+                "left": round(float(safe_x_margin * self.frame_width), 1),
+                "top": round(float(safe_y_margin * self.frame_height), 1),
+                "right": round(float((1.0 - safe_x_margin) * self.frame_width), 1),
+                "bottom": round(float((1.0 - safe_y_margin) * self.frame_height), 1),
+            },
+            "edge_margin": {
+                "x_px": round(float(self._param("edge_margin_x_ratio") * self.frame_width), 1),
+                "y_px": round(float(self._param("edge_margin_y_ratio") * self.frame_height), 1),
+            },
+        }
+
     def _phase1a_telemetry(self):
         telemetry = dict(self._telemetry)
         telemetry["tracking_state"] = self._tracking_state()
@@ -691,6 +743,9 @@ class Orchestrator:
             "x": round(self.frame_width / 2.0, 1),
             "y": round(self.frame_height / 2.0, 1),
         }
+        telemetry.update(self._geometry_telemetry())
+        telemetry["target_yaw_deg"] = round(float(self._yaw_target), 3)
+        telemetry["target_pitch_deg"] = round(float(self._pitch_target), 3)
         return telemetry
 
     def _tracking_state(self):
@@ -710,16 +765,25 @@ class Orchestrator:
             return "LOCKED"
         return "ACQUIRE"
 
-    def _update_target_telemetry(self, item, box, cx, cy, ex, ey):
-        raw_box = item.get("raw_bbox") or item.get("bbox_raw") or box or None
-        track_box = item.get("track_bbox") or item.get("bbox") or raw_box
-        face_x, face_y = cx * self.frame_width, cy * self.frame_height
+    def _update_target_telemetry(self, item, box, track_box, cx, cy, ex, ey, centered_reason, centered_block_reason):
+        raw_box = self._normalize_bbox(item.get("raw_bbox"))
+        if raw_box is None:
+            raw_box = self._normalize_bbox(item.get("bbox_raw"))
+        if raw_box is None:
+            raw_box = self._normalize_bbox(box)
+        if track_box is None:
+            track_box = raw_box
+        if track_box is not None:
+            face_x = (track_box[0] + track_box[2]) / 2.0
+            face_y = (track_box[1] + track_box[3]) / 2.0
+        else:
+            face_x, face_y = cx * self.frame_width, cy * self.frame_height
         target_x, target_y = (self.target_x + ex) * self.frame_width, (self.target_y + ey) * self.frame_height
         control_target = {"x": round(float(target_x), 1), "y": round(float(target_y), 1)}
         self._telemetry.update({
             "target_visible": True,
-            "raw_bbox": self._normalize_bbox(raw_box),
-            "track_bbox": self._normalize_bbox(track_box),
+            "raw_bbox": raw_box,
+            "track_bbox": track_box,
             "control_target": control_target,
             "last_control_target": dict(control_target),
             "face_center": {"x": round(float(face_x), 1), "y": round(float(face_y), 1)},
@@ -727,6 +791,8 @@ class Orchestrator:
             "error_y_px": round(float(ey * self.frame_height), 1),
             "error_x_ratio": round(float(ex), 4),
             "error_y_ratio": round(float(ey), 4),
+            "centered_reason": centered_reason,
+            "centered_block_reason": centered_block_reason,
         })
 
     @staticmethod
@@ -766,6 +832,8 @@ class Orchestrator:
             "error_y_px": None,
             "error_x_ratio": None,
             "error_y_ratio": None,
+            "centered_reason": "",
+            "centered_block_reason": "no_target",
         })
 
     @staticmethod

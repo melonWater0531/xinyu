@@ -238,6 +238,21 @@ class ControlClosureTests(unittest.TestCase):
         self.assertLess(runtime["error_x_ratio"], 0)
         self.assertNotEqual(runtime["control_target"], runtime["face_center"])
 
+    def test_phase1b_top_edge_reports_centered_block_reason(self) -> None:
+        self.start("single_face_analysis")
+        edge_face = {
+            "track_id": 33, "cx": .5, "cy": .32,
+            "bbox": [560, 3, 720, 160],
+            "confidence": .95, "lost_frames": 0,
+        }
+        for oid in range(1, 4):
+            self.orch.handle_event(self.observation(oid, faces=[edge_face]))
+        runtime = self.orch.runtime_state()
+        self.assertNotEqual(runtime["tracking_state"], "CENTERED")
+        self.assertRegex(runtime["centered_block_reason"], "safe_roi|edge")
+        self.assertIn("safe_roi", runtime)
+        self.assertIn("edge_margin", runtime)
+
     def test_tracking_step_is_bounded_for_upper_body_composition(self) -> None:
         self.start("single_face_analysis")
         face = {"track_id": 14, "cx": .9, "cy": .8, "confidence": .95, "lost_frames": 0}
@@ -262,6 +277,9 @@ class ControlClosureTests(unittest.TestCase):
             "tracking_state", "target_visible", "locked_track_id", "raw_bbox", "track_bbox",
             "control_target", "last_control_target", "face_center", "frame_center", "error_x_px",
             "error_y_px", "error_x_ratio", "error_y_ratio", "frame_age_ms",
+            "deadband_x_px", "deadband_y_px", "safe_roi", "edge_margin",
+            "target_yaw_deg", "target_pitch_deg", "command_yaw_deg",
+            "command_pitch_deg", "centered_reason", "centered_block_reason",
             "face_detection_ms", "embedding_ms", "tracker_update_ms",
             "control_loop_ms", "vision_hz", "control_hz", "telemetry_hz",
             "ui_push_hz", "tracking_config_loaded", "tracking_config_path",
@@ -272,7 +290,19 @@ class ControlClosureTests(unittest.TestCase):
         self.assertTrue(runtime["target_visible"])
         self.assertEqual(runtime["locked_track_id"], 21)
         self.assertEqual(runtime["track_bbox"], [700.0, 220.0, 860.0, 420.0])
+        self.assertEqual(runtime["face_center"], {"x": 780.0, "y": 320.0})
         self.assertEqual(runtime["control_hz"], None)
+        json.dumps(runtime)
+
+    def test_phase1b_track_bbox_center_matches_face_center_telemetry(self) -> None:
+        self.start("single_face_analysis")
+        face = {"track_id": 41, "cx": .1, "cy": .9, "bbox": [451.6, 3.1, 841.5, 544.4], "confidence": .95, "lost_frames": 0}
+        for oid in range(1, 4):
+            self.orch.handle_event(self.observation(oid, faces=[face]))
+        runtime = self.orch.runtime_state()
+        self.assertEqual(runtime["track_bbox"], [451.6, 3.1, 841.5, 544.4])
+        self.assertEqual(runtime["face_center"]["x"], round((451.6 + 841.5) / 2.0, 1))
+        self.assertEqual(runtime["face_center"]["y"], round((3.1 + 544.4) / 2.0, 1))
         json.dumps(runtime)
 
     def test_phase1a_clears_current_target_telemetry_when_target_missing(self) -> None:
