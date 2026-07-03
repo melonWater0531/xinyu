@@ -37,12 +37,14 @@ _TELEMETRY_FIELDS = {
     "centered_reason": "",
     "centered_block_reason": "no_target",
     "demo_stop_shake_mode": False,
+    "demo_zone": "NO_FACE",
     "demo_hold_active": False,
     "demo_hold_reason": "",
     "body_align_suppressed": False,
     "motion_blocked_reason": "",
     "command_delta_yaw_deg": None,
     "command_delta_pitch_deg": None,
+    "command_sent": False,
     "frame_age_ms": None,
     "face_detection_ms": None,
     "embedding_ms": None,
@@ -359,12 +361,14 @@ class Orchestrator:
             return None
         self._telemetry.update({
             "demo_stop_shake_mode": self._demo_mode(),
+            "demo_zone": self._demo_zone(cx, cy, reason),
             "demo_hold_active": False,
             "demo_hold_reason": "",
             "body_align_suppressed": False,
             "motion_blocked_reason": "",
             "command_delta_yaw_deg": None,
             "command_delta_pitch_deg": None,
+            "command_sent": False,
         })
         alpha_x = self._param("yaw_smoothing_alpha")
         alpha_y = self._param("pitch_smoothing_alpha")
@@ -376,16 +380,7 @@ class Orchestrator:
         self._tracking_error = {"x": round(ex, 4), "y": round(ey, 4)}
         enter, remain, centered_reason, centered_block_reason = self._centered_conditions(cx, cy, track_box)
         self._update_target_telemetry(item, box, track_box, cx, cy, ex, ey, centered_reason, centered_block_reason)
-        if self._demo_mode() and reason == "body_align":
-            self._centered = False
-            self._command_suppressed_reason = "body_align_suppressed"
-            self._telemetry.update({
-                "body_align_suppressed": True,
-                "motion_blocked_reason": "body_align_suppressed",
-                "centered_block_reason": "body_align_suppressed",
-            })
-            return None
-        if self._demo_hold_condition(cx, cy, track_box):
+        if self._demo_hold_condition(cx, cy, reason):
             self._centered = True
             self.lock_state = "centered" if self.locked_track_id is not None else self.lock_state
             self.tracking_phase = "speaker_centered" if "speaker" in reason else "locked_centered"
@@ -422,6 +417,10 @@ class Orchestrator:
         elapsed_since_motion = max(min_interval_s, now - self._last_motion_at) if self._last_motion_at else min_interval_s
         yaw_limit = min(self._param("max_yaw_delta_deg_per_tick"), self._param("max_yaw_deg_per_sec") * elapsed_since_motion)
         pitch_limit = min(self._param("max_pitch_delta_deg_per_tick"), self._param("max_pitch_deg_per_sec") * elapsed_since_motion)
+        if self._demo_mode() and reason == "body_align":
+            yaw_limit = min(yaw_limit, 0.3)
+            pitch_limit = min(pitch_limit, 0.2)
+            self._telemetry["body_align_suppressed"] = True
         yaw_step = self._clamp(-ex*45.0, -yaw_limit, yaw_limit)
         pitch_step = self._clamp(ey*30.0, -pitch_limit, pitch_limit)
         yaw_pending = self._gimbal_yaw is not None and abs(self._gimbal_yaw-self._yaw_target) > 1.5
@@ -430,6 +429,7 @@ class Orchestrator:
         pitch_step = self._damped_axis(pitch_step, "pitch", pitch_pending)
         if abs(yaw_step) < .01 and abs(pitch_step) < .01:
             self._command_suppressed_reason = "reverse_suppression"
+            self._telemetry["motion_blocked_reason"] = "reverse_suppression"
             return None
         yaw = self._clamp(self._yaw_target + yaw_step, 1, 345)
         pitch = self._clamp(self._pitch_target + pitch_step, 30, 150)
@@ -445,6 +445,8 @@ class Orchestrator:
             return None
         mag = max(abs(ex), abs(ey))
         speed = 180 if mag > .25 else 90 if mag > .10 else 60
+        if self._demo_mode() and reason == "body_align":
+            speed = min(speed, 60)
         self._yaw_target, self._pitch_target = yaw, pitch
         self._last_motion_at = now
         self._command_suppressed_reason = ""
@@ -455,6 +457,7 @@ class Orchestrator:
             "command_pitch_deg": round(float(pitch), 3),
             "yaw_cmd": round(float(yaw), 3),
             "pitch_cmd": round(float(pitch), 3),
+            "command_sent": True,
         })
         return self._command(yaw=yaw, pitch=pitch, speed=speed, reason=reason)
 
@@ -467,17 +470,21 @@ class Orchestrator:
             self.tracking_phase = "search_grace"
             if self._demo_mode():
                 self._telemetry.update({
+                    "demo_zone": "NO_FACE",
                     "demo_hold_active": True,
                     "demo_hold_reason": "no_face_search_grace_hold",
                     "motion_blocked_reason": "demo_no_face_hold",
+                    "command_sent": False,
                 })
             return None
         if self._demo_mode() and now - self._no_target_since < self._param("demo_search_after_ms") / 1000.0:
             self.tracking_phase = "search_grace"
             self._telemetry.update({
+                "demo_zone": "NO_FACE",
                 "demo_hold_active": True,
                 "demo_hold_reason": "no_face_delayed_search_hold",
                 "motion_blocked_reason": "demo_no_face_hold",
+                "command_sent": False,
             })
             return None
         elapsed = now - self._no_target_since
@@ -486,8 +493,17 @@ class Orchestrator:
         if elapsed <= 8:
             self.tracking_phase = "limited_search"
             sweep = self._param("demo_search_sweep_deg") if self._demo_mode() else 35
-            return self._command(yaw=self.center_yaw + sweep*math.sin((elapsed-.5)/4*math.tau),
-                                 pitch=self.center_pitch, speed=180, reason="limited_search")
+            yaw = self.center_yaw + sweep*math.sin((elapsed-.5)/4*math.tau)
+            if self._demo_mode():
+                self._telemetry.update({
+                    "demo_zone": "NO_FACE",
+                    "demo_hold_active": False,
+                    "motion_blocked_reason": "",
+                    "command_delta_yaw_deg": round(abs(float(yaw - self._yaw_target)), 3),
+                    "command_delta_pitch_deg": round(abs(float(self.center_pitch - self._pitch_target)), 3),
+                    "command_sent": True,
+                })
+            return self._command(yaw=yaw, pitch=self.center_pitch, speed=180, reason="limited_search")
         if not self._home_sent_at:
             self._home_sent_at = now
             self.tracking_phase = "returning_standby"
@@ -676,15 +692,15 @@ class Orchestrator:
     def _load_control_params(self):
         defaults = {
             "demo_stop_shake_mode": 1.0,
-            "demo_hold_min_x_ratio": 0.20,
-            "demo_hold_max_x_ratio": 0.80,
-            "demo_hold_min_y_ratio": 0.18,
-            "demo_hold_max_y_ratio": 0.82,
+            "demo_hold_min_x_ratio": 0.30,
+            "demo_hold_max_x_ratio": 0.70,
+            "demo_hold_min_y_ratio": 0.25,
+            "demo_hold_max_y_ratio": 0.75,
             "demo_search_sweep_deg": 3.0,
             "demo_search_after_ms": 2500.0,
-            "min_command_interval_ms": 400.0,
-            "min_yaw_command_delta_deg": 1.0,
-            "min_pitch_command_delta_deg": 0.6,
+            "min_command_interval_ms": 200.0,
+            "min_yaw_command_delta_deg": 0.3,
+            "min_pitch_command_delta_deg": 0.2,
             "center_deadband_x_ratio": 0.05,
             "center_deadband_y_ratio": 0.06,
             "safe_roi_width_ratio": 0.84,
@@ -693,8 +709,8 @@ class Orchestrator:
             "edge_margin_y_ratio": 0.08,
             "max_yaw_deg_per_sec": 16.7,
             "max_pitch_deg_per_sec": 10.0,
-            "max_yaw_delta_deg_per_tick": 0.8,
-            "max_pitch_delta_deg_per_tick": 0.5,
+            "max_yaw_delta_deg_per_tick": 1.2,
+            "max_pitch_delta_deg_per_tick": 0.8,
             "yaw_smoothing_alpha": 0.20,
             "pitch_smoothing_alpha": 0.20,
         }
@@ -717,9 +733,9 @@ class Orchestrator:
         params["demo_hold_max_y_ratio"] = self._clamp(params["demo_hold_max_y_ratio"], 0.0, 1.0)
         params["demo_search_sweep_deg"] = self._clamp(params["demo_search_sweep_deg"], 0.0, 3.0)
         params["demo_search_after_ms"] = self._clamp(params["demo_search_after_ms"], 2000.0, 10000.0)
-        params["min_command_interval_ms"] = self._clamp(params["min_command_interval_ms"], 300.0, 1000.0)
-        params["min_yaw_command_delta_deg"] = self._clamp(params["min_yaw_command_delta_deg"], 0.8, 5.0)
-        params["min_pitch_command_delta_deg"] = self._clamp(params["min_pitch_command_delta_deg"], 0.5, 5.0)
+        params["min_command_interval_ms"] = self._clamp(params["min_command_interval_ms"], 200.0, 1000.0)
+        params["min_yaw_command_delta_deg"] = self._clamp(params["min_yaw_command_delta_deg"], 0.2, 5.0)
+        params["min_pitch_command_delta_deg"] = self._clamp(params["min_pitch_command_delta_deg"], 0.15, 5.0)
         params["center_deadband_x_ratio"] = self._clamp(params["center_deadband_x_ratio"], 0.0, 0.5)
         params["center_deadband_y_ratio"] = self._clamp(params["center_deadband_y_ratio"], 0.0, 0.5)
         params["safe_roi_width_ratio"] = self._clamp(params["safe_roi_width_ratio"], 0.01, 1.0)
@@ -740,22 +756,27 @@ class Orchestrator:
     def _demo_mode(self):
         return bool(self._control_params.get("demo_stop_shake_mode", 0.0))
 
-    def _demo_hold_condition(self, cx, cy, track_box):
+    def _demo_zone(self, cx, cy, reason):
         if not self._demo_mode():
-            return False
+            return ""
+        if reason == "body_align":
+            return "BODY_ALIGN_ONLY"
         if cx is None or cy is None:
-            return False
+            return "NO_FACE"
         x, y = float(cx), float(cy)
-        in_hold = (
+        if x < 0.15 or x > 0.85 or y < 0.15 or y > 0.85:
+            return "EDGE"
+        if (
             self._param("demo_hold_min_x_ratio") <= x <= self._param("demo_hold_max_x_ratio")
             and self._param("demo_hold_min_y_ratio") <= y <= self._param("demo_hold_max_y_ratio")
-        )
-        if not in_hold:
+        ):
+            return "HOLD"
+        return "CORRECTION"
+
+    def _demo_hold_condition(self, cx, cy, reason):
+        if not self._demo_mode():
             return False
-        if track_box is None:
-            return True
-        x1, y1, x2, y2 = self._bbox_ratios(track_box)
-        return x2 > 0.02 and x1 < 0.98 and y2 > 0.02 and y1 < 0.98
+        return self._demo_zone(cx, cy, reason) == "HOLD"
 
     def _centered_conditions(self, face_cx, face_cy, track_box):
         center_x = abs(float(face_cx) - self.target_x)
@@ -944,12 +965,14 @@ class Orchestrator:
             "error_y_ratio": None,
             "centered_reason": "",
             "centered_block_reason": "no_target",
+            "demo_zone": "NO_FACE",
             "demo_hold_active": False,
             "demo_hold_reason": "",
             "body_align_suppressed": False,
             "motion_blocked_reason": "",
             "command_delta_yaw_deg": None,
             "command_delta_pitch_deg": None,
+            "command_sent": False,
         })
 
     @staticmethod

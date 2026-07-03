@@ -262,7 +262,7 @@ class ControlClosureTests(unittest.TestCase):
     def test_demo_stop_shake_holds_face_inside_large_region(self) -> None:
         self.start("single_face_analysis")
         face = {
-            "track_id": 51, "cx": .72, "cy": .55,
+            "track_id": 51, "cx": .60, "cy": .55,
             "bbox": [20, 8, 1240, 705],
             "confidence": .95, "lost_frames": 0,
         }
@@ -270,42 +270,73 @@ class ControlClosureTests(unittest.TestCase):
             self.assertIsNone(self.orch.handle_event(self.observation(oid, faces=[face])))
         runtime = self.orch.runtime_state()
         self.assertEqual(runtime["tracking_state"], "CENTERED")
+        self.assertEqual(runtime["demo_zone"], "HOLD")
         self.assertTrue(runtime["demo_hold_active"])
         self.assertEqual(runtime["demo_hold_reason"], "face_inside_demo_hold_region")
         self.assertEqual(runtime["motion_blocked_reason"], "demo_hold")
+        self.assertFalse(runtime["command_sent"])
 
-    def test_demo_stop_shake_body_align_is_suppressed_without_stable_face(self) -> None:
+    def test_demo_stop_shake_body_align_only_allows_very_small_correction(self) -> None:
         self.start("single_face_analysis")
         person = {"bbox": [0, 0, 1280, 720], "cx": .9, "cy": .8, "confidence": .95}
-        command = self.orch.handle_event(self.observation(1, persons=[person]))
+        command = None
+        for oid in range(1, 4):
+            command = self.orch.handle_event(self.observation(oid, persons=[person]))
+            if command is not None:
+                break
         runtime = self.orch.runtime_state()
-        self.assertIsNone(command)
+        self.assertIsNotNone(command)
+        self.assertLessEqual(abs(command.yaw - 180), 0.301)
+        self.assertLessEqual(abs(command.pitch - 90), 0.201)
+        self.assertEqual(runtime["demo_zone"], "BODY_ALIGN_ONLY")
         self.assertTrue(runtime["body_align_suppressed"])
-        self.assertEqual(runtime["motion_blocked_reason"], "body_align_suppressed")
+        self.assertTrue(runtime["command_sent"])
 
     def test_demo_stop_shake_missing_face_holds_before_search(self) -> None:
         self.start("single_face_analysis")
         self.assertIsNone(self.orch.handle_event(self.observation(1)))
         runtime = self.orch.runtime_state()
         self.assertEqual(runtime["tracking_phase"], "search_grace")
+        self.assertEqual(runtime["demo_zone"], "NO_FACE")
         self.assertTrue(runtime["demo_hold_active"])
         self.assertEqual(runtime["motion_blocked_reason"], "demo_no_face_hold")
+        self.assertFalse(runtime["command_sent"])
 
-    def test_demo_stop_shake_min_command_delta_suppresses_tiny_motion(self) -> None:
+    def test_demo_stop_shake_correction_zone_sends_small_motion(self) -> None:
         self.start("single_face_analysis")
         face = {
-            "track_id": 52, "cx": .805, "cy": .825,
-            "bbox": [980, 600, 1100, 710],
+            "track_id": 52, "cx": .78, "cy": .55,
+            "bbox": [940, 330, 1060, 450],
             "confidence": .95, "lost_frames": 0,
         }
         for oid in range(1, 4):
             self.orch.handle_event(self.observation(oid, faces=[face]))
         command = self.orch.handle_event(self.observation(4, faces=[face]))
         runtime = self.orch.runtime_state()
-        self.assertIsNone(command)
-        self.assertEqual(runtime["motion_blocked_reason"], "min_command_delta")
-        self.assertLess(runtime["command_delta_yaw_deg"], 1.0)
-        self.assertLess(runtime["command_delta_pitch_deg"], 0.6)
+        self.assertIsNotNone(command)
+        self.assertEqual(command.mode, "absolute")
+        self.assertEqual(runtime["demo_zone"], "CORRECTION")
+        self.assertTrue(runtime["command_sent"])
+        self.assertLessEqual(runtime["command_delta_yaw_deg"], 1.2)
+        self.assertLessEqual(runtime["command_delta_pitch_deg"], 0.8)
+
+    def test_demo_stop_shake_edge_zone_sends_limited_motion(self) -> None:
+        self.start("single_face_analysis")
+        face = {
+            "track_id": 53, "cx": .92, "cy": .82,
+            "bbox": [1120, 540, 1240, 690],
+            "confidence": .95, "lost_frames": 0,
+        }
+        for oid in range(1, 4):
+            self.orch.handle_event(self.observation(oid, faces=[face]))
+        command = self.orch.handle_event(self.observation(4, faces=[face]))
+        runtime = self.orch.runtime_state()
+        self.assertIsNotNone(command)
+        self.assertEqual(command.mode, "absolute")
+        self.assertEqual(runtime["demo_zone"], "EDGE")
+        self.assertTrue(runtime["command_sent"])
+        self.assertLessEqual(runtime["command_delta_yaw_deg"], 1.2)
+        self.assertLessEqual(runtime["command_delta_pitch_deg"], 0.8)
 
     def test_tracking_step_is_bounded_for_upper_body_composition(self) -> None:
         self.start("single_face_analysis")
@@ -336,6 +367,7 @@ class ControlClosureTests(unittest.TestCase):
             "deadband_x_px", "deadband_y_px", "safe_roi", "edge_margin",
             "target_yaw_deg", "target_pitch_deg", "command_yaw_deg",
             "command_pitch_deg", "centered_reason", "centered_block_reason",
+            "demo_zone", "command_sent",
             "face_detection_ms", "embedding_ms", "tracker_update_ms",
             "control_loop_ms", "vision_hz", "control_hz", "telemetry_hz",
             "ui_push_hz", "tracking_config_loaded", "tracking_config_path",
