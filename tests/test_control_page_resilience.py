@@ -21,10 +21,13 @@ class ControlPageResilienceTests(unittest.TestCase):
             "feature": "multi_sound_yaw", "session_id": "multi-test", "lease_ms": 5000,
         }))
         self.assertTrue(start["accepted"])
+        runner._device_session_degraded = True
         heartbeat = runner.process_event(Event.make("ui", "feature_heartbeat", "test", payload={
             "session_id": "multi-test", "lease_ms": 5000,
         }))
         self.assertTrue(heartbeat["accepted"])
+        self.assertFalse(heartbeat["hardware_ready"])
+        self.assertGreater(heartbeat["runtime"]["lease_remaining_ms"], 0)
         self.assertEqual(heartbeat["runtime"]["active_feature"], "multi_sound_yaw")
         self.assertIn(heartbeat["runtime"]["hardware_io"]["queue_state"], {"pending", "executing", "idle"})
         runner._hardware_worker.close()
@@ -42,6 +45,9 @@ class ControlPageResilienceTests(unittest.TestCase):
         page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
         self.assertIn("heartbeatInFlight", page)
         self.assertIn("setInterval(heartbeat,1000)", page)
+        self.assertIn("clearInterval(heartbeatTimer)", page)
+        self.assertIn("startHeartbeatTimer();", page)
+        self.assertIn("stopHeartbeatTimer();", page)
         self.assertNotIn("if(document.hidden)deactivatePage", page)
         self.assertIn("State render error", page)
         self.assertIn("tracking_overlay.js?v=20260703-1", page)
@@ -79,6 +85,10 @@ class ControlPageResilienceTests(unittest.TestCase):
         self.assertIn("--video-aspect", page)
         self.assertIn('id="singleFrameInfo"', page)
         self.assertIn('id="multiFrameInfo"', page)
+        self.assertIn("last_frame_age_ms", page)
+        self.assertIn("now-lastVideoReconnectAt<3000", page)
+        self.assertIn("/video_feed?ts=${now}", page)
+        self.assertNotIn("videoEl.src='/api/snapshot'", page)
 
     def test_meeting_frontend_requests_timeout_and_release_buttons(self) -> None:
         page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
@@ -102,6 +112,7 @@ class ControlPageResilienceTests(unittest.TestCase):
         page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
         for token in ("asr_pending", "transcribing", "transcribed", "asr_failed", "recording_state", "association_confidence"):
             self.assertIn(token, page)
+        self.assertIn("audioEnabled=conv.requested!==false", page)
         self.assertIn("Meeting render error", page)
         self.assertIn("img.naturalWidth", page)
 

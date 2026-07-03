@@ -103,6 +103,7 @@ class SSCMAVideoClient:
         self._frame_event: Optional[asyncio.Event] = None  # signal MJPEG generator
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None  # for thread-safe set()
         self._fail_count: int = 0  # consecutive connection failures
+        self._last_frame_at: float = 0.0
 
     @property
     def resolution(self) -> list:
@@ -132,6 +133,12 @@ class SSCMAVideoClient:
     def fps(self) -> float:
         with self._lock:
             return self._fps
+
+    @property
+    def last_frame_age_ms(self) -> Optional[int]:
+        with self._lock:
+            last_frame_at = self._last_frame_at
+        return max(0, int((time.monotonic() - last_frame_at) * 1000)) if last_frame_at else None
 
     def start(self):
         if self._running:
@@ -212,6 +219,7 @@ class SSCMAVideoClient:
                     self._jpeg_bytes = jpeg
                     self._jpeg_b64 = img_b64
                     self._boxes = boxes if boxes else []
+                    self._last_frame_at = time.monotonic()
                     # Extract actual resolution from JPEG on first frame
                     if self._resolution == [1920, 1080]:
                         try:
@@ -327,6 +335,8 @@ _meeting_report = {
 }
 _meeting_summary_task = None
 _meeting_recording_task = None
+_meeting_started_at = 0.0
+_meeting_ended_at = 0.0
 _asr_queue = None
 _asr_worker_task = None
 _asr_worker_tasks: list = []
@@ -371,6 +381,7 @@ _heartbeat_eventbus_in_flight = False
 _heartbeat_state = {
     "state": "idle",
     "last_ok_at": 0.0,
+    "last_heartbeat_at": 0.0,
     "last_error": "",
     "last_error_at": 0.0,
     "eventbus_in_flight": False,
@@ -534,6 +545,16 @@ def _runtime_with_telemetry_defaults(runtime: dict | None = None) -> dict:
     }
     if runtime:
         data.update(runtime)
+    for key, default in {
+        "gimbal_bridge_status": "unavailable",
+        "gimbal_bridge_last_error": "",
+        "gimbal_bridge_last_ok_at": 0.0,
+        "gimbal_bridge_fail_count": 0,
+        "gimbal_bridge_circuit_open": False,
+        "last_hardware_command_error": "",
+        "hardware_command_queue_size": 0,
+    }.items():
+        data.setdefault(key, default)
     return data
 
 
@@ -698,6 +719,13 @@ def _apply_runtime_result(result: dict) -> None:
         "safety": runtime.get("safety", {}),
         "hardware_io": runtime.get("hardware_io", {}),
         "hardware_ready": bool(runtime.get("hardware_ready")),
+        "gimbal_bridge_status": runtime.get("gimbal_bridge_status", "unavailable"),
+        "gimbal_bridge_last_error": runtime.get("gimbal_bridge_last_error", ""),
+        "gimbal_bridge_last_ok_at": runtime.get("gimbal_bridge_last_ok_at", 0.0),
+        "gimbal_bridge_fail_count": runtime.get("gimbal_bridge_fail_count", 0),
+        "gimbal_bridge_circuit_open": bool(runtime.get("gimbal_bridge_circuit_open", False)),
+        "last_hardware_command_error": runtime.get("last_hardware_command_error", ""),
+        "hardware_command_queue_size": runtime.get("hardware_command_queue_size", 0),
         "resource_locks": {
             "gimbal": runtime.get("active_feature", "inactive"),
             "analytics": [name for name, active in _analysis_features.items() if active],
@@ -720,6 +748,7 @@ def _apply_runtime_result(result: dict) -> None:
         "seek_to_lock_ms": runtime.get("seek_to_lock_ms"),
         "heartbeat_state": dict(_heartbeat_state),
         "last_heartbeat_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
+        "last_heartbeat_at": _heartbeat_state.get("last_heartbeat_at", 0.0),
         "last_heartbeat_error": _heartbeat_state.get("last_error", ""),
         "eventbus_in_flight": bool(_heartbeat_eventbus_in_flight),
     }
@@ -1268,9 +1297,11 @@ async def _stop_conversation_recording_async(finalize: bool = True) -> bool:
 def _conversation_state() -> dict:
     from services.speaker_mapper import speaker_mapper
     asr = _asr_state()
+    meeting_elapsed = max(0.0, (_meeting_ended_at or time.monotonic()) - _meeting_started_at) if _meeting_started_at else 0.0
     if _conversation_recorder is None:
         return {
             "active": False,
+            "meeting_active": bool(_multi_track_active),
             "available": True,
             "error": "",
             "mode": "doa_only",
@@ -1288,11 +1319,13 @@ def _conversation_state() -> dict:
             "recording": False,
             "current": {},
             "timeline": [],
-            "stats": {"turns": 0, "speakers": 0, "duration": 0.0},
+            "stats": {"turns": 0, "speakers": 0, "duration": meeting_elapsed},
             "speakers": speaker_mapper.get_registered_speakers(),
             "report": dict(_meeting_report),
         }
     state = _conversation_recorder.state()
+    state["stats"] = dict(state.get("stats") or {})
+    state["stats"]["duration"] = max(float(state["stats"].get("duration", 0.0) or 0.0), meeting_elapsed)
     if state.get("active"):
         recording_state = "recording"
         mode = "audio_recording"
@@ -1309,6 +1342,7 @@ def _conversation_state() -> dict:
         recording_state = "idle"
         mode = "recording_complete"
     state["mode"] = mode
+    state["meeting_active"] = bool(_multi_track_active)
     state["requested"] = bool(_conversation_recording_requested)
     state["recording_state"] = recording_state
     state["meeting_state"] = _meeting_report.get("status", "idle")
@@ -1732,6 +1766,7 @@ def build_state_snapshot() -> dict:
     control.update({
         "heartbeat_state": dict(_heartbeat_state),
         "last_heartbeat_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
+        "last_heartbeat_at": _heartbeat_state.get("last_heartbeat_at", 0.0),
         "last_heartbeat_error": _heartbeat_state.get("last_error", ""),
         "eventbus_in_flight": bool(_heartbeat_eventbus_in_flight),
     })
@@ -1761,6 +1796,8 @@ def build_state_snapshot() -> dict:
             "gimbal": dict(_gimbal_tlm),
             "video": {
                 "connected": bool(video_client.connected) if video_client else False,
+                "video_connected": bool(video_client.connected) if video_client else False,
+                "last_frame_age_ms": video_client.last_frame_age_ms if video_client else None,
                 "fps": video_client.fps if video_client else 0.0,
                 "width": video_client.resolution[0] if video_client else 1920,
                 "height": video_client.resolution[1] if video_client else 1080,
@@ -2835,13 +2872,19 @@ async def api_single_track_stop(payload: dict = Body(default={})):
 async def api_multi_track_start(payload: dict = Body(default={})):
     global _multi_track_active, _single_track_active, _tracking_mode
     global _conversation_recording_requested, _meeting_report, _meeting_recording_task
+    global _meeting_started_at, _meeting_ended_at
     from services.speaker_mapper import speaker_mapper
 
     save_audio = bool(payload.get("save_audio", False))
     if _runtime_cache.get("active_feature") == "multi_sound_yaw" and _ui_session_id:
+        if not _meeting_started_at:
+            _meeting_started_at = time.monotonic()
+            _meeting_ended_at = 0.0
+        hardware_ready = bool(_runtime_cache.get("hardware_ready"))
         return {
             "ok": True, "accepted": True, "active": True, "reused": True,
             "session_id": _ui_session_id, "feature": "multi_sound_yaw",
+            "start_status": "accepted" if hardware_ready else "accepted_with_degraded_hardware",
             "recording_success": bool(_conversation_recorder and _conversation_recorder.active),
             "state": _conversation_state(),
         }
@@ -2860,6 +2903,8 @@ async def api_multi_track_start(payload: dict = Body(default={})):
     _single_track_active = False
     _multi_track_active = True
     _tracking_mode = "multi"
+    _meeting_started_at = time.monotonic()
+    _meeting_ended_at = 0.0
     _conversation_recording_requested = save_audio
     _ensure_asr_worker()
     if save_audio:
@@ -2871,6 +2916,7 @@ async def api_multi_track_start(payload: dict = Body(default={})):
     return {
         **result,
         "success": True,
+        "start_status": "accepted" if result.get("hardware_ready") else "accepted_with_degraded_hardware",
         "recording_success": bool(_conversation_recorder and _conversation_recorder.active),
         "recording_state": "starting" if save_audio else "disabled",
         "active": True,
@@ -2880,11 +2926,14 @@ async def api_multi_track_start(payload: dict = Body(default={})):
 
 @app.post("/api/multi_track/stop")
 async def api_multi_track_stop(payload: dict = Body(default={})):
-    global _multi_track_active, _conversation_recording_requested, _meeting_report
+    global _multi_track_active, _conversation_recording_requested, _meeting_report, _meeting_ended_at
     session_id = str(payload.get("session_id", ""))
     if not session_id:
         return {"ok": False, "accepted": False, "active": _multi_track_active, "reason": "session_id_required"}
     _multi_track_active = False
+    if _meeting_started_at and not _meeting_ended_at:
+        _meeting_ended_at = time.monotonic()
+        _meeting_report["duration_min"] = round((_meeting_ended_at - _meeting_started_at) / 60.0, 2)
     if payload.get("finalize", True):
         _conversation_recording_requested = False
         stop_ok = await _stop_conversation_recording_async(finalize=True)
@@ -3006,6 +3055,7 @@ async def _emit_heartbeat_event(session_id: str) -> dict:
             _heartbeat_state.update({
                 "state": "ready",
                 "last_ok_at": time.time(),
+                "last_heartbeat_at": time.time(),
                 "last_error": "",
             })
         else:
@@ -3024,6 +3074,15 @@ async def _emit_heartbeat_event(session_id: str) -> dict:
     except Exception as exc:
         return _heartbeat_degraded("eventbus_error", event, str(exc)[:160])
 
+    if result.get("accepted"):
+        accepted_at = time.time()
+        _heartbeat_state.update({
+            "state": "ready",
+            "last_ok_at": accepted_at,
+            "last_heartbeat_at": accepted_at,
+            "last_error": "",
+        })
+
     eventbus_state = {"host": _eventbus.host, "port": _eventbus.port, "last_result": result}
     _control_obs.update({
         "authority": result.get("authority", "unreachable"),
@@ -3037,6 +3096,7 @@ async def _emit_heartbeat_event(session_id: str) -> dict:
         "degraded": not bool(result.get("accepted")),
         "lease_may_be_stale": not bool(result.get("accepted")),
         "last_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
+        "last_heartbeat_at": _heartbeat_state.get("last_heartbeat_at", 0.0),
         "heartbeat_state": dict(_heartbeat_state),
         "event": event.to_dict(),
         "eventbus": eventbus_state,
@@ -3085,6 +3145,7 @@ async def api_control_runtime():
     runtime.update({
         "heartbeat_state": dict(_heartbeat_state),
         "last_heartbeat_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
+        "last_heartbeat_at": _heartbeat_state.get("last_heartbeat_at", 0.0),
         "last_heartbeat_error": _heartbeat_state.get("last_error", ""),
         "eventbus_in_flight": bool(_heartbeat_eventbus_in_flight),
     })

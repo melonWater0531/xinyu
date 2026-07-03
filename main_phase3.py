@@ -35,7 +35,8 @@ DEVICE_LEASE_MS = 5000
 # isolated in its worker, so a 500 ms boundary avoids false disconnects without
 # blocking EventBus or video processing.
 DEVICE_REQUEST_TIMEOUT_MS = 500
-DEVICE_REQUEST_RETRY = 2
+DEVICE_MOTION_TIMEOUT_MS = 800
+DEVICE_REQUEST_RETRY = 1
 
 _global_hw_client: Optional[RecameraClient] = None
 _global_runner: Optional["Phase3Runner"] = None
@@ -144,6 +145,7 @@ class Phase3Runner:
             base_url=device_http_url(device_ip, required=enable_control),
             timeout_ms=DEVICE_REQUEST_TIMEOUT_MS,
             retry=DEVICE_REQUEST_RETRY,
+            motion_timeout_ms=DEVICE_MOTION_TIMEOUT_MS,
         )
         initial_connected = self._hw.connect(dry_run=not enable_control)
         self._device_session_degraded = bool(enable_control and not initial_connected)
@@ -328,6 +330,11 @@ class Phase3Runner:
                 "accepted": accepted,
                 "authority": "main_phase3",
                 "hardware_ready": hardware_ready,
+                **{key: io_state.get(key) for key in (
+                    "gimbal_bridge_status", "gimbal_bridge_last_error", "gimbal_bridge_last_ok_at",
+                    "gimbal_bridge_fail_count", "gimbal_bridge_circuit_open",
+                    "last_hardware_command_error", "hardware_command_queue_size",
+                )},
                 "state": self._orchestrator.state.value,
                 **apply_result,
                 "runtime": self.runtime_snapshot(),
@@ -382,6 +389,11 @@ class Phase3Runner:
                 "stop_state": self._stop_state,
                 "hardware_ready": hardware_ready,
                 "device_lease": dict(self._gimbal_tlm.get("device_lease") or {}),
+                **{key: io_state.get(key) for key in (
+                    "gimbal_bridge_status", "gimbal_bridge_last_error", "gimbal_bridge_last_ok_at",
+                    "gimbal_bridge_fail_count", "gimbal_bridge_circuit_open",
+                    "last_hardware_command_error", "hardware_command_queue_size",
+                )},
                 "trace": list(self._trace)[-12:],
             }
 
