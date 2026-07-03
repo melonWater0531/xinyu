@@ -1,11 +1,65 @@
 """Single-session target selection and gimbal command orchestration."""
 from __future__ import annotations
+import json
 import math
+from pathlib import Path
 import time
 from typing import Optional, Sequence
 from core.control_session import ControlMode, ControlSession
 from core.event import BBox, ControlCommand, Event
 from core.fsm import FSM, SystemState
+
+
+_TELEMETRY_FIELDS = {
+    "tracking_state": "IDLE",
+    "target_visible": False,
+    "locked_track_id": None,
+    "raw_bbox": None,
+    "track_bbox": None,
+    "control_target": None,
+    "last_control_target": None,
+    "face_center": None,
+    "frame_center": {"x": 960.0, "y": 540.0},
+    "error_x_px": None,
+    "error_y_px": None,
+    "error_x_ratio": None,
+    "error_y_ratio": None,
+    "frame_age_ms": None,
+    "face_detection_ms": None,
+    "embedding_ms": None,
+    "tracker_update_ms": None,
+    "control_loop_ms": None,
+    "vision_hz": None,
+    "control_hz": None,
+    "telemetry_hz": None,
+    "ui_push_hz": None,
+    "tracking_config_loaded": False,
+    "tracking_config_path": "",
+    "tracking_config_error": "",
+}
+
+
+def _default_tracking_telemetry():
+    return {k: (dict(v) if isinstance(v, dict) else v) for k, v in _TELEMETRY_FIELDS.items()}
+
+
+def _load_tracking_control_config():
+    path = Path(__file__).resolve().parents[1] / "config" / "tracking_control.json"
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            return json.load(fh), {
+                "tracking_config_loaded": True,
+                "tracking_config_path": str(path),
+                "tracking_config_error": "",
+            }
+    except Exception as exc:
+        # Phase 1A observes this file only. If it is missing or malformed,
+        # control continues with the existing hardcoded runtime behavior.
+        return {}, {
+            "tracking_config_loaded": False,
+            "tracking_config_path": str(path),
+            "tracking_config_error": str(exc)[:160],
+        }
 
 
 class Orchestrator:
@@ -52,6 +106,10 @@ class Orchestrator:
         self._reverse_yaw_frames = self._reverse_pitch_frames = 0
         self._tracking_error = {"x": 0.0, "y": 0.0}
         self._command_suppressed_reason = ""
+        self._tracking_control_config, config_telemetry = _load_tracking_control_config()
+        self._telemetry = _default_tracking_telemetry()
+        self._telemetry.update(config_telemetry)
+        self._clear_current_target_telemetry()
 
     @property
     def state(self):
@@ -135,9 +193,19 @@ class Orchestrator:
         return _NOT_LIFECYCLE
 
     def _observation(self, event):
+        obs_t0 = time.monotonic()
         oid = int(event.payload.get("observation_id", -1))
         captured = float(event.payload.get("captured_at", event.timestamp))
         captured = captured * 1000 if captured < 10_000_000_000 else captured
+        self._telemetry.update({
+            "frame_age_ms": max(0.0, round(time.time() * 1000.0 - captured, 1)),
+            "face_detection_ms": event.payload.get("face_detection_ms"),
+            "embedding_ms": event.payload.get("embedding_ms"),
+            "tracker_update_ms": event.payload.get("tracker_update_ms"),
+            "vision_hz": event.payload.get("vision_hz"),
+            "telemetry_hz": event.payload.get("telemetry_hz"),
+            "ui_push_hz": event.payload.get("ui_push_hz"),
+        })
         if oid <= self._last_observation_id or time.time() * 1000 - captured > 600:
             return None
         self._last_observation_id, self._frame_count = oid, self._frame_count + 1
@@ -146,7 +214,13 @@ class Orchestrator:
         self.frame_height = max(1, int(size.get("height", self.frame_height)))
         faces = [x for x in event.payload.get("faces", []) if int(x.get("lost_frames", 0) or 0) == 0]
         persons = event.payload.get("persons", [])
-        return self._single(faces, persons) if self.session.mode is ControlMode.SINGLE_FACE_ANALYSIS else self._multi(faces)
+        self._clear_current_target_telemetry()
+        command = self._single(faces, persons) if self.session.mode is ControlMode.SINGLE_FACE_ANALYSIS else self._multi(faces)
+        self._telemetry["tracker_update_ms"] = self._coalesce_ms(
+            self._telemetry.get("tracker_update_ms"),
+            (time.monotonic() - obs_t0) * 1000.0,
+        )
+        return command
 
     def _single(self, faces, persons):
         now = time.monotonic()
@@ -264,6 +338,7 @@ class Orchestrator:
         self._ema_y = cy if self._ema_y is None else alpha*cy + (1-alpha)*self._ema_y
         ex, ey = self._ema_x - self.target_x, self._ema_y - self.target_y
         self._tracking_error = {"x": round(ex, 4), "y": round(ey, 4)}
+        self._update_target_telemetry(item, box, cx, cy, ex, ey)
         enter, remain = abs(ex) <= .05 and abs(ey) <= .06, abs(ex) <= .08 and abs(ey) <= .10
         if enter or (self._centered and remain):
             self._centered = True
@@ -442,6 +517,7 @@ class Orchestrator:
         self._reverse_yaw_frames = self._reverse_pitch_frames = 0
         self._tracking_error = {"x": 0.0, "y": 0.0}
         self._command_suppressed_reason = ""
+        self._clear_current_target_telemetry()
 
     def _ui_allowed(self, event):
         if not self.session.matches(str(event.payload.get("session_id", ""))):
@@ -480,7 +556,7 @@ class Orchestrator:
         return ControlCommand.make("orchestrator",session_id=self.session.session_id if session_id is None else session_id,sequence=self._command_sequence,ttl_s=2.5,**kwargs)
 
     def runtime_state(self):
-        return {**self.session.snapshot(),"fsm_state":self.state.value,"speed":self.default_speed,
+        runtime = {**self.session.snapshot(),"fsm_state":self.state.value,"speed":self.default_speed,
                 "doa_offset_deg":self.doa_offset_deg,"doa_direction":int(self.doa_direction),
                 "locked_track_id":self.locked_track_id,"tracking_phase":self.tracking_phase,
                 "lock_state":self.lock_state,"lock_candidate_id":self._lock_candidate_id,
@@ -490,6 +566,104 @@ class Orchestrator:
                 "command_suppressed_reason":self._command_suppressed_reason,
                 "speaker_confidence":round(self._speaker_confidence,3),
                 "stop_state":self.stop_state,"last_observation_id":self._last_observation_id}
+        runtime.update(self._phase1a_telemetry())
+        return runtime
+
+    def update_telemetry(self, **fields):
+        for key, value in fields.items():
+            if key in self._telemetry:
+                self._telemetry[key] = value
+
+    def _phase1a_telemetry(self):
+        telemetry = dict(self._telemetry)
+        telemetry["tracking_state"] = self._tracking_state()
+        telemetry["locked_track_id"] = self.locked_track_id
+        telemetry["frame_center"] = {
+            "x": round(self.frame_width / 2.0, 1),
+            "y": round(self.frame_height / 2.0, 1),
+        }
+        return telemetry
+
+    def _tracking_state(self):
+        if not self.session.snapshot().get("active"):
+            return "IDLE"
+        phase = str(self.tracking_phase or "")
+        lock = str(self.lock_state or "")
+        if "occlusion_hold" in phase or lock == "occlusion_hold":
+            return "OCCLUSION_HOLD"
+        if phase in {"limited_search", "search_grace", "returning_standby"}:
+            return "SEARCH"
+        if phase == "standby_stopped":
+            return "LOST"
+        if lock == "centered" or phase in {"locked_centered", "speaker_centered"}:
+            return "CENTERED"
+        if self.locked_track_id is not None:
+            return "LOCKED"
+        return "ACQUIRE"
+
+    def _update_target_telemetry(self, item, box, cx, cy, ex, ey):
+        raw_box = item.get("raw_bbox") or item.get("bbox_raw") or box or None
+        track_box = item.get("track_bbox") or item.get("bbox") or raw_box
+        face_x, face_y = cx * self.frame_width, cy * self.frame_height
+        target_x, target_y = self._ema_x * self.frame_width, self._ema_y * self.frame_height
+        control_target = {"x": round(float(target_x), 1), "y": round(float(target_y), 1)}
+        self._telemetry.update({
+            "target_visible": True,
+            "raw_bbox": self._normalize_bbox(raw_box),
+            "track_bbox": self._normalize_bbox(track_box),
+            "control_target": control_target,
+            "last_control_target": dict(control_target),
+            "face_center": {"x": round(float(face_x), 1), "y": round(float(face_y), 1)},
+            "error_x_px": round(float(ex * self.frame_width), 1),
+            "error_y_px": round(float(ey * self.frame_height), 1),
+            "error_x_ratio": round(float(ex), 4),
+            "error_y_ratio": round(float(ey), 4),
+        })
+
+    @staticmethod
+    def _normalize_bbox(box):
+        if box is None:
+            return None
+        if isinstance(box, dict):
+            if all(k in box for k in ("x1", "y1", "x2", "y2")):
+                values = [box["x1"], box["y1"], box["x2"], box["y2"]]
+            elif all(k in box for k in ("left", "top", "right", "bottom")):
+                values = [box["left"], box["top"], box["right"], box["bottom"]]
+            else:
+                return None
+        else:
+            try:
+                if hasattr(box, "tolist"):
+                    box = box.tolist()
+                values = list(box)
+            except TypeError:
+                return None
+            if len(values) < 4:
+                return None
+            values = values[:4]
+        try:
+            return [float(v) for v in values]
+        except (TypeError, ValueError):
+            return None
+
+    def _clear_current_target_telemetry(self):
+        self._telemetry.update({
+            "target_visible": False,
+            "raw_bbox": None,
+            "track_bbox": None,
+            "control_target": None,
+            "face_center": None,
+            "error_x_px": None,
+            "error_y_px": None,
+            "error_x_ratio": None,
+            "error_y_ratio": None,
+        })
+
+    @staticmethod
+    def _coalesce_ms(value, fallback):
+        if value is not None:
+            return value
+        return round(float(fallback), 1)
 
     def handle(self,event):
         return self.handle_event(event)

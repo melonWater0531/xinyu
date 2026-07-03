@@ -5,6 +5,7 @@ import tempfile
 import asyncio
 import time
 import os
+from pathlib import Path
 
 import numpy as np
 import recamera_fastapi as api
@@ -28,6 +29,32 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(multi["accepted"])
         self.assertEqual(multi["reason"], "session_id_required")
         self.assertTrue(multi["active"])
+
+    async def test_phase1a_endpoint_runtime_docs_contract(self) -> None:
+        route_paths = {getattr(route, "path", "") for route in api.app.routes}
+        for path in (
+            "/api/single_track/start",
+            "/api/single_track/stop",
+            "/api/multi_track/start",
+            "/api/multi_track/stop",
+        ):
+            self.assertIn(path, route_paths)
+
+        runtime = (await api.api_control_runtime())["runtime"]
+        for field in (
+            "tracking_state", "target_visible", "locked_track_id", "raw_bbox", "track_bbox",
+            "control_target", "last_control_target", "face_center", "frame_center", "error_x_px",
+            "error_y_px", "error_x_ratio", "error_y_ratio", "frame_age_ms",
+            "face_detection_ms", "embedding_ms", "tracker_update_ms",
+            "control_loop_ms", "vision_hz", "control_hz", "telemetry_hz",
+            "ui_push_hz", "tracking_config_loaded", "tracking_config_path",
+            "tracking_config_error",
+        ):
+            self.assertIn(field, runtime)
+
+        root = Path(api.__file__).resolve().parent
+        self.assertTrue((root / "config" / "tracking_control.json").exists())
+        self.assertTrue((root / "docs" / "tracking_tuning_sop.md").exists())
 
     def test_snapshot_exposes_home_compatibility_fields_and_valence(self) -> None:
         old_runtime = dict(api._runtime_cache)

@@ -3,6 +3,9 @@ from __future__ import annotations
 import time
 import unittest
 import socket
+import json
+
+import numpy as np
 
 from core.control_session import ControlMode
 from core.event import Event
@@ -214,6 +217,59 @@ class ControlClosureTests(unittest.TestCase):
         runtime = self.orch.runtime_state()
         self.assertEqual(runtime["target_point"]["y"], .32)
         self.assertEqual(runtime["lock_state"], "locked")
+
+    def test_phase1a_runtime_telemetry_contract_fields_exist(self) -> None:
+        self.start("single_face_analysis")
+        face = {"track_id": 21, "cx": .62, "cy": .37, "bbox": [700, 220, 860, 420], "confidence": .95, "lost_frames": 0}
+        for oid in range(1, 4):
+            self.orch.handle_event(self.observation(oid, faces=[face]))
+        runtime = self.orch.runtime_state()
+        for field in (
+            "tracking_state", "target_visible", "locked_track_id", "raw_bbox", "track_bbox",
+            "control_target", "last_control_target", "face_center", "frame_center", "error_x_px",
+            "error_y_px", "error_x_ratio", "error_y_ratio", "frame_age_ms",
+            "face_detection_ms", "embedding_ms", "tracker_update_ms",
+            "control_loop_ms", "vision_hz", "control_hz", "telemetry_hz",
+            "ui_push_hz", "tracking_config_loaded", "tracking_config_path",
+            "tracking_config_error",
+        ):
+            self.assertIn(field, runtime)
+        self.assertEqual(runtime["tracking_state"], "LOCKED")
+        self.assertTrue(runtime["target_visible"])
+        self.assertEqual(runtime["locked_track_id"], 21)
+        self.assertEqual(runtime["track_bbox"], [700.0, 220.0, 860.0, 420.0])
+        self.assertEqual(runtime["control_hz"], None)
+        json.dumps(runtime)
+
+    def test_phase1a_clears_current_target_telemetry_when_target_missing(self) -> None:
+        self.start("single_face_analysis")
+        face = {"track_id": 22, "cx": .62, "cy": .37, "bbox": [700, 220, 860, 420], "confidence": .95, "lost_frames": 0}
+        for oid in range(1, 4):
+            self.orch.handle_event(self.observation(oid, faces=[face]))
+        visible = self.orch.runtime_state()
+        self.assertTrue(visible["target_visible"])
+        self.assertIsNotNone(visible["control_target"])
+        self.orch.handle_event(self.observation(4))
+        missing = self.orch.runtime_state()
+        self.assertFalse(missing["target_visible"])
+        self.assertIsNone(missing["raw_bbox"])
+        self.assertIsNone(missing["track_bbox"])
+        self.assertIsNone(missing["control_target"])
+        self.assertEqual(missing["last_control_target"], visible["control_target"])
+        self.assertIsNone(missing["face_center"])
+        self.assertIsNone(missing["error_x_px"])
+        self.assertIsNone(missing["error_y_px"])
+        self.assertIsNone(missing["error_x_ratio"])
+        self.assertIsNone(missing["error_y_ratio"])
+
+    def test_phase1a_bbox_normalization_accepts_json_safe_shapes(self) -> None:
+        self.assertEqual(self.orch._normalize_bbox([1, 2, 3, 4]), [1.0, 2.0, 3.0, 4.0])
+        self.assertEqual(self.orch._normalize_bbox((1, 2, 3, 4)), [1.0, 2.0, 3.0, 4.0])
+        self.assertEqual(self.orch._normalize_bbox(np.array([1, 2, 3, 4], dtype=np.float32)), [1.0, 2.0, 3.0, 4.0])
+        self.assertEqual(self.orch._normalize_bbox({"x1": 1, "y1": 2, "x2": 3, "y2": 4}), [1.0, 2.0, 3.0, 4.0])
+        self.assertEqual(self.orch._normalize_bbox({"left": 1, "top": 2, "right": 3, "bottom": 4}), [1.0, 2.0, 3.0, 4.0])
+        self.assertIsNone(self.orch._normalize_bbox({"x": 1}))
+        json.dumps({"bbox": self.orch._normalize_bbox(np.array([1, 2, 3, 4], dtype=np.float32))})
 
     def test_delayed_readback_suppresses_two_reverse_frames(self) -> None:
         self.start("single_face_analysis")

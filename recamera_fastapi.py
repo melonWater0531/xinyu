@@ -374,7 +374,35 @@ _heartbeat_state = {
     "last_error_at": 0.0,
     "eventbus_in_flight": False,
 }
+_TRACKING_TELEMETRY_DEFAULTS = {
+    "tracking_state": "IDLE",
+    "target_visible": False,
+    "locked_track_id": None,
+    "raw_bbox": None,
+    "track_bbox": None,
+    "control_target": None,
+    "last_control_target": None,
+    "face_center": None,
+    "frame_center": {"x": 960.0, "y": 540.0},
+    "error_x_px": None,
+    "error_y_px": None,
+    "error_x_ratio": None,
+    "error_y_ratio": None,
+    "frame_age_ms": None,
+    "face_detection_ms": None,
+    "embedding_ms": None,
+    "tracker_update_ms": None,
+    "control_loop_ms": None,
+    "vision_hz": None,
+    "control_hz": None,
+    "telemetry_hz": None,
+    "ui_push_hz": None,
+    "tracking_config_loaded": False,
+    "tracking_config_path": "",
+    "tracking_config_error": "",
+}
 _runtime_cache = {
+    **_TRACKING_TELEMETRY_DEFAULTS,
     "connected": False,
     "active_feature": "inactive",
     "session_id": "",
@@ -475,6 +503,16 @@ def _audio_event(doa_deg: float, speech: bool, source: str = "doa", session_id: 
 
 def _vision_event(cx: float, cy: float, conf: float, source: str = "vision") -> Event:
     return Event.make("vision", "target_detected", source, {"cx": float(cx), "cy": float(cy), "conf": float(conf)})
+
+
+def _runtime_with_telemetry_defaults(runtime: dict | None = None) -> dict:
+    data = {
+        k: (dict(v) if isinstance(v, dict) else v)
+        for k, v in _TRACKING_TELEMETRY_DEFAULTS.items()
+    }
+    if runtime:
+        data.update(runtime)
+    return data
 
 
 # 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  Build state snapshot dict
@@ -621,7 +659,7 @@ def _apply_runtime_result(result: dict) -> None:
     if not isinstance(runtime, dict):
         return
     previous_feature = _runtime_cache.get("active_feature", "inactive")
-    _runtime_cache = {**runtime, "connected": True}
+    _runtime_cache = _runtime_with_telemetry_defaults({**runtime, "connected": True})
     feature = _runtime_cache.get("active_feature", "inactive")
     _single_track_active = feature == "single_face_analysis"
     _multi_track_active = feature in {"multi_sound_yaw", "meeting_sound_yaw"}
@@ -687,7 +725,12 @@ async def runtime_sync_loop() -> None:
             _apply_runtime_result(result)
             _set_respeaker_led_for_feature(_runtime_cache.get("active_feature", "inactive"))
         else:
-            _runtime_cache = {**_runtime_cache, "connected": False, "authority": "unreachable", "lease_remaining_ms": 0}
+            _runtime_cache = _runtime_with_telemetry_defaults({
+                **_runtime_cache,
+                "connected": False,
+                "authority": "unreachable",
+                "lease_remaining_ms": 0,
+            })
             if _led_runtime_mode != "off":
                 _set_respeaker_led_for_feature("inactive")
         await asyncio.sleep(0.25)
@@ -1485,6 +1528,7 @@ def _build_vision_observation() -> dict:
     _observation_id += 1
     width, height = (video_client.resolution if video_client else [1920, 1080])
     width, height = max(1, int(width)), max(1, int(height))
+    stage_ms = dict(_perception_stats.get("stage_ms", {})) if "_perception_stats" in globals() else {}
     pose = _build_pose_data()
     faces = []
     for person in pose["persons"]:
@@ -1517,6 +1561,12 @@ def _build_vision_observation() -> dict:
         "observation_id": _observation_id,
         "captured_at": time.time() * 1000.0,
         "frame_size": {"width": width, "height": height},
+        "face_detection_ms": stage_ms.get("face"),
+        "embedding_ms": None,
+        "tracker_update_ms": stage_ms.get("face"),
+        "vision_hz": round(float(video_client.fps), 2) if video_client else 0.0,
+        "telemetry_hz": 4.0,
+        "ui_push_hz": 4.0,
         "faces": faces,
         "persons": people,
     }
@@ -1674,6 +1724,7 @@ def build_state_snapshot() -> dict:
                 "gimbal_connected": bool(_gimbal_tlm.get("connected")),
             },
             "locked_track_id": locked_track_id,
+            "tracking_state": _runtime_cache.get("tracking_state", "IDLE"),
             "tracking_phase": tracking_phase,
             "stop_state": _runtime_cache.get("stop_state", "stopped"),
             "device_lease": dict(_runtime_cache.get("device_lease") or {}),
@@ -2528,9 +2579,10 @@ async def api_gimbal_state():
     return dict(_gimbal_tlm)
 
 
-# NOTE: removed control endpoints: /api/gimbal/{yaw,pitch,speed,sleep,standby,
-# stop,calibrate}, /api/face_track/*, /api/single_track/*, /api/multi_track/*,
-# /api/sound_track/*, /api/tracking_mode. Control plane = core.orchestrator.
+# NOTE: removed direct hardware control endpoints:
+# /api/gimbal/{yaw,pitch,speed,sleep,standby,stop,calibrate},
+# /api/face_track/*, and /api/sound_track/*. Compatibility tracking endpoints
+# remain and map to control runtime feature_start/feature_stop events.
 
 
 # 鈹€鈹€ Conversation Recording API 鈹€鈹€
@@ -2957,7 +3009,7 @@ async def api_control_heartbeat(payload: dict = Body(default={})):
 
 @app.get("/api/control/runtime")
 async def api_control_runtime():
-    runtime = dict(_runtime_cache)
+    runtime = _runtime_with_telemetry_defaults(dict(_runtime_cache))
     runtime.update({
         "heartbeat_state": dict(_heartbeat_state),
         "last_heartbeat_ok_at": _heartbeat_state.get("last_ok_at", 0.0),

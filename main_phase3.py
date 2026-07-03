@@ -163,6 +163,7 @@ class Phase3Runner:
                 logger.error("EventBus failed to bind %s:%s", eventbus_host, eventbus_port)
         self._running = True
         self._frame_id = 0
+        self._last_control_tick_at = 0.0
 
         global _global_hw_client
         _global_hw_client = self._hw
@@ -180,6 +181,12 @@ class Phase3Runner:
         try:
             while self._running:
                 start = time.monotonic()
+                control_hz = None
+                if self._last_control_tick_at > 0.0:
+                    dt = start - self._last_control_tick_at
+                    control_hz = round(1.0 / dt, 2) if dt > 0 else None
+                self._last_control_tick_at = start
+                self._orchestrator.update_telemetry(control_hz=control_hz)
                 self._frame_id += 1
                 self._expire_lease_if_needed()
 
@@ -271,6 +278,7 @@ class Phase3Runner:
 
     def process_event(self, event: Event) -> dict:
         with self._runtime_lock:
+            control_t0 = time.monotonic()
             before = self._orchestrator.runtime_state()
             requested_session = str(event.payload.get("session_id", ""))
             session_bound = event.type == "ui" and event.name in {
@@ -302,6 +310,7 @@ class Phase3Runner:
                 else:
                     self._hardware_worker.renew_session(requested_session)
             apply_result = self._apply(command)
+            self._orchestrator.update_telemetry(control_loop_ms=round((time.monotonic() - control_t0) * 1000.0, 1))
             after = self._orchestrator.runtime_state()
             io_state = self._hardware_worker.snapshot()
             hardware_ready = not self._device_session_degraded and int(io_state.get("consecutive_failures", 0)) < 3
