@@ -32,6 +32,7 @@ class ControlClosureTests(unittest.TestCase):
 
     def test_single_accepts_vision_and_ignores_audio(self) -> None:
         self.start("single_face_analysis")
+        self.orch._control_params["demo_stop_shake_mode"] = 0.0
         event = Event.make("vision", "target_detected", "test", payload={"cx": .25, "cy": .45, "conf": .9, "class_name": "face"})
         self.orch.handle_event(event)
         self.orch.handle_event(event)
@@ -122,6 +123,7 @@ class ControlClosureTests(unittest.TestCase):
 
     def test_stale_track_is_not_display_or_control_candidate(self) -> None:
         self.start("single_face_analysis")
+        self.orch._control_params["demo_stop_shake_mode"] = 0.0
         stale = {"track_id": 1, "cx": .2, "cy": .4, "confidence": .99, "lost_frames": 2}
         current = {"track_id": 2, "cx": .7, "cy": .32, "confidence": .9, "lost_frames": 0}
         for oid in range(1, 4):
@@ -132,6 +134,7 @@ class ControlClosureTests(unittest.TestCase):
 
     def test_old_session_and_out_of_order_observations_are_ignored(self) -> None:
         self.start("single_face_analysis")
+        self.orch._control_params["demo_stop_shake_mode"] = 0.0
         face = {"track_id": 3, "cx": .2, "cy": .32, "confidence": .9, "lost_frames": 0}
         self.assertIsNone(self.orch.handle_event(self.observation(1, faces=[face], session_id="old")))
         for oid in (2, 3, 4):
@@ -206,6 +209,7 @@ class ControlClosureTests(unittest.TestCase):
 
     def test_phase1b_centered_safe_roi_suppresses_motion(self) -> None:
         self.start("single_face_analysis")
+        self.orch._control_params["demo_stop_shake_mode"] = 0.0
         face = {
             "track_id": 31, "cx": .5, "cy": .32,
             "bbox": [560, 190, 720, 350],
@@ -221,6 +225,7 @@ class ControlClosureTests(unittest.TestCase):
 
     def test_phase1b_bbox_near_edge_allows_correction_even_with_small_center_error(self) -> None:
         self.start("single_face_analysis")
+        self.orch._control_params["demo_stop_shake_mode"] = 0.0
         edge_face = {
             "track_id": 32, "cx": .5, "cy": .32,
             "bbox": [10, 190, 170, 350],
@@ -240,6 +245,7 @@ class ControlClosureTests(unittest.TestCase):
 
     def test_phase1b_top_edge_reports_centered_block_reason(self) -> None:
         self.start("single_face_analysis")
+        self.orch._control_params["demo_stop_shake_mode"] = 0.0
         edge_face = {
             "track_id": 33, "cx": .5, "cy": .32,
             "bbox": [560, 3, 720, 160],
@@ -253,8 +259,57 @@ class ControlClosureTests(unittest.TestCase):
         self.assertIn("safe_roi", runtime)
         self.assertIn("edge_margin", runtime)
 
+    def test_demo_stop_shake_holds_face_inside_large_region(self) -> None:
+        self.start("single_face_analysis")
+        face = {
+            "track_id": 51, "cx": .72, "cy": .55,
+            "bbox": [20, 8, 1240, 705],
+            "confidence": .95, "lost_frames": 0,
+        }
+        for oid in range(1, 8):
+            self.assertIsNone(self.orch.handle_event(self.observation(oid, faces=[face])))
+        runtime = self.orch.runtime_state()
+        self.assertEqual(runtime["tracking_state"], "CENTERED")
+        self.assertTrue(runtime["demo_hold_active"])
+        self.assertEqual(runtime["demo_hold_reason"], "face_inside_demo_hold_region")
+        self.assertEqual(runtime["motion_blocked_reason"], "demo_hold")
+
+    def test_demo_stop_shake_body_align_is_suppressed_without_stable_face(self) -> None:
+        self.start("single_face_analysis")
+        person = {"bbox": [0, 0, 1280, 720], "cx": .9, "cy": .8, "confidence": .95}
+        command = self.orch.handle_event(self.observation(1, persons=[person]))
+        runtime = self.orch.runtime_state()
+        self.assertIsNone(command)
+        self.assertTrue(runtime["body_align_suppressed"])
+        self.assertEqual(runtime["motion_blocked_reason"], "body_align_suppressed")
+
+    def test_demo_stop_shake_missing_face_holds_before_search(self) -> None:
+        self.start("single_face_analysis")
+        self.assertIsNone(self.orch.handle_event(self.observation(1)))
+        runtime = self.orch.runtime_state()
+        self.assertEqual(runtime["tracking_phase"], "search_grace")
+        self.assertTrue(runtime["demo_hold_active"])
+        self.assertEqual(runtime["motion_blocked_reason"], "demo_no_face_hold")
+
+    def test_demo_stop_shake_min_command_delta_suppresses_tiny_motion(self) -> None:
+        self.start("single_face_analysis")
+        face = {
+            "track_id": 52, "cx": .805, "cy": .825,
+            "bbox": [980, 600, 1100, 710],
+            "confidence": .95, "lost_frames": 0,
+        }
+        for oid in range(1, 4):
+            self.orch.handle_event(self.observation(oid, faces=[face]))
+        command = self.orch.handle_event(self.observation(4, faces=[face]))
+        runtime = self.orch.runtime_state()
+        self.assertIsNone(command)
+        self.assertEqual(runtime["motion_blocked_reason"], "min_command_delta")
+        self.assertLess(runtime["command_delta_yaw_deg"], 1.0)
+        self.assertLess(runtime["command_delta_pitch_deg"], 0.6)
+
     def test_tracking_step_is_bounded_for_upper_body_composition(self) -> None:
         self.start("single_face_analysis")
+        self.orch._control_params["demo_stop_shake_mode"] = 0.0
         face = {"track_id": 14, "cx": .9, "cy": .8, "confidence": .95, "lost_frames": 0}
         for oid in range(1, 4):
             self.orch.handle_event(self.observation(oid, faces=[face]))
@@ -269,6 +324,7 @@ class ControlClosureTests(unittest.TestCase):
 
     def test_phase1a_runtime_telemetry_contract_fields_exist(self) -> None:
         self.start("single_face_analysis")
+        self.orch._control_params["demo_stop_shake_mode"] = 0.0
         face = {"track_id": 21, "cx": .62, "cy": .37, "bbox": [700, 220, 860, 420], "confidence": .95, "lost_frames": 0}
         for oid in range(1, 4):
             self.orch.handle_event(self.observation(oid, faces=[face]))
@@ -337,6 +393,9 @@ class ControlClosureTests(unittest.TestCase):
 
     def test_delayed_readback_suppresses_two_reverse_frames(self) -> None:
         self.start("single_face_analysis")
+        self.orch._control_params["demo_stop_shake_mode"] = 0.0
+        self.orch._control_params["max_yaw_delta_deg_per_tick"] = 5.0
+        self.orch._control_params["max_pitch_delta_deg_per_tick"] = 3.0
         face = {"track_id": 15, "cx": .9, "cy": .32, "confidence": .95, "lost_frames": 0}
         for oid in range(1, 4):
             self.orch.handle_event(self.observation(oid, faces=[face]))
