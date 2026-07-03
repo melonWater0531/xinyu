@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import unittest
 import tempfile
+import asyncio
+import time
+import os
 
 import numpy as np
 import recamera_fastapi as api
@@ -79,7 +82,8 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             llm_router.DEEPSEEK_API_KEY = ""
             llm_router.ZHIPU_API_KEY = ""
             result = await llm_router.router.complete_with_provider([{"role": "user", "content": "hello"}], 20)
-            self.assertEqual(result, {"text": "", "provider": "none"})
+            self.assertEqual(result["text"], "")
+            self.assertEqual(result["provider"], "none")
             text = await llm_router.router.complete([{"role": "user", "content": "hello"}], 20)
             self.assertEqual(text, "")
         finally:
@@ -337,9 +341,10 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             api._conversation_recorder = old_recorder
             api._deepseek_chat = old_chat
 
-    async def test_meeting_complete_stops_before_summarizing(self) -> None:
+    async def test_meeting_complete_submits_background_stop_and_summary(self) -> None:
         old_stop = api.api_multi_track_stop
         old_summarize = api.api_meeting_summarize
+        old_task = api._meeting_summary_task
         calls = []
 
         async def fake_stop(payload):
@@ -351,23 +356,28 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             return {"ok": True, "summary": "完成", "minutes": "会议完成"}
 
         try:
+            api._meeting_summary_task = None
             api.api_multi_track_stop = fake_stop
             api.api_meeting_summarize = fake_summarize
             result = await api.api_meeting_complete({"session_id": "meeting-1"})
-            self.assertEqual(calls, [("stop", "meeting-1"), ("summarize", "meeting-1")])
             self.assertTrue(result["accepted"])
-            self.assertTrue(result["stopped"])
+            self.assertTrue(result["submitted"])
+            self.assertTrue(result["processing"])
+            await api._meeting_summary_task
+            self.assertEqual(calls, [("stop", "meeting-1"), ("summarize", "meeting-1")])
         finally:
             api.api_multi_track_stop = old_stop
             api.api_meeting_summarize = old_summarize
+            api._meeting_summary_task = old_task
 
-    async def test_multi_track_start_opens_control_and_recording_together(self) -> None:
+    async def test_multi_track_start_submits_recording_without_blocking(self) -> None:
         old_start_feature = api._start_feature
         old_ensure_doa = api._ensure_doa_reader
         old_start_recording = api._start_conversation_recording
         old_recorder = api._conversation_recorder
         old_requested = api._conversation_recording_requested
         old_report = dict(api._meeting_report)
+        old_task = api._meeting_recording_task
         calls = []
 
         async def fake_start_feature(feature):
@@ -379,12 +389,15 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             api._ensure_doa_reader = lambda: True
             api._start_conversation_recording = lambda: calls.append(("recording", True)) or True
             api._conversation_recorder = None
+            api._meeting_recording_task = None
             result = await api.api_multi_track_start({"save_audio": True})
             self.assertTrue(result["accepted"])
-            self.assertTrue(result["recording_success"])
+            self.assertEqual(result["recording_state"], "starting")
             self.assertTrue(api._conversation_recording_requested)
-            self.assertEqual(api._meeting_report["status"], "recording")
-            self.assertEqual(calls, [("feature", "multi_sound_yaw"), ("recording", True)])
+            self.assertEqual(api._meeting_report["status"], "recording_starting")
+            self.assertEqual(calls[:1], [("feature", "multi_sound_yaw")])
+            await api._meeting_recording_task
+            self.assertIn(("recording", True), calls)
         finally:
             api._start_feature = old_start_feature
             api._ensure_doa_reader = old_ensure_doa
@@ -392,6 +405,124 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             api._conversation_recorder = old_recorder
             api._conversation_recording_requested = old_requested
             api._meeting_report = old_report
+            api._meeting_recording_task = old_task
+
+    async def test_conversation_segment_enters_asr_queue_and_writes_transcript(self) -> None:
+        import services.cloud_asr as cloud_asr_module
+
+        old_recorder = api._conversation_recorder
+        old_queue = api._asr_queue
+        old_worker = api._asr_worker_task
+        old_loop = api._asr_loop
+        old_enqueued = set(api._asr_enqueued_turns)
+        old_running = set(api._asr_running_turns)
+        old_stats = dict(api._asr_stats)
+        old_transcribe = cloud_asr_module.cloud_asr.transcribe
+
+        async def fake_transcribe(_path):
+            return "这是实时转写结果"
+
+        try:
+            if api._asr_worker_task is not None:
+                api._asr_worker_task.cancel()
+            api._asr_queue = None
+            api._asr_worker_task = None
+            api._asr_loop = None
+            api._asr_enqueued_turns.clear()
+            api._asr_running_turns.clear()
+            api._asr_stats.update({"pending": 0, "running": 0, "done": 0, "failed": 0, "last_error": "", "last_error_at": 0.0})
+            cloud_asr_module.cloud_asr.transcribe = fake_transcribe
+
+            with tempfile.TemporaryDirectory() as tmp:
+                api._ensure_asr_worker()
+                recorder = ConversationRecorder(
+                    root=tmp,
+                    doa_provider=lambda: (20.0, True),
+                    speaker_provider=lambda doa: {"label": "匿名说话人 1", "track_id": 7, "confidence": 0.72},
+                    segment_callback=api._on_conversation_segment,
+                )
+                api._conversation_recorder = recorder
+                recorder._session_id = "session_test"
+                recorder._session_dir = recorder.root / recorder._session_id
+                (recorder._session_dir / "audio" / "segments").mkdir(parents=True)
+                recorder._started_at = 100.0
+                recorder._finalize_segment([np.zeros(1600, dtype=np.float32)], [20.0], 101.0, 102.0)
+                await asyncio.sleep(0)
+                await asyncio.wait_for(api._asr_queue.join(), timeout=2.0)
+                turn = recorder.state()["timeline"][0]
+                self.assertEqual(turn["text"], "这是实时转写结果")
+                self.assertEqual(turn["status"], "transcribed")
+                self.assertEqual(turn["track_id"], 7)
+                self.assertAlmostEqual(turn["association_confidence"], 0.72)
+        finally:
+            if api._asr_worker_task is not None:
+                api._asr_worker_task.cancel()
+                try:
+                    await api._asr_worker_task
+                except asyncio.CancelledError:
+                    pass
+            api._conversation_recorder = old_recorder
+            api._asr_queue = old_queue
+            api._asr_worker_task = old_worker
+            api._asr_loop = old_loop
+            api._asr_enqueued_turns.clear()
+            api._asr_enqueued_turns.update(old_enqueued)
+            api._asr_running_turns.clear()
+            api._asr_running_turns.update(old_running)
+            api._asr_stats.clear()
+            api._asr_stats.update(old_stats)
+            cloud_asr_module.cloud_asr.transcribe = old_transcribe
+
+    async def test_control_heartbeat_times_out_without_blocking_ui(self) -> None:
+        old_eventbus = api._eventbus
+        old_timeout = api.HEARTBEAT_EVENTBUS_TIMEOUT_S
+        old_future = api._heartbeat_future
+        old_in_flight = api._heartbeat_eventbus_in_flight
+        old_state = dict(api._heartbeat_state)
+
+        class SlowEventBus:
+            host = "127.0.0.1"
+            port = 8765
+
+            def emit(self, _event):
+                time.sleep(0.2)
+                return {"ok": True, "accepted": True, "runtime": {"active_feature": "multi_sound_yaw"}}
+
+        try:
+            api._eventbus = SlowEventBus()
+            api.HEARTBEAT_EVENTBUS_TIMEOUT_S = 0.02
+            api._heartbeat_future = None
+            api._heartbeat_eventbus_in_flight = False
+            started = time.monotonic()
+            result = await api.api_control_heartbeat({"session_id": "meeting-1"})
+            elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 0.15)
+            self.assertFalse(result["accepted"])
+            self.assertTrue(result["degraded"])
+            self.assertEqual(result["reason"], "eventbus_timeout")
+
+            busy = await api.api_control_heartbeat({"session_id": "meeting-1"})
+            self.assertEqual(busy["reason"], "eventbus_busy")
+            await asyncio.sleep(0.25)
+        finally:
+            api._eventbus = old_eventbus
+            api.HEARTBEAT_EVENTBUS_TIMEOUT_S = old_timeout
+            api._heartbeat_future = old_future
+            api._heartbeat_eventbus_in_flight = old_in_flight
+            api._heartbeat_state.clear()
+            api._heartbeat_state.update(old_state)
+
+    async def test_system_health_reports_zhipu_unconfigured(self) -> None:
+        old_key = os.environ.pop("ZHIPU_API_KEY", None)
+        try:
+            health = await api.api_system_health()
+            self.assertIn("zhipu_llm", health["components"])
+            self.assertIn("zhipu_asr", health["components"])
+            self.assertFalse(health["components"]["zhipu_llm"]["configured"])
+            self.assertEqual(health["components"]["zhipu_llm"]["status"], "offline")
+        finally:
+            if old_key is not None:
+                os.environ["ZHIPU_API_KEY"] = old_key
 
 
 class AttentionScoringTests(unittest.TestCase):

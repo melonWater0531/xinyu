@@ -697,6 +697,12 @@ class FaceTrackerV2:
         results = []
         for track in self._tracks.values():
             track.mark_lost()
+            if not track.is_active and track.track_id not in self._reid_cache:
+                # Same retirement path as the normal update(): move to the
+                # Re-ID cache so step-8-style cleanup can eventually free it.
+                self._reid_cache[track.track_id] = track
+                if self._primary_id == track.track_id:
+                    self._primary_id = None
             if track.is_active:
                 pred_bbox = track.kalman.get_bbox()
                 results.append({
@@ -715,6 +721,13 @@ class FaceTrackerV2:
                     'head_pitch': 0.0,
                     'head_roll': 0.0,
                 })
+        # Expire tracks that stayed lost past the Re-ID horizon (mirrors step 8)
+        expired = [tid for tid, t in self._reid_cache.items()
+                   if t.lost_frames > self._max_lost]
+        for tid in expired:
+            del self._reid_cache[tid]
+            if tid in self._tracks:
+                del self._tracks[tid]
         return results
 
     # ── Public helpers ────────────────────────────────────────

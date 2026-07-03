@@ -32,6 +32,7 @@ import uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -40,7 +41,7 @@ import cv2
 
 from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from core.device_config import (
@@ -325,6 +326,20 @@ _meeting_report = {
     "turns": 0, "duration_min": 0.0, "error": "",
 }
 _meeting_summary_task = None
+_meeting_recording_task = None
+_asr_queue = None
+_asr_worker_task = None
+_asr_loop = None
+_asr_enqueued_turns: set[str] = set()
+_asr_running_turns: set[str] = set()
+_asr_stats = {
+    "pending": 0,
+    "running": 0,
+    "done": 0,
+    "failed": 0,
+    "last_error": "",
+    "last_error_at": 0.0,
+}
 _wake_word_service = None
 try:
     from services.voice_policy import voice_policy
@@ -336,6 +351,29 @@ _single_track_active: bool = False
 _multi_track_active: bool = False
 _ui_session_id: str = ""
 CONTROL_LEASE_MS = 5000
+EVENTBUS_TIMEOUT_S = float(os.environ.get("RECAMERA_EVENTBUS_TIMEOUT", "2.0"))
+HEARTBEAT_EVENTBUS_TIMEOUT_S = float(os.environ.get("RECAMERA_HEARTBEAT_EVENTBUS_TIMEOUT", "0.75"))
+RECORDING_START_TIMEOUT_S = float(os.environ.get("RECAMERA_RECORDING_START_TIMEOUT", "4.0"))
+RECORDING_STOP_TIMEOUT_S = float(os.environ.get("RECAMERA_RECORDING_STOP_TIMEOUT", "3.0"))
+ASR_IDLE_WAIT_S = float(os.environ.get("RECAMERA_ASR_IDLE_WAIT", "45.0"))
+_heartbeat_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="eventbus-heartbeat")
+# Recorder start/stop can block indefinitely inside PortAudio when the audio
+# device is absent/busy. A dedicated single-worker pool caps the damage to one
+# stranded thread; a stuck start is detected via _recorder_start_future below.
+_recorder_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recorder-ctl")
+_recorder_start_future = None
+# EventBus emits get their own small pool so a wedged recorder thread can
+# never starve the control plane (which previously shared the default pool).
+_bus_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="eventbus-emit")
+_heartbeat_future = None
+_heartbeat_eventbus_in_flight = False
+_heartbeat_state = {
+    "state": "idle",
+    "last_ok_at": 0.0,
+    "last_error": "",
+    "last_error_at": 0.0,
+    "eventbus_in_flight": False,
+}
 _runtime_cache = {
     "connected": False,
     "active_feature": "inactive",
@@ -618,6 +656,10 @@ def _apply_runtime_result(result: dict) -> None:
         "target_point": runtime.get("target_point", {"x": 0.5, "y": 0.32, "framing_mode": "upper_body"}),
         "tracking_error": runtime.get("tracking_error", {"x": 0.0, "y": 0.0}),
         "command_suppressed_reason": runtime.get("command_suppressed_reason", ""),
+        "heartbeat_state": dict(_heartbeat_state),
+        "last_heartbeat_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
+        "last_heartbeat_error": _heartbeat_state.get("last_error", ""),
+        "eventbus_in_flight": bool(_heartbeat_eventbus_in_flight),
     }
     _decision_trace.clear()
     _decision_trace.extend(runtime.get("trace", []))
@@ -640,7 +682,7 @@ async def runtime_sync_loop() -> None:
     loop = asyncio.get_running_loop()
     while True:
         event = Event.make("system", "runtime_snapshot_request", "fastapi")
-        result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
+        result = await loop.run_in_executor(_bus_pool, lambda: _eventbus.emit(event))
         if result.get("ok") and isinstance(result.get("runtime"), dict):
             _apply_runtime_result(result)
             _set_respeaker_led_for_feature(_runtime_cache.get("active_feature", "inactive"))
@@ -675,14 +717,14 @@ async def doa_event_loop() -> None:
                     "lip_motion_score": lip_score, "lip_track_id": lip_track_id,
                 },
             )
-            result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
+            result = await loop.run_in_executor(_bus_pool, lambda: _eventbus.emit(event))
             _apply_runtime_result(result)
         elif _last_audio_event_active:
             event = Event.make(
                 "audio", "timeout", "respeaker",
                 payload={"speech": False, "session_id": session_id or _last_audio_event_session_id},
             )
-            result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
+            result = await loop.run_in_executor(_bus_pool, lambda: _eventbus.emit(event))
             _apply_runtime_result(result)
             _last_audio_event_session_id = ""
         _last_audio_event_active = active
@@ -730,14 +772,18 @@ def _lip_motion_evidence() -> tuple[Optional[bool], float, Optional[int]]:
     return normalized >= 0.35, normalized, best_track
 
 
-def _meeting_speaker_provider(doa_deg: Optional[float]) -> Optional[str]:
+def _meeting_speaker_provider(doa_deg: Optional[float]):
     if doa_deg is None:
         return None
     from services.speaker_mapper import speaker_mapper
 
     match = speaker_mapper.lookup(float(doa_deg))
     if match:
-        return str(match.get("label", "未知说话人"))
+        return {
+            "label": str(match.get("label", "未知说话人")),
+            "track_id": match.get("track_id"),
+            "confidence": float(match.get("confidence", 0.0) or 0.0),
+        }
 
     try:
         state = build_state_snapshot().get("data", {})
@@ -751,7 +797,11 @@ def _meeting_speaker_provider(doa_deg: Optional[float]) -> Optional[str]:
                 pitch=float(pitch) if pitch is not None else None,
                 confidence=0.8,
             )
-            return str(info["label"])
+            return {
+                "label": str(info["label"]),
+                "track_id": info.get("track_id"),
+                "confidence": float(info.get("confidence", 0.8) or 0.8),
+            }
 
         pose = state.get("pose") or {}
         persons = pose.get("persons") or []
@@ -766,7 +816,11 @@ def _meeting_speaker_provider(doa_deg: Optional[float]) -> Optional[str]:
                 pitch=float(pitch) if pitch is not None else None,
                 confidence=float(face.get("association_confidence", 0.65)),
             )
-            return str(info["label"])
+            return {
+                "label": str(info["label"]),
+                "track_id": info.get("track_id"),
+                "confidence": float(info.get("confidence", face.get("association_confidence", 0.65)) or 0.0),
+            }
     except Exception as exc:
         logger.debug("meeting speaker provider failed: %s", str(exc)[:100])
     return None
@@ -878,8 +932,134 @@ def _ensure_conversation_recorder():
         speaker_provider=_meeting_speaker_provider,
         sample_rate=16000,
         device=audio_device,
+        segment_callback=_on_conversation_segment,
     )
     return _conversation_recorder
+
+
+def _asr_state() -> dict:
+    queue_size = 0
+    if _asr_queue is not None:
+        try:
+            queue_size = int(_asr_queue.qsize())
+        except Exception:
+            queue_size = 0
+    return {
+        "queue": queue_size,
+        "pending": int(_asr_stats.get("pending", 0) or 0),
+        "running": int(_asr_stats.get("running", 0) or 0),
+        "done": int(_asr_stats.get("done", 0) or 0),
+        "failed": int(_asr_stats.get("failed", 0) or 0),
+        "last_error": str(_asr_stats.get("last_error", "") or ""),
+        "last_error_at": float(_asr_stats.get("last_error_at", 0.0) or 0.0),
+    }
+
+
+def _mark_asr_error(message: str) -> None:
+    _asr_stats["failed"] = int(_asr_stats.get("failed", 0) or 0) + 1
+    _asr_stats["last_error"] = str(message or "")[:160]
+    _asr_stats["last_error_at"] = time.time()
+
+
+def _ensure_asr_worker():
+    global _asr_queue, _asr_worker_task, _asr_loop
+    loop = _current_running_loop()
+    if loop is None:
+        return None
+    if _asr_loop is not None and _asr_loop is not loop:
+        if _asr_worker_task is not None and not _asr_worker_task.done():
+            _asr_worker_task.cancel()
+        _asr_queue = None
+        _asr_worker_task = None
+        _asr_enqueued_turns.clear()
+        _asr_running_turns.clear()
+    _asr_loop = loop
+    if _asr_queue is None:
+        _asr_queue = asyncio.Queue(maxsize=200)
+    if _asr_worker_task is None or _asr_worker_task.done():
+        _asr_worker_task = asyncio.create_task(_asr_worker_loop(), name="meeting-asr-worker")
+    return _asr_worker_task
+
+
+def _enqueue_asr_turn_now(turn: dict, force: bool = False) -> bool:
+    if _asr_queue is None:
+        return False
+    turn_id = str(turn.get("id") or "")
+    wav_path = str(turn.get("wav_path") or "")
+    if not turn_id or not wav_path:
+        return False
+    if not force and turn_id in _asr_enqueued_turns:
+        return False
+    if not force and str(turn.get("text") or "").strip():
+        return False
+    try:
+        _asr_queue.put_nowait(dict(turn))
+        _asr_enqueued_turns.add(turn_id)
+        _asr_stats["pending"] = int(_asr_stats.get("pending", 0) or 0) + 1
+        if _conversation_recorder is not None and hasattr(_conversation_recorder, "set_turn_status"):
+            _conversation_recorder.set_turn_status(turn_id, "asr_pending")
+        return True
+    except asyncio.QueueFull:
+        _mark_asr_error("ASR 队列已满，片段暂未转写")
+        if _conversation_recorder is not None and hasattr(_conversation_recorder, "set_turn_status"):
+            _conversation_recorder.set_turn_status(turn_id, "asr_failed", "asr_queue_full")
+        return False
+
+
+def _on_conversation_segment(turn: dict) -> None:
+    """Thread-safe callback from ConversationRecorder when a wav segment is ready."""
+    _ensure_asr_worker()
+    if _asr_loop is None or _asr_loop.is_closed():
+        return
+    try:
+        _asr_loop.call_soon_threadsafe(_enqueue_asr_turn_now, dict(turn), False)
+    except RuntimeError:
+        pass
+
+
+async def _asr_worker_loop():
+    from pathlib import Path as _Path
+    from services.cloud_asr import cloud_asr as _cloud_asr
+
+    while True:
+        turn = await _asr_queue.get()
+        turn_id = str(turn.get("id") or "")
+        wav = str(turn.get("wav_path") or "")
+        _asr_stats["pending"] = max(0, int(_asr_stats.get("pending", 0) or 0) - 1)
+        _asr_running_turns.add(turn_id)
+        _asr_stats["running"] = len(_asr_running_turns)
+        try:
+            if _conversation_recorder is not None and hasattr(_conversation_recorder, "set_turn_status"):
+                _conversation_recorder.set_turn_status(turn_id, "transcribing")
+            if not wav or not _Path(wav).exists():
+                raise FileNotFoundError("audio segment missing")
+            text = await _cloud_asr.transcribe(wav)
+            if _conversation_recorder is not None:
+                _conversation_recorder.set_transcript(turn_id, text or "")
+            if text:
+                _asr_stats["done"] = int(_asr_stats.get("done", 0) or 0) + 1
+            else:
+                _mark_asr_error("ASR 返回空文本")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _mark_asr_error(str(exc))
+            if _conversation_recorder is not None and hasattr(_conversation_recorder, "set_turn_status"):
+                _conversation_recorder.set_turn_status(turn_id, "asr_failed", str(exc))
+        finally:
+            _asr_running_turns.discard(turn_id)
+            _asr_stats["running"] = len(_asr_running_turns)
+            _asr_queue.task_done()
+
+
+async def _wait_for_asr_idle(timeout_s: float = ASR_IDLE_WAIT_S) -> bool:
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    while time.monotonic() < deadline:
+        state = _asr_state()
+        if state["queue"] <= 0 and state["running"] <= 0 and state["pending"] <= 0:
+            return True
+        await asyncio.sleep(0.2)
+    return False
 
 
 def _start_conversation_recording() -> bool:
@@ -892,13 +1072,88 @@ def _start_conversation_recording() -> bool:
     return bool(recorder.start())
 
 
+async def _start_conversation_recording_async() -> bool:
+    loop = _current_running_loop()
+    if loop is None:
+        return _start_conversation_recording()
+    return bool(await asyncio.wait_for(
+        loop.run_in_executor(None, _start_conversation_recording),
+        timeout=RECORDING_START_TIMEOUT_S,
+    ))
+
+
+async def _start_meeting_recording_background() -> None:
+    global _conversation_recording_requested, _meeting_report
+    _ensure_asr_worker()
+    _meeting_report = {
+        **_meeting_report,
+        "status": "recording_starting",
+        "error": "",
+        "progress": 0,
+    }
+    try:
+        doa_ok = _ensure_doa_reader()
+        ok = await _start_conversation_recording_async()
+        if doa_ok and ok:
+            _meeting_report = {
+                **_meeting_report,
+                "status": "recording",
+                "error": "",
+                "progress": 0,
+            }
+            return
+        _conversation_recording_requested = False
+        reason = "ReSpeaker DOA 或录音输入不可用"
+        if _conversation_recorder is not None:
+            reason = _conversation_recorder.state().get("error") or reason
+        _meeting_report = {
+            **_meeting_report,
+            "status": "recording_degraded",
+            "error": reason,
+            "progress": 0,
+        }
+    except asyncio.TimeoutError:
+        _conversation_recording_requested = False
+        _meeting_report = {
+            **_meeting_report,
+            "status": "recording_degraded",
+            "error": f"录音设备启动超过 {RECORDING_START_TIMEOUT_S:.1f}s，已降级为仅定位",
+            "progress": 0,
+        }
+    except Exception as exc:
+        _conversation_recording_requested = False
+        _meeting_report = {
+            **_meeting_report,
+            "status": "recording_degraded",
+            "error": str(exc)[:160],
+            "progress": 0,
+        }
+
+
 def _stop_conversation_recording(finalize: bool = True) -> None:
     if _conversation_recorder is not None:
         _conversation_recorder.stop(finalize=finalize)
 
 
+async def _stop_conversation_recording_async(finalize: bool = True) -> bool:
+    loop = _current_running_loop()
+    if loop is None:
+        _stop_conversation_recording(finalize=finalize)
+        return True
+    try:
+        await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: _stop_conversation_recording(finalize=finalize)),
+            timeout=RECORDING_STOP_TIMEOUT_S,
+        )
+        return True
+    except asyncio.TimeoutError:
+        logger.warning("Conversation recorder stop timed out after %.1fs", RECORDING_STOP_TIMEOUT_S)
+        return False
+
+
 def _conversation_state() -> dict:
     from services.speaker_mapper import speaker_mapper
+    asr = _asr_state()
     if _conversation_recorder is None:
         return {
             "active": False,
@@ -906,10 +1161,15 @@ def _conversation_state() -> dict:
             "error": "",
             "mode": "doa_only",
             "requested": bool(_conversation_recording_requested),
-            "last_recording_error": (
-                _conversation_recorder.state().get("error", "")
-                if _conversation_recorder is not None else ""
-            ),
+            "recording_state": "starting" if (_meeting_recording_task is not None and not _meeting_recording_task.done()) else "idle",
+            "meeting_state": _meeting_report.get("status", "idle"),
+            "last_recording_error": str(_meeting_report.get("error", "") or ""),
+            "last_asr_error": asr["last_error"],
+            "asr_queue": asr["queue"],
+            "asr_pending": asr["pending"],
+            "asr_running": asr["running"],
+            "asr_done": asr["done"],
+            "asr_failed": asr["failed"],
             "session_id": "",
             "recording": False,
             "current": {},
@@ -919,8 +1179,33 @@ def _conversation_state() -> dict:
             "report": dict(_meeting_report),
         }
     state = _conversation_recorder.state()
-    state["mode"] = "audio_recording" if state.get("active") else "recording_complete"
+    if state.get("active"):
+        recording_state = "recording"
+        mode = "audio_recording"
+    elif _meeting_recording_task is not None and not _meeting_recording_task.done():
+        recording_state = "starting"
+        mode = "recording_starting"
+    elif state.get("error") and _conversation_recording_requested:
+        recording_state = "error"
+        mode = "recording_error"
+    elif _meeting_report.get("status") in {"summarizing", "ready", "recorded", "error"}:
+        recording_state = "recorded"
+        mode = "recording_complete"
+    else:
+        recording_state = "idle"
+        mode = "recording_complete"
+    state["mode"] = mode
     state["requested"] = bool(_conversation_recording_requested)
+    state["recording_state"] = recording_state
+    state["meeting_state"] = _meeting_report.get("status", "idle")
+    state["last_recording_error"] = str(state.get("error") or _meeting_report.get("error", "") or "")
+    state["last_asr_error"] = asr["last_error"]
+    state["asr_queue"] = asr["queue"]
+    state["asr_pending"] = asr["pending"]
+    state["asr_running"] = asr["running"]
+    state["asr_done"] = asr["done"]
+    state["asr_failed"] = asr["failed"]
+    state["asr"] = asr
     state["speakers"] = speaker_mapper.get_registered_speakers()
     state["report"] = dict(_meeting_report)
     return state
@@ -934,6 +1219,61 @@ def _audio_processing_state() -> dict:
         "vad_mode": "rms",
         "fallback_reason": "recorder_not_started",
     }
+
+
+def _zhipu_health_components() -> dict:
+    try:
+        import services.llm_router as llm_router
+        import services.cloud_asr as cloud_asr_module
+        llm_status = llm_router.router.status().get("zhipu", {})
+        asr = cloud_asr_module.cloud_asr
+        key = os.environ.get("ZHIPU_API_KEY", "")
+        configured = bool(key)
+        key_len = len(key) if key else 0
+        asr_provider = os.environ.get("ASR_PROVIDER", "zhipu")
+        llm_error = str(llm_status.get("last_error", "") or "")
+        asr_error = str(getattr(asr, "last_error", "") or "")
+
+        def _status(error: str, enabled: bool = True) -> str:
+            if not configured or not enabled:
+                return "offline"
+            return "degraded" if error else "ready"
+
+        return {
+            "zhipu_llm": {
+                "status": _status(llm_error),
+                "configured": configured,
+                "key_len": key_len,
+                "last_error": llm_error,
+                "last_success_at": float(llm_status.get("last_success_at", 0.0) or 0.0),
+                "actionable_reason": (
+                    "设置 ZHIPU_API_KEY 后可启用智谱 LLM"
+                    if not configured else
+                    {"auth": "智谱 Key 无效或权限不足", "quota": "智谱额度不足或被限流", "timeout": "智谱请求超时", "network": "访问智谱网络异常", "server_error": "智谱服务端异常", "bad_response": "智谱响应格式异常"}.get(llm_error, "")
+                ),
+            },
+            "zhipu_asr": {
+                "status": _status(asr_error, enabled=(asr_provider != "local")),
+                "configured": configured,
+                "key_len": key_len,
+                "provider": asr_provider,
+                "last_error": asr_error,
+                "last_success_at": float(getattr(asr, "last_success_at", 0.0) or 0.0),
+                "actionable_reason": (
+                    "ASR_PROVIDER=local，当前不使用智谱 ASR"
+                    if asr_provider == "local" else
+                    "设置 ZHIPU_API_KEY 后可启用智谱 ASR"
+                    if not configured else
+                    {"auth": "智谱 Key 无效或 ASR 权限不足", "quota": "智谱 ASR 额度不足或被限流", "timeout": "智谱 ASR 请求超时", "network": "访问智谱 ASR 网络异常", "bad_response": "智谱 ASR 响应异常", "local_missing": "本地 ASR fallback 缺依赖"}.get(asr_error, "")
+                ),
+            },
+        }
+    except Exception as exc:
+        reason = str(exc)[:160]
+        return {
+            "zhipu_llm": {"status": "degraded", "configured": False, "last_error": reason, "last_success_at": 0.0, "actionable_reason": reason},
+            "zhipu_asr": {"status": "degraded", "configured": False, "last_error": reason, "last_success_at": 0.0, "actionable_reason": reason},
+        }
 
 
 def _conversation_debug_state() -> dict:
@@ -1017,16 +1357,31 @@ def _audio_devices_debug() -> dict:
         }
 
 
-def _refine_faces(jpeg_bytes: bytes, persons: list) -> list:
+_yunet_detector = None
+_yunet_input_size = (0, 0)
+
+
+def _get_yunet(w: int, h: int):
+    """Cached YuNet detector; created once, resized only when frame size changes."""
+    global _yunet_detector, _yunet_input_size
+    if _yunet_detector is None:
+        _yunet_detector = cv2.FaceDetectorYN_create(
+            "models/face_detection_yunet.onnx", "", (w, h), 0.75, 0.4, 5000)
+        _yunet_input_size = (w, h)
+    elif _yunet_input_size != (w, h):
+        _yunet_detector.setInputSize((w, h))
+        _yunet_input_size = (w, h)
+    return _yunet_detector
+
+
+def _refine_faces(img, persons: list) -> list:
     """
     Use YuNet ONNX face detector for accurate facial keypoints.
     Falls back to geometric estimation if YuNet unavailable.
+    Accepts a decoded BGR frame (shared per-tick decode).
     """
     from vision.pose_estimator import PersonPose, Keypoint
-    import cv2, numpy as np
 
-    arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
         return persons
 
@@ -1035,11 +1390,11 @@ def _refine_faces(jpeg_bytes: bytes, persons: list) -> list:
     # 鈹€鈹€ YuNet face detection (楂橀槇-> 鍑忓皯鍋囬槼-> 鈹€鈹€
     faces = []
     try:
-        yunet_path = "models/face_detection_yunet.onnx"
-        yunet = cv2.FaceDetectorYN_create(yunet_path, "", (w, h), 0.75, 0.4, 5000)
+        yunet = _get_yunet(w, h)
         _, faces = yunet.detect(img)
         if faces is None: faces = []
-    except Exception: pass
+    except Exception as e:
+        logger.debug("YuNet detect error: %s", str(e)[:80])
 
     result = []
 
@@ -1176,7 +1531,7 @@ async def _publish_vision_observation() -> None:
         return
     event = Event.make("vision", "observation", "fastapi_perception", payload=payload)
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
+    result = await loop.run_in_executor(_bus_pool, lambda: _eventbus.emit(event))
     _apply_runtime_result(result)
 
 
@@ -1253,6 +1608,12 @@ def _extract_detections() -> list:
 def build_state_snapshot() -> dict:
     detections = _extract_detections()
     control = dict(_control_obs)
+    control.update({
+        "heartbeat_state": dict(_heartbeat_state),
+        "last_heartbeat_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
+        "last_heartbeat_error": _heartbeat_state.get("last_error", ""),
+        "eventbus_in_flight": bool(_heartbeat_eventbus_in_flight),
+    })
     locked_track_id = _runtime_cache.get("locked_track_id")
     tracking_phase = _runtime_cache.get("tracking_phase", "inactive")
     active_feature = str(control.get("active_feature") or _runtime_cache.get("active_feature") or "inactive")
@@ -1372,6 +1733,17 @@ async def lifespan(app: FastAPI):
         logger.warning("FaceTrackerV2 init skipped: %s", e)
         _face_tracker = None
 
+    # Preload the YOLO pose fallback off the event loop so the first
+    # multi-person tick never pays the ONNX load + warmup inline.
+    def _preload_pose():
+        try:
+            from vision.pose_estimator import get_pose_estimator
+            get_pose_estimator()
+            logger.info("YOLO pose estimator preloaded")
+        except Exception as e:
+            logger.warning("Pose estimator preload failed: %s", str(e)[:80])
+    _slow_pool.submit(_preload_pose)
+
     # EmotiEffLib only (old emotion model removed)
 
     # Reflection engine ->lightweight templates, pre-loaded for fast diary/chat
@@ -1415,6 +1787,7 @@ async def lifespan(app: FastAPI):
     _doa_reader = None
     _conversation_recording_requested = False
     _ensure_doa_reader()
+    _ensure_asr_worker()
 
     audio_device = os.environ.get("RECAMERA_AUDIO_DEVICE", "").strip()
     if audio_device:
@@ -1466,9 +1839,13 @@ async def lifespan(app: FastAPI):
     push_task.cancel()
     runtime_task.cancel()
     doa_task.cancel()
+    if _asr_worker_task is not None:
+        _asr_worker_task.cancel()
     try: await push_task
     except asyncio.CancelledError: pass
-    for task in (runtime_task, doa_task):
+    for task in (runtime_task, doa_task, _asr_worker_task):
+        if task is None:
+            continue
         try: await task
         except asyncio.CancelledError: pass
 
@@ -1574,6 +1951,104 @@ def _observe_control_step(detections: list, fw: int, fh: int) -> None:
     })
 
 
+from concurrent.futures import ThreadPoolExecutor
+
+# Two single-worker pools: fast lane for decode + face tracking, slow lane for
+# heavier secondary models. Prevents a 300ms MediaPipe call from head-of-line
+# blocking the ~2Hz face tracker in the shared default executor.
+_fast_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vis-fast")
+_slow_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vis-slow")
+
+# Downscale frames before face detection (0 disables). Track outputs are
+# scaled back to full-resolution coordinates.
+DETECT_MAX_WIDTH = int(os.environ.get("RECAMERA_DETECT_MAX_WIDTH", "960"))
+
+# Rolling per-stage wall-time EMA (ms) + adaptive throttle state, exposed via /api/system/health
+_perception_stats = {
+    "stage_ms": {"decode": 0.0, "face": 0.0, "mediapipe": 0.0, "gesture": 0.0, "emotion": 0.0},
+    "face_period": 2,
+    "face_degraded": False,
+}
+
+
+def _record_stage_ms(name: str, t0: float):
+    dt = (time.monotonic() - t0) * 1000.0
+    prev = _perception_stats["stage_ms"].get(name, 0.0)
+    _perception_stats["stage_ms"][name] = round(0.7 * prev + 0.3 * dt, 1) if prev else round(dt, 1)
+
+
+def _decode_jpeg_bgr(jpeg: bytes):
+    arr = np.frombuffer(jpeg, dtype=np.uint8)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+
+def _decode_and_downscale(jpeg: bytes):
+    """Decode once; also produce the (possibly downscaled) detection frame."""
+    frame = _decode_jpeg_bgr(jpeg)
+    det_frame, scale = frame, 1.0
+    if frame is not None and DETECT_MAX_WIDTH > 0 and frame.shape[1] > DETECT_MAX_WIDTH:
+        scale = DETECT_MAX_WIDTH / float(frame.shape[1])
+        det_frame = cv2.resize(frame, (DETECT_MAX_WIDTH, max(1, int(frame.shape[0] * scale))))
+    return frame, det_frame, scale
+
+
+def _scale_tracks_inplace(tracks, inv: float):
+    """Map face-tracker outputs from detection space back to full resolution."""
+    if inv == 1.0 or not tracks:
+        return tracks
+    for t in tracks:
+        t['bbox'] = tuple(v * inv for v in t['bbox'])
+        if t.get('bbox_raw') is not None:
+            t['bbox_raw'] = tuple(v * inv for v in t['bbox_raw'])
+        if t.get('face_center') is not None:
+            cx, cy = t['face_center']
+            t['face_center'] = (cx * inv, cy * inv)
+        for k in ('landmarks_5', 'landmarks_106'):
+            if t.get(k) is not None:
+                t[k] = t[k] * inv
+    return tracks
+
+
+class _EmotionSmoother:
+    """Per-class probability EMA + confidence gate so the published emotion
+    doesn't flicker with single-frame noise."""
+    ALPHA = 0.4          # weight of the newest sample
+    MIN_CONF = 0.35      # below this the previous label is held
+    RESET_AFTER_S = 5.0  # no face for this long -> start fresh
+
+    def __init__(self):
+        self._probs: dict = {}
+        self._last_update = 0.0
+        self._last_label = ""
+
+    def update(self, raw_probs: dict):
+        now = time.time()
+        if now - self._last_update > self.RESET_AFTER_S:
+            self._probs = {}
+            self._last_label = ""
+        self._last_update = now
+        if not self._probs:
+            self._probs = dict(raw_probs)
+        else:
+            keys = set(self._probs) | set(raw_probs)
+            self._probs = {
+                k: (1 - self.ALPHA) * self._probs.get(k, 0.0) + self.ALPHA * raw_probs.get(k, 0.0)
+                for k in keys
+            }
+        top = max(self._probs, key=self._probs.get)
+        conf = float(self._probs[top])
+        low_confidence = conf < self.MIN_CONF
+        if low_confidence and self._last_label:
+            top = self._last_label
+            conf = float(self._probs.get(top, conf))
+        else:
+            self._last_label = top
+        return top, conf, dict(self._probs), low_confidence
+
+
+_emotion_smoother = _EmotionSmoother()
+
+
 async def state_push_loop():
     """Run perception and push UI snapshots. Contains NO gimbal control."""
     global _attn_result, _emotion_result, _emotieff_result, _eye_metrics
@@ -1582,14 +2057,29 @@ async def state_push_loop():
     global _llm_engine, _llm_diary_entry, _llm_quote_text, _last_llm_diary_time
     pose_est = None
     pose_frame_count = 0
+    cached_jpeg = None       # identity of the last decoded jpeg_bytes
+    cached_frame = None      # its decoded BGR frame, shared by every consumer
+    cached_det_frame = None  # downscaled detection frame
+    cached_det_scale = 1.0
+    mp_pose = None           # freshest (yaw, pitch, roll) from MediaPipe matrix
+    mp_pose_ts = 0.0
 
     while True:
         try:
             pose_frame_count += 1
             multi_mode = bool(_multi_track_active and not _single_track_active)
             run_companion_detail = not multi_mode
-            face_due = pose_frame_count % (3 if multi_mode else 2) == 0
-            pose_due = pose_frame_count % (2 if multi_mode else 4) == 0
+            # Adaptive throttle: slow face stage backs the cadence off one notch
+            face_ms = _perception_stats["stage_ms"]["face"]
+            if face_ms > 350.0:
+                _perception_stats["face_degraded"] = True
+            elif face_ms < 200.0:
+                _perception_stats["face_degraded"] = False
+            base_face_period = 3 if multi_mode else 2
+            face_period = base_face_period + (1 if _perception_stats["face_degraded"] else 0)
+            _perception_stats["face_period"] = face_period
+            face_due = pose_frame_count % face_period == 0
+            pose_due = (pose_frame_count % 15 == 0) if multi_mode else (pose_frame_count % 4 == 0)
             # -- Scene gating: daily (single) runs face/emotion/eye; work (multi) runs pose only.
             #    When neither mode is active, both pipelines run (default observation mode). --
             run_face = True
@@ -1598,19 +2088,35 @@ async def state_push_loop():
                 run_pose = False   # 日常场景：人脸/情绪/专注，跳过 YOLO pose
             elif _multi_track_active and not _single_track_active:
                 run_face = True   # Multi-person fusion still needs face candidates.
+            # -- Decode the current frame once per tick; all consumers share it --
+            jpeg = video_client.jpeg_bytes if video_client else None
+            frame_is_new = jpeg is not None and jpeg is not cached_jpeg
+            if frame_is_new:
+                loop = _current_running_loop()
+                t0 = time.monotonic()
+                cached_frame, cached_det_frame, cached_det_scale = await loop.run_in_executor(
+                    _fast_pool, _decode_and_downscale, jpeg)
+                _record_stage_ms("decode", t0)
+                cached_jpeg = jpeg
+            frame = cached_frame if jpeg is not None else None
+            det_frame = cached_det_frame if jpeg is not None else None
+            det_inv = 1.0 / cached_det_scale if cached_det_scale else 1.0
+            # Unchanged frame -> nothing new to infer; skip all model stages this tick
+            run_inference = frame_is_new
+
             # -- Face detection: FaceTrackerV2 (SCRFD + Kalman/ByteTrack), YOLO fallback --
-            if video_client and (face_due or pose_due):
-                jpeg = video_client.jpeg_bytes
-                if jpeg:
+            if video_client and (face_due or pose_due) and run_inference:
+                if frame is not None:
                     loop = _current_running_loop()
                     tracked_faces = []
                     if _face_tracker and _face_tracker.available and run_face and face_due:
                         try:
                             from vision.pose_estimator import PersonPose, Keypoint
-                            arr = np.frombuffer(jpeg, np.uint8)
-                            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                             if frame is not None:
-                                tracks = await loop.run_in_executor(None, _face_tracker.update, frame)
+                                t0 = time.monotonic()
+                                tracks = await loop.run_in_executor(_fast_pool, _face_tracker.update, det_frame)
+                                _record_stage_ms("face", t0)
+                                _scale_tracks_inplace(tracks, det_inv)
                                 if not tracks:
                                     _latest_pose_persons.clear()
                                 if tracks:
@@ -1648,10 +2154,11 @@ async def state_push_loop():
                     if not tracked_faces and run_pose and pose_due:
                         if pose_est is None:
                             from vision.pose_estimator import get_pose_estimator
-                            pose_est = get_pose_estimator()
+                            # ONNX load + warmup takes seconds on CPU; never on the event loop
+                            pose_est = await loop.run_in_executor(_slow_pool, get_pose_estimator)
                         try:
-                            persons = await loop.run_in_executor(None, pose_est.detect, jpeg)
-                            persons = await loop.run_in_executor(None, _refine_faces, jpeg, persons)
+                            persons = await loop.run_in_executor(_slow_pool, pose_est.detect_bgr, frame)
+                            persons = await loop.run_in_executor(_slow_pool, _refine_faces, frame, persons)
                             _latest_pose_persons.clear()
                             _latest_pose_persons.extend(persons)
                         except Exception as e:
@@ -1670,11 +2177,14 @@ async def state_push_loop():
                         ]
                         nose_xy = face_kps.get('nose')
                         res = video_client.resolution if video_client else [1920, 1080]
+                        # Prefer the fresh MediaPipe matrix pose over 5-pt solvePnP
+                        ext_pose = mp_pose if (mp_pose and time.time() - mp_pose_ts < 2.0) else None
                         _attn_result = _attention_engine.update(
                             landmarks, nose_xy,
                             img_w=int(res[0]), img_h=int(res[1]),
                             eye_metrics=_eye_metrics,
                             gaze=_gaze_result,
+                            external_pose=ext_pose,
                         )
                         break
                 else:
@@ -1683,9 +2193,8 @@ async def state_push_loop():
                 _attn_result = {"has_face": False}
 
             # -- MediaPipe face + eye metrics (throttled) --
-            if pose_frame_count % 6 == 0 and run_face and run_companion_detail:
-                jpeg = video_client.jpeg_bytes if video_client else None
-                if jpeg:
+            if pose_frame_count % 6 == 0 and run_face and run_companion_detail and run_inference:
+                if frame is not None:
                     if _mp_face is None:
                         from vision.mediapipe_face import MPFaceDetector
                         from vision.eye_metrics import EyeMetricTracker
@@ -1693,11 +2202,15 @@ async def state_push_loop():
                         _eye_tracker = EyeMetricTracker()
                     try:
                         loop = _current_running_loop()
-                        mp_res = await loop.run_in_executor(None, _mp_face.detect,
-                            cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR))
+                        t0 = time.monotonic()
+                        mp_res = await loop.run_in_executor(_slow_pool, _mp_face.detect, frame)
+                        _record_stage_ms("mediapipe", t0)
                         if mp_res.success:
                             _mp_landmarks5 = mp_res.landmarks5
                             _apply_mediapipe_landmarks5(_mp_landmarks5)
+                            if mp_res.head_yaw is not None:
+                                mp_pose = (float(mp_res.head_yaw), float(mp_res.head_pitch or 0.0), float(mp_res.head_roll or 0.0))
+                                mp_pose_ts = time.time()
                             if _gaze_estimator is not None:
                                 _gaze_result = _gaze_estimator.update(mp_res.landmarks)
                             _mp_face_result = {"success": True, "ear_avg": round(float(mp_res.ear_avg), 3),
@@ -1710,9 +2223,12 @@ async def state_push_loop():
                                 "landmarks_mesh": [[round(float(p[0]), 1), round(float(p[1]), 1)] for p in np.asarray(mp_res.landmarks)[:, :2]]}
                             em = _eye_tracker.update(landmarks=mp_res.landmarks)
                             _eye_metrics = {"ear_avg": round(float(em.ear_avg), 3),
+                                "ear_left": float(em.ear_left), "ear_right": float(em.ear_right),
                                 "blink_rate": float(em.blink_rate), "perclos": round(float(em.perclos), 3),
                                 "focus_score": int(em.focus_score), "blink_count": int(em.blink_count),
-                                "eye_open": bool(em.eye_open)}
+                                "eye_open": bool(em.eye_open),
+                                "fatigue_level": str(em.fatigue_level),
+                                "calibrated": bool(em.calibrated)}
                         else:
                             _gaze_result = {"available": False, "state": "unknown", "x_offset": 0.0, "y_offset": 0.0, "confidence": 0.0}
                     except Exception as e:
@@ -1720,18 +2236,19 @@ async def state_push_loop():
                         _gaze_result = {"available": False, "state": "unknown", "x_offset": 0.0, "y_offset": 0.0, "confidence": 0.0}
 
             # -- Gesture recognition (companionship intents only; no control events) --
-            if pose_frame_count % 15 == 0 and run_face and run_companion_detail:
-                jpeg = video_client.jpeg_bytes if video_client else None
-                if jpeg and _gesture_detector is not None:
+            # Adaptive cadence: scan slowly until a hand appears, then track fast
+            gesture_period = 2 if (_gesture_detector is not None and getattr(_gesture_detector, "hand_seen", False)) else 8
+            if pose_frame_count % gesture_period == 0 and run_face and run_companion_detail and run_inference:
+                if frame is not None and _gesture_detector is not None:
                     try:
-                        frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
                         loop = _current_running_loop()
-                        _gesture_result = await loop.run_in_executor(None, _gesture_detector.detect, frame)
+                        t0 = time.monotonic()
+                        _gesture_result = await loop.run_in_executor(_slow_pool, _gesture_detector.detect, det_frame)
+                        _record_stage_ms("gesture", t0)
                     except Exception as e:
                         _gesture_result = {"available": False, "name": "", "confidence": 0.0, "handedness": "", "stable_frames": 0, "intent": "", "intent_ready": False, "reason": str(e)[:80]}
 
             # -- Emotion recognition (EmotiEffLib) --
-            jpeg = video_client.jpeg_bytes if (video_client and run_face) else None
             landmarks = None
             if _latest_pose_persons and run_face:
                 for p in _latest_pose_persons:
@@ -1742,10 +2259,7 @@ async def state_push_loop():
                                      face_kps['left_mouth'], face_kps['right_mouth']]
                         break
 
-            if jpeg and landmarks and run_companion_detail and pose_frame_count % 6 == 0:
-                arr = np.frombuffer(jpeg, dtype=np.uint8)
-                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                if frame is not None:
+            if frame is not None and run_face and landmarks and run_companion_detail and pose_frame_count % 6 == 0 and run_inference:
                     from vision.face_crop import extract_face_crop
                     from vision.emotieff_adapter import get_emotieff_adapter
                     crop_result = extract_face_crop(frame, landmarks, None)
@@ -1753,17 +2267,21 @@ async def state_push_loop():
                     if img_for_emo is not None:
                         loop = _current_running_loop()
                         adapter = get_emotieff_adapter()
-                        raw_result = await loop.run_in_executor(None, adapter.predict, img_for_emo)
+                        t0 = time.monotonic()
+                        raw_result = await loop.run_in_executor(_slow_pool, adapter.predict, img_for_emo)
+                        _record_stage_ms("emotion", t0)
                         if raw_result and raw_result.get("emotion"):
                             raw_probs = {str(k): float(v) for k, v in raw_result.get("probabilities", {}).items()}
-                            top_emo = max(raw_probs, key=raw_probs.get) if raw_probs else str(raw_result["emotion"])
-                            top_conf = float(raw_probs.get(top_emo, raw_result.get("confidence", 0.0)))
+                            if not raw_probs:
+                                raw_probs = {str(raw_result["emotion"]): float(raw_result.get("confidence", 0.0))}
+                            top_emo, top_conf, smoothed_probs, low_conf = _emotion_smoother.update(raw_probs)
                             _emotieff_result = {
                                 "emotion": top_emo,
                                 "confidence": round(float(top_conf), 4),
-                                "probabilities": raw_probs,
-                                "valence": _emotion_valence(top_emo, raw_probs, raw_result.get("valence")),
-                                "source": "emotiefflib_raw_max",
+                                "probabilities": {k: round(v, 4) for k, v in smoothed_probs.items()},
+                                "valence": _emotion_valence(top_emo, smoothed_probs, raw_result.get("valence")),
+                                "low_confidence": bool(low_conf),
+                                "source": "emotiefflib_ema",
                             }
                             _emotion_result = _emotieff_result
 
@@ -1775,6 +2293,22 @@ async def state_push_loop():
                     )
                 except Exception as e:
                     _proactive_intervention = {"active": False, "type": "", "reason": str(e)[:80], "message": "", "cooldown_remaining_sec": 0}
+
+            # -- Daily aggregation for diary linkage (smoothed emotion only) --
+            try:
+                from services.day_aggregator import day_aggregator
+                emo_r = _emotieff_result or {}
+                day_aggregator.update(
+                    emotion=str(emo_r.get("emotion") or "") if not emo_r.get("low_confidence") else "",
+                    confidence=float(emo_r.get("confidence") or 0.0),
+                    valence=emo_r.get("valence"),
+                    attention=_attn_result.get("score") if _attn_result.get("has_face") else None,
+                    fatigue_level=str((_eye_metrics or {}).get("fatigue_level") or ""),
+                    intervention_active=bool((_proactive_intervention or {}).get("active")),
+                    has_face=bool(_attn_result.get("has_face")),
+                )
+            except Exception as e:
+                logger.debug("day aggregator error: %s", str(e)[:80])
 
             # -- LLM diary: trigger on emotion change --
             if not hasattr(state_push_loop, '_last_llm_emo'):
@@ -1920,7 +2454,7 @@ async def api_set_device_config(payload: dict = Body(default={})):
         "device_ip": saved["device_ip"], "version": saved["version"],
     })
     loop = asyncio.get_running_loop()
-    control_result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
+    control_result = await loop.run_in_executor(_bus_pool, lambda: _eventbus.emit(event))
     return {
         "ok": ok,
         "reason": reason,
@@ -1935,6 +2469,7 @@ async def api_system_health():
     conversation = _conversation_state()
     doa = _doa_status()
     gimbal = dict(_gimbal_tlm)
+    zhipu_components = _zhipu_health_components()
     components = {
         "fastapi": {"status": "ready", "reason": ""},
         "eventbus": {"status": "ready" if _runtime_cache.get("connected") else "offline", "reason": "启动 main_phase3 --manual-control" if not _runtime_cache.get("connected") else ""},
@@ -1944,9 +2479,26 @@ async def api_system_health():
         "respeaker": {"status": "ready" if doa.get("available") or doa.get("connected") else "offline", "reason": str(doa.get("error", "检查 USB/DOA 输入"))},
         "recorder": {"status": "ready" if conversation.get("available", True) else "offline", "reason": conversation.get("error", "")},
         "llm": {"status": "ready" if os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("ZHIPU_API_KEY") else "degraded", "reason": "未配置云端模型，将使用本地回退"},
+        **zhipu_components,
     }
     overall = "ready" if all(v["status"] == "ready" for v in components.values()) else "degraded"
-    return {"ok": True, "status": overall, "components": components, "device": _device_config_state()}
+    return {"ok": True, "status": overall, "components": components,
+            "perception": dict(_perception_stats), "device": _device_config_state()}
+
+
+@app.get("/api/day_summary")
+async def api_day_summary(date: str = ""):
+    """Observed-emotion day summary for diary linkage (local-date keys)."""
+    from services.day_aggregator import day_aggregator
+    return {"ok": True, **day_aggregator.summary(date)}
+
+
+@app.get("/api/day_summary/range")
+async def api_day_summary_range(start: str = "", end: str = ""):
+    from services.day_aggregator import day_aggregator
+    if not start or not end:
+        return {"ok": False, "error": "start and end are required (YYYY-MM-DD)"}
+    return {"ok": True, "days": day_aggregator.range_summaries(start, end)}
 
 
 @app.get("/api/features")
@@ -1995,13 +2547,13 @@ async def api_conversation_debug():
 
 @app.post("/api/conversation/start")
 async def api_conversation_start(payload: dict = None):
-    global _conversation_recording_requested, _ui_session_id, _meeting_report
+    global _conversation_recording_requested, _ui_session_id, _meeting_report, _meeting_recording_task
     payload = payload or {}
     from services.speaker_mapper import speaker_mapper
     speaker_mapper.reset()
     _meeting_report = {
-        "status": "recording", "summary": "", "minutes": "", "transcript": "",
-        "turns": 0, "duration_min": 0.0, "error": "",
+        "status": "recording_starting", "summary": "", "minutes": "", "transcript": "",
+        "turns": 0, "duration_min": 0.0, "error": "", "progress": 0,
     }
     _pause_wake_word()
     session_result = None
@@ -2011,20 +2563,19 @@ async def api_conversation_start(payload: dict = None):
             _resume_wake_word()
             return {"success": False, "recording_success": False, **session_result}
     _conversation_recording_requested = bool(payload.get("save_audio", False))
-    doa_ok = _ensure_doa_reader()
-    ok = _start_conversation_recording() if _conversation_recording_requested else True
-    if not ok and session_result:
-        await _stop_feature(session_result.get("session_id", ""))
-        _resume_wake_word()
-    if doa_ok and ok:
-        await _emit_voice_reason(
-            "meeting_start",
-            priority="normal",
-            interrupt=False,
-            source="conversation_start",
-        )
+    _ensure_asr_worker()
+    if _conversation_recording_requested:
+        if _meeting_recording_task is None or _meeting_recording_task.done():
+            _meeting_recording_task = asyncio.create_task(
+                _start_meeting_recording_background(),
+                name="conversation-recording-start",
+            )
+    else:
+        _meeting_report["status"] = "idle"
     return {
-        "success": bool(doa_ok and ok), "recording_success": bool(ok),
+        "success": True,
+        "recording_success": bool(_conversation_recorder and _conversation_recorder.active),
+        "recording_state": "starting" if _conversation_recording_requested else "disabled",
         "state": _conversation_state(), **(session_result or {}),
     }
 
@@ -2034,7 +2585,7 @@ async def api_conversation_stop(payload: dict = None):
     global _conversation_recording_requested
     payload = payload or {}
     _conversation_recording_requested = False
-    _stop_conversation_recording(finalize=bool(payload.get("finalize", True)))
+    await _stop_conversation_recording_async(finalize=bool(payload.get("finalize", True)))
     _resume_wake_word()
     session_result = await _stop_feature(str(payload.get("session_id", ""))) if payload.get("session_id") else {}
     await _emit_voice_reason(
@@ -2044,6 +2595,26 @@ async def api_conversation_stop(payload: dict = None):
         source="conversation_stop",
     )
     return {"success": True, "state": _conversation_state(), **session_result}
+
+
+@app.post("/api/conversation/asr/retry")
+async def api_conversation_asr_retry(payload: dict = Body(default={})):
+    """Requeue failed or selected meeting turns for ASR."""
+    _ensure_asr_worker()
+    recorder = _conversation_recorder
+    if recorder is None:
+        return {"ok": False, "accepted": False, "error": "录音会话不存在"}
+    state = recorder.state()
+    target_id = str(payload.get("turn_id", "") or "")
+    queued = 0
+    for turn in state.get("timeline", []):
+        status = str(turn.get("status") or "")
+        if target_id and str(turn.get("id")) != target_id:
+            continue
+        if target_id or status in {"asr_failed", "asr_empty", "audio_saved", "asr_pending"}:
+            if _enqueue_asr_turn_now(turn, force=True):
+                queued += 1
+    return {"ok": True, "accepted": True, "queued": queued, "state": _conversation_state()}
 
 
 @app.post("/api/conversation/save")
@@ -2139,7 +2710,7 @@ async def api_single_track_stop(payload: dict = Body(default={})):
 @app.post("/api/multi_track/start")
 async def api_multi_track_start(payload: dict = Body(default={})):
     global _multi_track_active, _single_track_active, _tracking_mode
-    global _conversation_recording_requested, _meeting_report
+    global _conversation_recording_requested, _meeting_report, _meeting_recording_task
     from services.speaker_mapper import speaker_mapper
 
     save_audio = bool(payload.get("save_audio", False))
@@ -2152,9 +2723,10 @@ async def api_multi_track_start(payload: dict = Body(default={})):
         }
     speaker_mapper.reset()
     _meeting_report = {
-        "status": "recording" if save_audio else "idle",
+        "status": "recording_starting" if save_audio else "idle",
         "summary": "", "minutes": "", "transcript": "",
         "turns": 0, "duration_min": 0.0, "error": "",
+        "progress": 0,
     }
     _pause_wake_word()
     result = await _start_feature("multi_sound_yaw")
@@ -2165,21 +2737,20 @@ async def api_multi_track_start(payload: dict = Body(default={})):
     _multi_track_active = True
     _tracking_mode = "multi"
     _conversation_recording_requested = save_audio
-    doa_ok = _ensure_doa_reader()
-    recording_ok = _start_conversation_recording() if save_audio else True
-    if not doa_ok or not recording_ok:
-        _conversation_recording_requested = False
-        _meeting_report["status"] = "error"
-        _meeting_report["error"] = "ReSpeaker DOA 或录音输入不可用"
-        await _stop_feature(result.get("session_id", ""))
-        _resume_wake_word()
-        return {
-            **result, "ok": False, "accepted": False, "active": False,
-            "reason": "meeting_input_unavailable", "state": _conversation_state(),
-        }
+    _ensure_asr_worker()
+    if save_audio:
+        if _meeting_recording_task is None or _meeting_recording_task.done():
+            _meeting_recording_task = asyncio.create_task(
+                _start_meeting_recording_background(),
+                name="meeting-recording-start",
+            )
     return {
-        **result, "success": True, "recording_success": bool(recording_ok),
-        "active": True, "state": _conversation_state(),
+        **result,
+        "success": True,
+        "recording_success": bool(_conversation_recorder and _conversation_recorder.active),
+        "recording_state": "starting" if save_audio else "disabled",
+        "active": True,
+        "state": _conversation_state(),
     }
 
 
@@ -2192,9 +2763,13 @@ async def api_multi_track_stop(payload: dict = Body(default={})):
     _multi_track_active = False
     if payload.get("finalize", True):
         _conversation_recording_requested = False
-        _stop_conversation_recording(finalize=True)
+        stop_ok = await _stop_conversation_recording_async(finalize=True)
         if _meeting_report.get("status") == "recording":
             _meeting_report["status"] = "recorded"
+        elif _meeting_report.get("status") in {"recording_starting", "recording_degraded"}:
+            _meeting_report["status"] = "recorded" if stop_ok else "error"
+        if not stop_ok:
+            _meeting_report["error"] = "录音停止超时，已尝试保留已有片段"
     _resume_wake_word()
     result = await _stop_feature(session_id)
     return {**result, "active": False, "state": _conversation_state()}
@@ -2204,7 +2779,27 @@ async def _emit_ui_event(name: str, payload: dict) -> dict:
     global _control_obs
     event = Event.make("ui", name, "fastapi", payload=payload)
     loop = _current_running_loop()
-    result = await loop.run_in_executor(None, lambda: _eventbus.emit(event))
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(_bus_pool, lambda: _eventbus.emit(event)),
+            timeout=EVENTBUS_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        result = {
+            "ok": False,
+            "accepted": False,
+            "authority": "unreachable",
+            "reason": "eventbus_timeout",
+            "error": f"EventBus no response within {EVENTBUS_TIMEOUT_S:.1f}s",
+        }
+    except Exception as exc:
+        result = {
+            "ok": False,
+            "accepted": False,
+            "authority": "unreachable",
+            "reason": "eventbus_error",
+            "error": str(exc)[:160],
+        }
     _apply_runtime_result(result)
     eventbus_state = {
         "host": _eventbus.host,
@@ -2220,6 +2815,105 @@ async def _emit_ui_event(name: str, payload: dict) -> dict:
     }
     return {
         **result,
+        "event": event.to_dict(),
+        "eventbus": eventbus_state,
+    }
+
+
+def _heartbeat_degraded(reason: str, event: Event | None = None, error: str = "") -> dict:
+    now = time.time()
+    _heartbeat_state.update({
+        "state": "degraded",
+        "last_error": reason if not error else f"{reason}: {error}"[:160],
+        "last_error_at": now,
+        "eventbus_in_flight": bool(_heartbeat_eventbus_in_flight),
+    })
+    _control_obs.update({
+        "heartbeat_state": dict(_heartbeat_state),
+        "last_heartbeat_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
+        "last_heartbeat_error": _heartbeat_state.get("last_error", ""),
+        "eventbus_in_flight": bool(_heartbeat_eventbus_in_flight),
+    })
+    return {
+        "ok": False,
+        "accepted": False,
+        "degraded": True,
+        "reason": reason,
+        "error": error,
+        "authority": "unreachable",
+        "lease_may_be_stale": True,
+        "last_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
+        "heartbeat_state": dict(_heartbeat_state),
+        "event": event.to_dict() if event else None,
+    }
+
+
+async def _emit_heartbeat_event(session_id: str) -> dict:
+    """Best-effort heartbeat: short, droppable, and never allowed to queue behind itself."""
+    global _heartbeat_future, _heartbeat_eventbus_in_flight
+    event = Event.make("ui", "feature_heartbeat", "fastapi", {
+        "session_id": session_id,
+        "lease_ms": CONTROL_LEASE_MS,
+    })
+    if not session_id:
+        return _heartbeat_degraded("session_id_required", event)
+    if _heartbeat_eventbus_in_flight and _heartbeat_future is not None and not _heartbeat_future.done():
+        return _heartbeat_degraded("eventbus_busy", event)
+
+    loop = _current_running_loop()
+    _heartbeat_eventbus_in_flight = True
+    _heartbeat_state.update({"state": "sending", "eventbus_in_flight": True})
+    _heartbeat_future = loop.run_in_executor(_heartbeat_executor, lambda: _eventbus.emit(event))
+
+    def _finish(fut):
+        global _heartbeat_eventbus_in_flight
+        _heartbeat_eventbus_in_flight = False
+        _heartbeat_state["eventbus_in_flight"] = False
+        try:
+            result = fut.result()
+        except Exception as exc:
+            _heartbeat_state.update({
+                "state": "degraded",
+                "last_error": str(exc)[:160],
+                "last_error_at": time.time(),
+            })
+            return
+        if result.get("accepted"):
+            _heartbeat_state.update({
+                "state": "ready",
+                "last_ok_at": time.time(),
+                "last_error": "",
+            })
+        else:
+            _heartbeat_state.update({
+                "state": "degraded",
+                "last_error": str(result.get("reason") or result.get("error") or "heartbeat_rejected")[:160],
+                "last_error_at": time.time(),
+            })
+        _apply_runtime_result(result)
+
+    _heartbeat_future.add_done_callback(lambda fut: loop.call_soon_threadsafe(_finish, fut))
+    try:
+        result = await asyncio.wait_for(asyncio.shield(_heartbeat_future), timeout=HEARTBEAT_EVENTBUS_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        return _heartbeat_degraded("eventbus_timeout", event, f">{HEARTBEAT_EVENTBUS_TIMEOUT_S:.2f}s")
+    except Exception as exc:
+        return _heartbeat_degraded("eventbus_error", event, str(exc)[:160])
+
+    eventbus_state = {"host": _eventbus.host, "port": _eventbus.port, "last_result": result}
+    _control_obs.update({
+        "authority": result.get("authority", "unreachable"),
+        "last_event": _ev_brief(event),
+        "command": result.get("command"),
+        "eventbus": eventbus_state,
+        "heartbeat_state": dict(_heartbeat_state),
+    })
+    return {
+        **result,
+        "degraded": not bool(result.get("accepted")),
+        "lease_may_be_stale": not bool(result.get("accepted")),
+        "last_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
+        "heartbeat_state": dict(_heartbeat_state),
         "event": event.to_dict(),
         "eventbus": eventbus_state,
     }
@@ -2258,15 +2952,19 @@ async def _stop_feature(session_id: str) -> dict:
 
 @app.post("/api/control/heartbeat")
 async def api_control_heartbeat(payload: dict = Body(default={})):
-    return await _emit_ui_event(
-        "feature_heartbeat",
-        {"session_id": str(payload.get("session_id", "")), "lease_ms": CONTROL_LEASE_MS},
-    )
+    return await _emit_heartbeat_event(str(payload.get("session_id", "")))
 
 
 @app.get("/api/control/runtime")
 async def api_control_runtime():
-    return {"ok": bool(_runtime_cache.get("connected")), "runtime": dict(_runtime_cache)}
+    runtime = dict(_runtime_cache)
+    runtime.update({
+        "heartbeat_state": dict(_heartbeat_state),
+        "last_heartbeat_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
+        "last_heartbeat_error": _heartbeat_state.get("last_error", ""),
+        "eventbus_in_flight": bool(_heartbeat_eventbus_in_flight),
+    })
+    return {"ok": bool(_runtime_cache.get("connected")), "runtime": runtime}
 
 
 @app.get("/api/respeaker/state")
@@ -2388,9 +3086,16 @@ async def api_llm_reflect(payload: dict = Body(default={})):
         from services.emotion_prompt import build_reflect_messages
 
         current_state = build_state_snapshot().get("data", {})
+        # Enrich with the server-side day summary when the client didn't send one
+        if not payload.get("day_summary"):
+            try:
+                from services.day_aggregator import day_aggregator
+                payload = {**payload, "day_summary": day_aggregator.summary()}
+            except Exception:
+                pass
         result = await _cloud_llm_complete(
             build_reflect_messages(user_text, current_state, str(payload.get("user_name", "")), payload),
-            max_tokens=200,
+            max_tokens=320,
         )
         ds_raw = str(result.get("text") or "")
 
@@ -2415,22 +3120,29 @@ async def api_llm_reflect(payload: dict = Body(default={})):
                 "time": round(_llm_engine._last_time, 2)}
 
     elif mode == "report":
-        text = _llm_engine.report(
-            payload.get("total_min", 0), payload.get("focused_pct", 0),
-            emotion, attn,
-        )
-        return {"text": text, "time": round(_llm_engine._last_time, 2)}
+        total_min = payload.get("total_min", 0)
+        focused_pct = payload.get("focused_pct", 0)
+        messages = [
+            {"role": "system", "content": "你是温柔的陪伴助手小屿，用中文写一段简短的一日陪伴总结（80字以内），语气温暖不评判。"},
+            {"role": "user", "content": f"今天陪伴时长约 {total_min} 分钟，专注时间占比 {focused_pct}%，主要情绪是 {emotion}，专注均分 {attn}。请写一段总结。"},
+        ]
+        result = await _cloud_llm_complete(messages, max_tokens=200)
+        text = str(result.get("text") or "")
+        source = result.get("provider", "none")
+        if not text:
+            text = _llm_engine.report(total_min, focused_pct, emotion, attn)
+            source = "template"
+        return {"text": text, "source": source, "time": round(_llm_engine._last_time, 2)}
     else:
         text = _llm_engine.quote(emotion, "专注" if attn >= 70 else "微弱" if attn >= 40 else "飘远")
         return {"text": text, "time": round(_llm_engine._last_time, 2)}
 
 
-# LLM cloud client wrapper
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-DEEPSEEK_API_URL = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/chat/completions")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+# LLM cloud client wrapper (single source of truth: services/llm_router.py)
+from services.llm_router import (
+    DEEPSEEK_API_KEY, DEEPSEEK_API_URL, DEEPSEEK_MODEL, ZHIPU_API_KEY,
+)
 DEEPSEEK_MAX_TOKENS = int(os.getenv("DEEPSEEK_MAX_TOKENS", "600"))
-ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "")
 
 async def _deepseek_chat(messages: list, max_tokens: int | None = None, temperature: float = 0.8) -> str:
     """Route to cloud LLM providers; endpoint handlers own local fallback."""
@@ -2438,10 +3150,10 @@ async def _deepseek_chat(messages: list, max_tokens: int | None = None, temperat
     return await _llm_router.complete(messages, max_tokens or DEEPSEEK_MAX_TOKENS, temperature)
 
 
-async def _cloud_llm_complete(messages: list, max_tokens: int | None = None) -> dict:
+async def _cloud_llm_complete(messages: list, max_tokens: int | None = None, temperature: float = 0.8) -> dict:
     """Route to cloud LLM providers and include provider metadata."""
     from services.llm_router import router as _llm_router
-    return await _llm_router.complete_with_provider(messages, max_tokens or DEEPSEEK_MAX_TOKENS)
+    return await _llm_router.complete_with_provider(messages, max_tokens or DEEPSEEK_MAX_TOKENS, temperature)
 
 
 def _reply_looks_incomplete(text: str) -> bool:
@@ -2556,23 +3268,21 @@ async def api_emotion_infer():
     return _local_emotion_inference(state_data)
 
 
-@app.post("/api/chat")
-async def api_chat(payload: dict = Body(default={})):
-    """Chat endpoint: DeepSeek with LLMReflect fallback. Accepts real emotion/attention/diary context."""
-    global _llm_engine
-    if _llm_engine is None:
-        from vision.llm_reflect import get_llm
-        _llm_engine = get_llm()
+def _build_chat_messages(payload: dict) -> tuple[list, str, str, str]:
+    """Shared prompt assembly for /api/chat and /api/chat/stream.
+    Returns (messages, msg, emo_key, user_name). Server-side chat memory
+    provides history; client context strings remain a supplementary hint."""
+    from services.chat_memory import chat_memory
+    from services.emotion_prompt import build_chat_system_prompt
 
     msg        = str(payload.get("message", "")).strip()
     emotion_zh = str(payload.get("emotion", ""))
     context_s  = str(payload.get("context", ""))
     diary_text = str(payload.get("diary_text", ""))
-    user_name  = str(payload.get("user_name", ""))
+    # Sanitize the name that gets interpolated into the system prompt
+    user_name  = str(payload.get("user_name", "")).replace("\n", " ").replace("{", "").replace("}", "")[:24]
 
     emo_key = _EMO_ZH_EN.get(emotion_zh, (_emotieff_result or {}).get("emotion", "Neutral"))
-    from services.emotion_prompt import build_chat_system_prompt
-
     sys_prompt = build_chat_system_prompt(build_state_snapshot().get("data", {}), user_name)
     user_ctx = f"用户当前选择/输入的情绪标签：{emotion_zh or emo_key}。"
     if diary_text:
@@ -2581,33 +3291,164 @@ async def api_chat(payload: dict = Body(default={})):
         user_ctx += f"\n【背景】{context_s[:300]}"
     user_ctx += f"\n\n{msg or '请结合我今天的状态，给我一句有温度的话。'}"
 
-    result = await _cloud_llm_complete([
-        {"role": "system", "content": sys_prompt},
-        {"role": "user",   "content": user_ctx},
-    ], max_tokens=150)
+    messages = [{"role": "system", "content": sys_prompt}]
+    messages.extend(chat_memory.recent_messages())
+    messages.append({"role": "user", "content": user_ctx})
+    return messages, msg, emo_key, user_name
+
+
+@app.post("/api/chat")
+async def api_chat(payload: dict = Body(default={})):
+    """Chat endpoint: DeepSeek with LLMReflect fallback. Accepts real emotion/attention/diary context."""
+    global _llm_engine
+    if _llm_engine is None:
+        from vision.llm_reflect import get_llm
+        _llm_engine = get_llm()
+
+    from services.chat_memory import chat_memory
+    messages, msg, emo_key, user_name = _build_chat_messages(payload)
+
+    result = await _cloud_llm_complete(messages, max_tokens=150)
     reply = str(result.get("text") or "")
 
     if not reply or _reply_looks_incomplete(reply):
-        reply  = _llm_engine.respond_to_user(msg, emo_key, user_name=user_name, context=context_s)
+        reply  = _llm_engine.respond_to_user(msg, emo_key, user_name=user_name,
+                                             context=str(payload.get("context", "")))
         source = "template"
     else:
         source = result.get("provider") if result.get("provider") != "none" else "template"
 
+    if msg:
+        chat_memory.append("user", msg)
+    if reply:
+        chat_memory.append("assistant", reply)
     return {"reply": reply, "source": source, "emotion": emo_key}
+
+
+@app.post("/api/chat/stream")
+async def api_chat_stream(payload: dict = Body(default={})):
+    """SSE streaming chat. Events: data:{delta} lines; final event carries meta.
+    Template fallback is emitted as a single chunk so the UI path is uniform."""
+    global _llm_engine
+    if _llm_engine is None:
+        from vision.llm_reflect import get_llm
+        _llm_engine = get_llm()
+
+    from services.chat_memory import chat_memory
+    from services.llm_router import router as _llm_router
+    messages, msg, emo_key, user_name = _build_chat_messages(payload)
+
+    async def _gen():
+        import json as _j
+        full = []
+        provider = "template"
+        try:
+            async for name, delta in _llm_router.stream(messages, max_tokens=150):
+                provider = name
+                full.append(delta)
+                yield f"data: {_j.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+        except Exception as exc:
+            yield f"event: error\ndata: {_j.dumps({'error': str(exc)[:80]}, ensure_ascii=False)}\n\n"
+        reply = "".join(full)
+        if not reply or _reply_looks_incomplete(reply):
+            reply = _llm_engine.respond_to_user(msg, emo_key, user_name=user_name,
+                                                context=str(payload.get("context", "")))
+            provider = "template"
+            yield f"data: {_j.dumps({'delta': reply}, ensure_ascii=False)}\n\n"
+        if msg:
+            chat_memory.append("user", msg)
+        if reply:
+            chat_memory.append("assistant", reply)
+        yield f"event: done\ndata: {_j.dumps({'source': provider, 'emotion': emo_key}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/chat/history")
+async def api_chat_history(date: str = ""):
+    from services.chat_memory import chat_memory
+    return {"ok": True, "date": date or time.strftime("%Y-%m-%d"),
+            "messages": chat_memory.history(date)}
+
+
+@app.post("/api/report/weekly")
+async def api_report_weekly(payload: dict = Body(default={})):
+    """Generate the weekly letter with real diary + observed-day data."""
+    from services.emotion_prompt import build_weekly_report_prompt
+    from services.day_aggregator import day_aggregator
+
+    week_start = str(payload.get("week_start", ""))
+    week_end = str(payload.get("week_end", ""))
+    entries = payload.get("entries") or []
+    user_name = str(payload.get("user_name", "")).replace("\n", " ")[:24]
+    day_summaries = payload.get("day_summaries")
+    if day_summaries is None and week_start and week_end:
+        day_summaries = day_aggregator.range_summaries(week_start, week_end)
+
+    messages = build_weekly_report_prompt(entries, day_summaries or [], user_name,
+                                          week_start=week_start, week_end=week_end)
+    result = await _cloud_llm_complete(messages, max_tokens=600, temperature=0.7)
+    text = str(result.get("text") or "")
+    if text:
+        return {"ok": True, "content": text,
+                "source": result.get("provider", "none")}
+    # Template fallback keeps the button functional offline
+    total = len(entries)
+    return {"ok": True, "source": "template",
+            "content": f"这一周有 {total} 天留下了记录。继续保持这份对自己的觉察，下周也慢慢来。"}
 
 
 @app.get("/api/chat/status")
 async def api_chat_status():
+    from services.llm_router import router as _llm_router
+    providers = _llm_router.status()
+    configured = any(p["configured"] for p in providers.values())
+    # Human-readable attribution for the dashboard status dot
+    if not configured:
+        reason = "未配置云端模型"
+    else:
+        errs = {n: p["last_error"] for n, p in providers.items()
+                if p["configured"] and p["last_error"]}
+        reason = "" if not errs else "；".join(
+            f"{n}: " + {"auth": "认证失败", "quota": "配额受限", "timeout": "超时",
+                        "network": "网络异常", "server_error": "服务端错误",
+                        "bad_response": "响应异常"}.get(e, e)
+            for n, e in errs.items())
     return {
-        "configured": bool(DEEPSEEK_API_KEY),
+        "configured": configured,
         "model": DEEPSEEK_MODEL,
         "api_url": DEEPSEEK_API_URL,
+        "providers": providers,
+        "reason": reason,
     }
+
+
+_meeting_summarize_lock = asyncio.Lock()
+MEETING_SUMMARY_BUDGET_S = float(os.environ.get("RECAMERA_MEETING_SUMMARY_BUDGET", "240"))
+_MEETING_ASR_CONCURRENCY = 3
 
 
 @app.post("/api/meeting/summarize")
 async def api_meeting_summarize(payload: dict = Body(default={})):
-    """Transcribe meeting segments and summarize with speaker labels."""
+    """Transcribe meeting segments and summarize with speaker labels.
+    Guarded against concurrent invocations and bounded by an overall deadline."""
+    global _meeting_report
+    if _meeting_summarize_lock.locked():
+        return JSONResponse(status_code=409, content={
+            "ok": False, "error_code": "summarize_in_progress",
+            "error": "已有一次整理正在进行，请稍候"})
+    async with _meeting_summarize_lock:
+        try:
+            return await asyncio.wait_for(
+                _meeting_summarize_impl(payload), timeout=MEETING_SUMMARY_BUDGET_S)
+        except asyncio.TimeoutError:
+            _meeting_report = {**_meeting_report, "status": "error",
+                               "error": "整理超时，请重试或分段整理", "progress": 100}
+            return {"ok": False, "error_code": "summarize_timeout", "error": _meeting_report["error"]}
+
+
+async def _meeting_summarize_impl(payload: dict) -> dict:
     global _meeting_report
     from pathlib import Path as _Path
     from services.cloud_asr import cloud_asr as _cloud_asr
@@ -2639,21 +3480,43 @@ async def api_meeting_summarize(payload: dict = Body(default={})):
         _meeting_report.update({"status": "error", "error": "本次无录音片段，请先录到语音片段"})
         return {"ok": False, "error_code": "no_segments", "error": _meeting_report["error"]}
 
-    transcripts = []
+    _ensure_asr_worker()
+    for turn in turns:
+        if not str(turn.get("text") or "").strip() and str(turn.get("wav_path") or ""):
+            _enqueue_asr_turn_now(turn)
+    await _wait_for_asr_idle(float(payload.get("asr_wait_s", ASR_IDLE_WAIT_S)))
+    session_state = recorder.state()
+    turns = session_state.get("timeline", turns)
+
     total_turns = max(1, len(turns))
-    for turn_index, turn in enumerate(turns):
+    asr_sem = asyncio.Semaphore(_MEETING_ASR_CONCURRENCY)
+    done_count = 0
+
+    async def _transcribe_turn(turn):
+        nonlocal done_count
         wav = turn.get("wav_path", "")
+        text = None
         if wav and _Path(wav).exists():
-            text = str(turn.get("text") or "").strip() or await _cloud_asr.transcribe(wav)
-            if text:
-                speaker = str(turn.get("speaker_label") or "未知说话人")
-                start = float(turn.get("start", 0.0) or 0.0)
-                end = float(turn.get("end", start) or start)
-                transcripts.append(f"[{start:.1f}-{end:.1f}s][{speaker}] {text}")
-                recorder.set_transcript(str(turn.get("id") or ""), text)
-            else:
-                recorder.set_transcript(str(turn.get("id") or ""), "")
-        _meeting_report["progress"] = min(65, 10 + int(55 * (turn_index + 1) / total_turns))
+            text = str(turn.get("text") or "").strip()
+            if not text:
+                async with asr_sem:
+                    text = await _cloud_asr.transcribe(wav)
+        done_count += 1
+        _meeting_report["progress"] = min(65, 10 + int(55 * done_count / total_turns))
+        return text
+
+    turn_texts = await asyncio.gather(*(_transcribe_turn(t) for t in turns))
+
+    transcripts = []
+    for turn, text in zip(turns, turn_texts):
+        if text is None:  # no wav file for this turn
+            continue
+        if text:
+            speaker = str(turn.get("speaker_label") or "未知说话人")
+            start = float(turn.get("start", 0.0) or 0.0)
+            end = float(turn.get("end", start) or start)
+            transcripts.append(f"[{start:.1f}-{end:.1f}s][{speaker}] {text}")
+        recorder.set_transcript(str(turn.get("id") or ""), text)
 
     if not transcripts:
         await _emit_voice_reason(
@@ -2762,12 +3625,12 @@ async def api_meeting_complete(payload: dict = Body(default={})):
     session_id = str(payload.get("session_id", ""))
     if not session_id:
         return {"ok": False, "accepted": False, "error_code": "session_id_required", "error": "缺少会议控制会话"}
-    stopped = await api_multi_track_stop({"session_id": session_id, "finalize": True})
-    if not stopped.get("accepted"):
-        return {**stopped, "ok": False, "error": "会议控制会话已失效，录音已尝试保存"}
-    _meeting_report = {**_meeting_report, "status": "summarizing", "error": "", "progress": 0}
     if _meeting_summary_task is None or _meeting_summary_task.done():
-        _meeting_summary_task = asyncio.create_task(api_meeting_summarize({**payload, "background": True}))
+        _meeting_report = {**_meeting_report, "status": "stopping", "error": "", "progress": 0}
+        _meeting_summary_task = asyncio.create_task(
+            _meeting_complete_background({**payload, "session_id": session_id}),
+            name="meeting-complete-background",
+        )
         def _finish_summary(task):
             global _meeting_report
             try:
@@ -2778,9 +3641,36 @@ async def api_meeting_complete(payload: dict = Body(default={})):
         _meeting_summary_task.add_done_callback(_finish_summary)
         await asyncio.sleep(0)
     return {
-        "ok": True, "accepted": True, "stopped": True, "processing": True,
-        "job_state": "summarizing", "state": _conversation_state(),
+        "ok": True, "accepted": True, "submitted": True, "stopped": False, "processing": True,
+        "job_state": _meeting_report.get("status", "stopping"), "state": _conversation_state(),
     }
+
+
+async def _meeting_complete_background(payload: dict) -> dict:
+    global _meeting_report
+    session_id = str(payload.get("session_id", ""))
+    stop_result = {}
+    try:
+        stop_result = await api_multi_track_stop({"session_id": session_id, "finalize": True})
+    except Exception as exc:
+        logger.warning("meeting stop failed before summarize: %s", str(exc)[:120])
+        stop_result = {"ok": False, "accepted": False, "reason": str(exc)[:120]}
+        _meeting_report = {
+            **_meeting_report,
+            "status": "summarizing",
+            "error": "控制停止异常，已继续处理已保存录音",
+            "progress": 5,
+        }
+    if not stop_result.get("accepted"):
+        _meeting_report = {
+            **_meeting_report,
+            "status": "summarizing",
+            "error": "控制会话停止未确认，已继续处理已保存录音",
+            "progress": 5,
+        }
+    else:
+        _meeting_report = {**_meeting_report, "status": "summarizing", "error": "", "progress": 5}
+    return await api_meeting_summarize({**payload, "background": True})
 
 
 @app.get("/api/health")

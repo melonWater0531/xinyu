@@ -127,11 +127,86 @@ def build_chat_system_prompt(state: dict | None, user_name: str = "") -> str:
 - 回复不超过 80 字，中文，自然段落，不使用列表或标题。"""
 
 
+_ZH_EMOTION = {
+    "Happiness": "快乐", "Happy": "快乐", "Neutral": "平静", "Calm": "平静",
+    "Sadness": "低落", "Sad": "低落", "Anger": "愤怒", "Angry": "愤怒",
+    "Fear": "不安", "Surprise": "惊讶", "Disgust": "不适", "Contempt": "轻蔑",
+}
+
+
+def describe_day_summary(day_summary: dict | None) -> str:
+    """Compact one-line description of what the camera observed today,
+    e.g. '上午平静为主, 15:02 情绪低点, 专注均值 72, 陪伴约 180 分钟'."""
+    if not isinstance(day_summary, dict) or not day_summary.get("available"):
+        return ""
+    parts = []
+    dom = str(day_summary.get("dominant_emotion") or "")
+    if dom:
+        parts.append(f"当日主要情绪为{_ZH_EMOTION.get(dom, dom)}")
+    dips = day_summary.get("dips") or []
+    if dips:
+        ts = str(dips[0].get("ts") or "")
+        if ts:
+            parts.append(f"{ts} 有一次情绪低点")
+    attn = day_summary.get("attention_avg")
+    if attn is not None:
+        parts.append(f"专注均值 {round(_as_float(attn))}")
+    presence = _as_float(day_summary.get("presence_min"))
+    if presence >= 1:
+        parts.append(f"陪伴约 {round(presence)} 分钟")
+    return "，".join(parts)
+
+
+def build_weekly_report_prompt(entries: list, day_summaries: list, user_name: str = "",
+                               week_start: str = "", week_end: str = "") -> list[dict[str, str]]:
+    """Weekly letter prompt: self-reported diary entries + machine-observed
+    day summaries, including agreement/divergence between the two."""
+    name = (user_name or "").strip() or "用户"
+    diary_lines = []
+    for e in entries[:14]:
+        if not isinstance(e, dict):
+            continue
+        emo = _ZH_EMOTION.get(str(e.get("emotion") or ""), str(e.get("emotion") or ""))
+        obs = _ZH_EMOTION.get(str(e.get("observed_emotion") or ""), str(e.get("observed_emotion") or ""))
+        line = f"{e.get('date','')}: 自评{emo or '未填'}"
+        if obs:
+            line += f"，心屿观察到{obs}" + ("（一致）" if e.get("observed_emotion") == e.get("emotion") else "（有差异）")
+        excerpt = str(e.get("content") or e.get("excerpt") or "")[:60]
+        if excerpt:
+            line += f"，摘录：{excerpt}"
+        diary_lines.append(line)
+    observed_lines = []
+    for d in (day_summaries or [])[:7]:
+        if isinstance(d, dict) and d.get("available"):
+            desc = describe_day_summary(d)
+            if desc:
+                observed_lines.append(f"{d.get('date','')}: {desc}")
+    system = (
+        f"你是心屿，请给 {name} 写一封温暖的周报信（书信体，300-500字，中文）。\n"
+        "要求：\n"
+        "- 总结这一周的情绪趋势和专注情况（专注均值低于60时温柔提醒）。\n"
+        "- 如果自评情绪和心屿观察有差异，用温和好奇的语气提到，不评判、不诊断。\n"
+        "- 引用 1-2 个日记片段（如果有）。\n"
+        "- 结尾给下周一个具体的小建议。\n"
+        "- 不编造记录里没有的事件。"
+    )
+    user = (
+        f"周期：{week_start} 至 {week_end}\n"
+        f"日记记录（{len(diary_lines)} 条）：\n" + ("\n".join(diary_lines) or "本周没有日记记录。") +
+        "\n\n心屿每日观察：\n" + ("\n".join(observed_lines) or "本周没有观察数据。")
+    )
+    return [{"role": "system", "content": system},
+            {"role": "user", "content": user}]
+
+
 def build_reflect_messages(diary_text: str, state: dict | None, user_name: str = "", payload: dict | None = None) -> list[dict[str, str]]:
     context = build_emotion_context(state)
     payload = payload or {}
     duration_min = _as_int(payload.get("duration_min"))
     observed = f"\n监测时长：{duration_min} 分钟" if duration_min else ""
+    day_line = describe_day_summary(payload.get("day_summary"))
+    if day_line:
+        observed += f"\n今日观察摘要：{day_line}"
     name = user_name.strip() or "用户"
     system = """你是心屿，请以用户视角（“我”）生成今日日记条目，并给出一句温柔回应。
 

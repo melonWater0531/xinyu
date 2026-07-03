@@ -106,12 +106,13 @@ class PoseEstimator:
 
     def detect(self, jpeg_bytes: bytes) -> List[PersonPose]:
         """Run pose estimation on a JPEG frame."""
-        if not self._initialized:
-            return []
-
         arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if img is None:
+        return self.detect_bgr(img)
+
+    def detect_bgr(self, img) -> List[PersonPose]:
+        """Run pose estimation on an already-decoded BGR frame."""
+        if not self._initialized or img is None:
             return []
 
         h, w = img.shape[:2]

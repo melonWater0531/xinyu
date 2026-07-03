@@ -504,7 +504,7 @@ button,input,select{font:inherit}
 
 <script>
 let state=null,ws=null,wsRetry=null,lastWsAt=0,lastLog='',lastStopState='',activePage='single_face_analysis',switching=false,currentSessionId='',landmarkMesh=false;
-let heartbeatInFlight=false,heartbeatFailures=0,remoteControlOwner=false;
+let heartbeatInFlight=false,heartbeatFailures=0,remoteControlOwner=false,lastHeartbeatLogAt=0;
 const controlChannel=('BroadcastChannel' in window)?new BroadcastChannel('recamera-control-owner'):null;
 if(controlChannel)controlChannel.onmessage=ev=>{
   const m=ev.data||{};
@@ -557,10 +557,19 @@ function postKeepalive(path,body={}){
   }catch(e){}
 }
 async function apiPost(path,body={},opts={}){
+  const timeoutMs=Number(opts.timeoutMs||opts.timeout||9000);
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),timeoutMs);
   try{
-    const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),keepalive:!!opts.keepalive});
+    const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),keepalive:!!opts.keepalive,signal:ctrl.signal});
     return await r.json();
-  }catch(e){log(`API error ${path}: ${e.message}`);return null}
+  }catch(e){
+    const msg=e.name==='AbortError'?`request timed out after ${timeoutMs}ms`:e.message;
+    if(!opts.silent)log(`API error ${path}: ${msg}`);
+    return {ok:false,accepted:false,timeout:e.name==='AbortError',error:msg,reason:msg};
+  }finally{
+    clearTimeout(timer);
+  }
 }
 async function voiceSayTest(){
   const text=($('voiceTestText')?.value||'小屿语音测试。').trim();
@@ -680,15 +689,18 @@ async function completeMeetingWorkflow(){
   $('meetingStepReportText').textContent='ASR 与 LLM 处理中';
   log('正在终止会议、转写语音并生成会议纪要');
   const sessionId=currentSessionId;
-  const r=await apiPost('/api/meeting/complete',{session_id:sessionId});
-  meetingCompleting=false;
-  if(r&&r.accepted){
-    clearSession();
-    if(r.state)renderMeetingWorkflow(r.state,{});
-    log(r.processing?'会议录音已封存，转写与纪要正在后台生成':(r.ok?'会议闭环完成，逐句转写与纪要已生成':`会议已停止，但纪要生成失败：${r.error||'未知错误'}`));
-  }else{
+  try{
+    const r=await apiPost('/api/meeting/complete',{session_id:sessionId},{timeoutMs:10000});
+    if(r&&r.accepted){
+      clearSession();
+      if(r.state)renderMeetingWorkflow(r.state,{});
+      log(r.processing?'会议停止与转写任务已提交，后台正在生成纪要':(r.ok?'会议闭环完成，逐句转写与纪要已生成':`会议已停止，但纪要生成失败：${r.error||'未知错误'}`));
+    }else{
+      log(`终止提交失败：${r&&r.error||r&&r.reason||'服务不可达'}；页面会继续轮询当前状态`);
+    }
+  }finally{
+    meetingCompleting=false;
     updateFeatureLocks();
-    log(`终止失败：${r&&r.error||r&&r.reason||'服务不可达'}`);
   }
 }
 async function startLocalFeature(pageId,label){
@@ -757,16 +769,19 @@ async function heartbeat(){
   const sessionId=currentSessionId;
   heartbeatInFlight=true;
   try{
-    const r=await apiPost('/api/control/heartbeat',{session_id:sessionId});
+    const r=await apiPost('/api/control/heartbeat',{session_id:sessionId},{timeoutMs:1200,silent:true,transient:true});
     if(sessionId!==currentSessionId)return;
-    if(r&&r.accepted){heartbeatFailures=0;return}
-    const transient=!r||r.authority==='unreachable'||/timed out|empty_response/i.test(String(r.reason||''));
+    if(r&&r.accepted){
+      if(heartbeatFailures>0)log('控制心跳已恢复，会议继续运行');
+      heartbeatFailures=0;
+      return;
+    }
+    const transient=!r||r.degraded||r.timeout||r.authority==='unreachable'||/timed out|timeout|busy|empty_response/i.test(String(r.reason||''));
     heartbeatFailures+=1;
-    if(!transient||heartbeatFailures>=3){
-      log('控制租约已失效，功能已锁定');
-      clearSession();
-    }else if(heartbeatFailures===1){
-      log('控制心跳暂时不可达，正在重试');
+    const now=Date.now();
+    if(now-lastHeartbeatLogAt>8000){
+      lastHeartbeatLogAt=now;
+      log(`控制心跳降级（${r&&r.reason||'timeout'}），会议录音/转写保持运行，可直接点击终止并生成纪要${transient?'':'；控制会话可能已失效'}`);
     }
   }finally{
     heartbeatInFlight=false;
@@ -790,14 +805,23 @@ function renderMeetingWorkflow(conv={},context={}){
   const timeline=Array.isArray(conv.timeline)?conv.timeline:[];
   const speakers=Array.isArray(conv.speakers)?conv.speakers:[];
   const report=conv.report||{};
-  const active=!!(conv.recording||conv.active||conv.requested);
+  const recordingState=String(conv.recording_state||'idle');
+  const active=!!(conv.recording||conv.active||conv.requested)||['starting','recording'].includes(recordingState);
   const duration=Number(conv.stats?.duration||0);
   const currentSpeaker=conv.current?.speaker_label||'等待说话人';
   const reportStatus=String(report.status||'idle');
-  const recorded=timeline.length>0||['recorded','summarizing','ready','error'].includes(reportStatus);
+  const recorded=timeline.length>0||['recorded','stopping','summarizing','ready','error','recording_degraded'].includes(reportStatus);
+  const asrPending=Number(conv.asr_pending||conv.asr_queue||0),asrRunning=Number(conv.asr_running||0),asrDone=Number(conv.asr_done||0),asrFailed=Number(conv.asr_failed||0);
+  const recordingLabel={
+    starting:'录音启动中',
+    recording:'录音中',
+    recorded:'录音已封存',
+    error:'录音异常',
+    idle:'录音未启动'
+  }[recordingState]||recordingState;
 
   $('btnMeetingStart').disabled=active||meetingStarting||meetingCompleting;
-  $('meetingRecordState').textContent=active?`录音中 ${fmtTime(duration)}`:(recorded?'录音已封存':'录音未启动');
+  $('meetingRecordState').textContent=active?`${recordingLabel} ${fmtTime(duration)}`:(recorded?'录音已封存':recordingLabel);
   $('meetingDuration').textContent=fmtTime(duration);
   $('meetingTurns').textContent=timeline.length;
   $('meetingSpeakerCount').textContent=speakers.length;
@@ -805,19 +829,21 @@ function renderMeetingWorkflow(conv={},context={}){
 
   setWorkflowStep('meetingStepDoa',active?(context.hasSpeech?'active':'done'):(recorded?'done':''),active?(context.hasSpeech?`定位 ${context.doaText||'声源'}`:'ReSpeaker 持续监听'):(recorded?'定位完成':'等待启动'));
   setWorkflowStep('meetingStepFace',context.faceLocked?'done':(active?'active':(recorded?'done':'')),context.faceLocked?`已锁定 Track ${context.trackId??'--'}`:(active?'正在关联人脸':(recorded?'关联已结束':'等待声源')));
-  setWorkflowStep('meetingStepRecord',active?'active':(recorded?'done':''),active?`${timeline.length} 个片段 · ${fmtTime(duration)}`:(recorded?'录音已封存':'尚未录音'));
-  setWorkflowStep('meetingStepReport',reportStatus==='summarizing'?'active':(reportStatus==='ready'?'done':''),reportStatus==='ready'?'纪要已生成':reportStatus==='summarizing'?'ASR 与 LLM 处理中':reportStatus==='error'?'生成失败，可查看原因':'等待会议结束');
+  setWorkflowStep('meetingStepRecord',active?'active':(recorded?'done':''),active?`${timeline.length} 个片段 · ${fmtTime(duration)} · ${recordingLabel}`:(recorded?'录音已封存':'尚未录音'));
+  setWorkflowStep('meetingStepReport',['stopping','summarizing'].includes(reportStatus)?'active':(reportStatus==='ready'?'done':''),reportStatus==='ready'?'纪要已生成':reportStatus==='stopping'?'正在封存录音':reportStatus==='summarizing'?`ASR/LLM 处理中 · 待转写 ${asrPending} · 运行 ${asrRunning}`:reportStatus==='error'?'生成失败，可查看原因':'等待会议结束');
 
   $('meetingSpeakers').innerHTML=speakers.length?speakers.map(s=>`<span class="speaker-chip">${escapeHtml(s.label||'未知说话人')} · ${s.doa==null?'--':Math.round(Number(s.doa))+'°'}${s.track_id==null?'':` · Track ${escapeHtml(s.track_id)}`}</span>`).join(''):'<span class="speaker-chip">尚未识别说话人</span>';
   $('transcriptState').textContent=reportStatus==='summarizing'?'正在转写':timeline.length?`${timeline.length} 个语音片段`:'等待录音';
   $('meetingTranscript').innerHTML=timeline.length?timeline.map(turn=>{
-    const text=turn.text||({asr_empty:'该片段未获得有效转写',audio_saved:'录音已保存，结束会议后转写'}[turn.status]||'等待转写');
-    return `<div class="turn"><span class="turn-speaker">${escapeHtml(turn.speaker_label||'未知说话人')}</span><span class="turn-text${turn.text?'':' empty'}">${escapeHtml(text)}</span><span class="turn-time">${fmtTime(turn.start||0)}</span></div>`;
+    const statusText={audio_saved:'录音已保存',asr_pending:'排队转写',transcribing:'转写中',transcribed:'已转写',asr_empty:'未获得有效转写',asr_failed:`转写失败${turn.error?'：'+turn.error:''}`}[turn.status]||'等待转写';
+    const text=turn.text||statusText;
+    const meta=[turn.doa_mean==null?'':`${Math.round(Number(turn.doa_mean))}°`,turn.track_id==null?'':`Track ${turn.track_id}`,turn.association_confidence?`置信 ${Math.round(Number(turn.association_confidence)*100)}%`:'' ].filter(Boolean).join(' · ');
+    return `<div class="turn"><span class="turn-speaker">${escapeHtml(turn.speaker_label||'未知说话人')}</span><span class="turn-text${turn.text?'':' empty'}">${escapeHtml(text)}${meta?` · ${escapeHtml(meta)}`:''}</span><span class="turn-time">${fmtTime(turn.start||0)}</span></div>`;
   }).join(''):'<div class="empty-state">启动会议后，完成的语音片段会按说话人和时间显示在这里。</div>';
 
   const ready=reportStatus==='ready';
-  $('meetingReportState').textContent=ready?'已生成':reportStatus==='summarizing'?`生成中 ${Number(report.progress||0)}%`:reportStatus==='error'?'生成失败':'尚未生成';
-  $('meetingSummary').textContent=ready?(report.summary||'会议纪要已生成'):(reportStatus==='summarizing'?'正在整理逐句记录…':'等待会议结束');
+  $('meetingReportState').textContent=ready?'已生成':reportStatus==='stopping'?'停止中':reportStatus==='summarizing'?`生成中 ${Number(report.progress||0)}%`:reportStatus==='recording_degraded'?'录音降级':reportStatus==='error'?'生成失败':'尚未生成';
+  $('meetingSummary').textContent=ready?(report.summary||'会议纪要已生成'):reportStatus==='stopping'?'正在封存录音并提交转写任务…':(reportStatus==='summarizing'?'正在整理逐句记录…':'等待会议结束');
   $('meetingMinutes').textContent=ready?(report.minutes||report.diary||''):'点击“终止并生成纪要”后，系统会先完成逐段转写，再整理不同说话人的观点和会议结论。';
   $('meetingAsrStatus').textContent=reportStatus;
   $('meetingReportTurns').textContent=report.turns||0;
@@ -827,7 +853,7 @@ function renderMeetingWorkflow(conv={},context={}){
   $('meetingDoaHealth').textContent=context.doaAvailable?'ReSpeaker 已连接':'等待 ReSpeaker';
   $('meetingFaceHealth').textContent=context.faceLocked?`已关联 Track ${context.trackId??'--'}`:(active?'持续搜索':'未运行');
   $('meetingStorageHealth').textContent=conv.error?`异常：${conv.error}`:(active?'增量保存中':recorded?'已封存':'待启动');
-  $('meetingAiHealth').textContent=reportStatus==='ready'?'转写与纪要完成':reportStatus==='summarizing'?'处理中':reportStatus==='error'?'需要检查':'等待终止会议';
+  $('meetingAiHealth').textContent=reportStatus==='ready'?'转写与纪要完成':(['stopping','summarizing'].includes(reportStatus)?`处理中 · 成功 ${asrDone} / 失败 ${asrFailed}`:reportStatus==='error'?'需要检查':'等待终止会议');
 }
 
 function renderState(s){
@@ -843,6 +869,8 @@ function renderState(s){
   $('authorityText').textContent=ctrl.authority||'idle';
   $('fsmText').textContent=ctrl.fsm_state||'IDLE';
   $('eventBusText').textContent=ctrl.last_event?'active':'waiting';
+  const hb=ctrl.heartbeat_state||{};
+  if(hb.state==='degraded')$('eventBusText').textContent='heartbeat degraded';
   $('leaseText').textContent=ctrl.lease_remaining_ms!=null?`${Math.ceil(Number(ctrl.lease_remaining_ms)/100)/10}s`:'--';
   $('trackingPhaseText').textContent=s.tracking_phase||ctrl.tracking_phase||'waiting_target';
   const stopState=s.stop_state||ctrl.stop_state||'';
@@ -893,7 +921,9 @@ function renderState(s){
   const led=rs.led||doa.led||{},ledText=led.hardware?`${led.effect||'--'} / hardware`:'unavailable';
   $('hardwareLedState').textContent=ledText;
 
-  renderMeetingWorkflow(conv,{hasSpeech,doaAvailable:!!doa.available,doaText:deg!=null?`${Math.round(deg)}°`:'--',faceLocked:!!(s.face_lock?.locked||ctrl.locked_track_id!=null),trackId:s.face_lock?.track_id??ctrl.locked_track_id});
+  try{
+    renderMeetingWorkflow(conv,{hasSpeech,doaAvailable:!!doa.available,doaText:deg!=null?`${Math.round(deg)}°`:'--',faceLocked:!!(s.face_lock?.locked||ctrl.locked_track_id!=null),trackId:s.face_lock?.track_id??ctrl.locked_track_id});
+  }catch(e){log(`Meeting render error ${e.message}`)}
   $('gestureModeText').textContent=featureActive.gesture_interaction?'运行中':'未激活';
   $('gestureReady').textContent=gesture.available?'模型可用':(gesture.reason||'未加载');
   $('gestureName').textContent=gesture.name||'--';
@@ -952,6 +982,7 @@ function fmtClock(t){return new Date((t||0)*1000).toLocaleTimeString()}
 function drawOverlay(s){
   const img=$('videoStream'),canvas=$('overlay'),wrap=$('videoWrap'),ctx=canvas.getContext('2d');
   const w=wrap.clientWidth,h=wrap.clientHeight;if(w<=0||h<=0)return;if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}
+  if((img.naturalWidth||0)<=0||(img.naturalHeight||0)<=0)return;
   ctx.clearRect(0,0,w,h);
   const video=s.video||{},pose=s.pose||{},rs=getImageDrawRect(img,w,h);
   ctx.lineWidth=2;ctx.font='12px sans-serif';

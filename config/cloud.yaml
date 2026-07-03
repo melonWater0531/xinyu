@@ -3,7 +3,7 @@ llm:
   providers:
     - name: deepseek
       api_url: "https://api.deepseek.com/chat/completions"
-      model: "deepseek-v4-flash"
+      model: "deepseek-chat"
       max_tokens: 600
       timeout: 15
     - name: zhipu

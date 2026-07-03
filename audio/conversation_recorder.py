@@ -20,7 +20,7 @@ import time
 import wave
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
 
@@ -46,6 +46,9 @@ class ConversationTurn:
     wav_path: str
     status: str
     created_at: float
+    track_id: Optional[int] = None
+    association_confidence: float = 0.0
+    error: str = ""
 
     @property
     def duration(self) -> float:
@@ -72,6 +75,7 @@ class ConversationRecorder:
         sample_rate: int = 16000,
         block_ms: int = 100,
         device: Optional[int | str] = None,
+        segment_callback: Optional[Callable[[dict], None]] = None,
     ) -> None:
         self.root = Path(root)
         self.sample_rate = int(sample_rate)
@@ -80,6 +84,7 @@ class ConversationRecorder:
         self.device = device
         self.doa_provider = doa_provider
         self.speaker_provider = speaker_provider
+        self.segment_callback = segment_callback
 
         self._lock = threading.Lock()
         self._audio_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=200)
@@ -289,15 +294,42 @@ class ConversationRecorder:
         except Exception:
             return None, False
 
-    def _speaker_label_from_provider(self, doa: Optional[float]) -> str:
+    def _speaker_info_from_provider(self, doa: Optional[float]) -> dict[str, Any]:
+        info: dict[str, Any] = {
+            "label": "未知说话人",
+            "track_id": None,
+            "association_confidence": 0.0,
+        }
         if not self.speaker_provider:
-            return "未知说话人"
+            return info
         try:
-            label = self.speaker_provider(doa)
-            return str(label).strip() if label else "未知说话人"
+            result = self.speaker_provider(doa)
+            if isinstance(result, dict):
+                label = str(result.get("label") or "").strip()
+                info["label"] = label or "未知说话人"
+                track_id = result.get("track_id")
+                try:
+                    info["track_id"] = int(track_id) if track_id is not None else None
+                except (TypeError, ValueError):
+                    info["track_id"] = None
+                try:
+                    info["association_confidence"] = max(
+                        0.0,
+                        min(1.0, float(result.get("confidence", result.get("association_confidence", 0.0)) or 0.0)),
+                    )
+                except (TypeError, ValueError):
+                    info["association_confidence"] = 0.0
+                return info
+            label = str(result or "").strip()
+            if label:
+                info["label"] = label
+            return info
         except Exception as exc:
             logger.debug("speaker provider failed: %s", str(exc)[:80])
-            return "未知说话人"
+            return info
+
+    def _speaker_label_from_provider(self, doa: Optional[float]) -> str:
+        return self._speaker_info_from_provider(doa)["label"]
 
     def set_transcript(self, turn_id: str, text: str, confidence: float = 0.0) -> bool:
         """Attach ASR output to a persisted turn and rewrite the session timeline."""
@@ -308,6 +340,25 @@ class ConversationRecorder:
                     turn.text = str(text).strip()
                     turn.confidence = max(0.0, min(1.0, float(confidence)))
                     turn.status = "transcribed" if turn.text else "asr_empty"
+                    updated = True
+                    break
+            snapshot = [turn.to_dict() for turn in self._turns]
+        if updated and self._session_dir is not None:
+            timeline = self._session_dir / "timeline.jsonl"
+            timeline.write_text(
+                "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in snapshot),
+                encoding="utf-8",
+            )
+        return updated
+
+    def set_turn_status(self, turn_id: str, status: str, error: str = "") -> bool:
+        """Update a turn lifecycle status without changing its transcript."""
+        updated = False
+        with self._lock:
+            for turn in self._turns:
+                if turn.id == str(turn_id):
+                    turn.status = str(status)
+                    turn.error = str(error or "")[:160]
                     updated = True
                     break
             snapshot = [turn.to_dict() for turn in self._turns]
@@ -347,7 +398,8 @@ class ConversationRecorder:
 
         doa_mean = self._circular_mean(doa_values) if doa_values else None
         stability = self._doa_stability(doa_values) if doa_values else 0.0
-        speaker_label = self._speaker_label_from_provider(doa_mean)
+        speaker_info = self._speaker_info_from_provider(doa_mean)
+        speaker_label = str(speaker_info.get("label") or "未知说话人")
         turn = ConversationTurn(
             id=f"turn_{self._segment_idx:06d}",
             session_id=self._session_id,
@@ -361,12 +413,19 @@ class ConversationRecorder:
             doa_mean=doa_mean,
             doa_stability=stability,
             wav_path=str(wav_path),
-            status="audio_saved",
+            status="asr_pending" if self.segment_callback else "audio_saved",
             created_at=time.time(),
+            track_id=speaker_info.get("track_id"),
+            association_confidence=float(speaker_info.get("association_confidence", 0.0) or 0.0),
         )
         with self._lock:
             self._turns.append(turn)
         self._append_timeline(turn)
+        if self.segment_callback:
+            try:
+                self.segment_callback(turn.to_dict())
+            except Exception as exc:
+                logger.debug("segment callback failed: %s", str(exc)[:100])
 
     def _write_wav(self, path: Path, audio: np.ndarray) -> None:
         pcm = np.clip(audio, -1.0, 1.0)

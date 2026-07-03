@@ -30,6 +30,10 @@ class MPFaceResult:
     landmarks5: Optional[np.ndarray] = None  # left_eye, right_eye, nose, left_mouth, right_mouth
     ear_avg: float = 0.0
     eye_open: bool = True
+    # Head pose from the facial transformation matrix (degrees); None if unavailable
+    head_yaw: Optional[float] = None
+    head_pitch: Optional[float] = None
+    head_roll: Optional[float] = None
 
 
 class MPFaceDetector:
@@ -103,7 +107,15 @@ class MPFaceDetector:
                          l.y * frame_bgr.shape[0],
                          l.z * frame_bgr.shape[1]] for l in lm], dtype=np.float32)
 
-        # Head pose: use existing solvePnP from attention engine (no duplication)
+        # Head pose from the facial transformation matrix (much better
+        # conditioned than 5-point solvePnP)
+        yaw = pitch = roll = None
+        try:
+            mats = getattr(result, "facial_transformation_matrixes", None)
+            if mats:
+                yaw, pitch, roll = self._matrix_to_euler(np.asarray(mats[0]))
+        except Exception:
+            pass
 
         # Quick EAR computation from eye landmarks
         ear = self._quick_ear(pts)
@@ -115,7 +127,27 @@ class MPFaceDetector:
             landmarks5=landmarks5,
             ear_avg=round(float(ear), 3),
             eye_open=ear > 0.18,
+            head_yaw=yaw,
+            head_pitch=pitch,
+            head_roll=roll,
         )
+
+    @staticmethod
+    def _matrix_to_euler(mat: np.ndarray):
+        """Extract (yaw, pitch, roll) in degrees from the 4x4 facial
+        transformation matrix (rotation part, camera-facing convention)."""
+        import math
+        r = mat[:3, :3]
+        sy = math.sqrt(r[0, 0] ** 2 + r[1, 0] ** 2)
+        if sy > 1e-6:
+            pitch = math.degrees(math.atan2(-r[2, 0], sy))
+            yaw = math.degrees(math.atan2(r[1, 0], r[0, 0]))
+            roll = math.degrees(math.atan2(r[2, 1], r[2, 2]))
+        else:
+            pitch = math.degrees(math.atan2(-r[2, 0], sy))
+            yaw = math.degrees(math.atan2(-r[0, 1], r[1, 1]))
+            roll = 0.0
+        return yaw, pitch, roll
 
     @staticmethod
     def _quick_ear(pts: np.ndarray) -> float:

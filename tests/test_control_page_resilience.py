@@ -80,6 +80,31 @@ class ControlPageResilienceTests(unittest.TestCase):
         self.assertIn('id="singleFrameInfo"', page)
         self.assertIn('id="multiFrameInfo"', page)
 
+    def test_meeting_frontend_requests_timeout_and_release_buttons(self) -> None:
+        page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
+        self.assertIn("AbortController", page)
+        self.assertIn("clearTimeout(timer)", page)
+        complete = page.split("async function completeMeetingWorkflow()", 1)[1].split("async function startLocalFeature", 1)[0]
+        self.assertIn("finally", complete)
+        self.assertIn("meetingCompleting=false", complete)
+        self.assertIn("timeout:e.name==='AbortError'", page)
+
+    def test_heartbeat_is_short_degraded_and_does_not_clear_session(self) -> None:
+        page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
+        heartbeat = page.split("async function heartbeat()", 1)[1].split("function toggleLandmarks", 1)[0]
+        self.assertIn("timeoutMs:1200", heartbeat)
+        self.assertIn("silent:true", heartbeat)
+        self.assertIn("控制心跳降级", heartbeat)
+        self.assertNotIn("heartbeatFailures>=3", heartbeat)
+        self.assertNotIn("clearSession();", heartbeat)
+
+    def test_meeting_frontend_shows_realtime_asr_lifecycle(self) -> None:
+        page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
+        for token in ("asr_pending", "transcribing", "transcribed", "asr_failed", "recording_state", "association_confidence"):
+            self.assertIn(token, page)
+        self.assertIn("Meeting render error", page)
+        self.assertIn("img.naturalWidth", page)
+
     def test_service_worker_refreshes_static_assets_before_cache_fallback(self) -> None:
         sw = (ROOT / "dashboard" / "sw.js").read_text(encoding="utf-8")
         self.assertIn('CACHE_NAME = "xinyu-pwa-v11"', sw)
@@ -97,7 +122,8 @@ class ControlPageResilienceTests(unittest.TestCase):
         backend = (ROOT / "recamera_fastapi.py").read_text(encoding="utf-8")
         self.assertIn("run_companion_detail = not multi_mode", backend)
         self.assertIn("pose_frame_count % 15", backend)
-        self.assertIn("run_in_executor(None, adapter.predict", backend)
+        self.assertIn("adapter.predict", backend)
+        self.assertIn("run_in_executor(_slow_pool", backend)
 
 
 if __name__ == "__main__":

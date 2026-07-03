@@ -67,12 +67,15 @@ class AttentionConfig:
 #  3D 人脸模型 (solvePnP)
 # ═══════════════════════════════════════════
 
+# Non-coplanar 5-point model: eyes and mouth corners sit behind the nose tip
+# (negative z, camera looking at +z). A coplanar (all z=0) model makes
+# solvePnP ill-conditioned and yaw/pitch noise-dominated.
 FACE_MODEL_3D = np.array([
-    [-30.0, -30.0, 0.0],   # left eye
-    [ 30.0, -30.0, 0.0],   # right eye
-    [  0.0,   0.0, 0.0],   # nose tip
-    [-20.0,  40.0, 0.0],   # left mouth
-    [ 20.0,  40.0, 0.0],   # right mouth
+    [-30.0, -30.0, -30.0],   # left eye
+    [ 30.0, -30.0, -30.0],   # right eye
+    [  0.0,   0.0,   0.0],   # nose tip
+    [-20.0,  40.0, -25.0],   # left mouth
+    [ 20.0,  40.0, -25.0],   # right mouth
 ], dtype=np.float64)
 
 
@@ -96,7 +99,11 @@ class HeadPoseModule:
         ], dtype=np.float64)
         try:
             success, rvec, tvec = cv2.solvePnP(
-                self._model, pts_2d, camera_matrix, None, flags=cv2.SOLVEPNP_ITERATIVE)
+                self._model, pts_2d, camera_matrix, None, flags=cv2.SOLVEPNP_EPNP)
+            if success:
+                # Iterative refinement from the EPnP initial guess
+                rvec, tvec = cv2.solvePnPRefineVVS(
+                    self._model, pts_2d, camera_matrix, None, rvec, tvec)
             if not success: return (0.0, 0.0, 0.0)
             rmat, _ = cv2.Rodrigues(rvec)
             sy = math.sqrt(rmat[0,0]**2 + rmat[1,0]**2)
@@ -417,11 +424,17 @@ class AttentionEngine:
                nose_xy: Optional[Tuple[float, float]] = None,
                img_w: int = 640, img_h: int = 640,
                eye_metrics: dict = None,
-               gaze: dict = None) -> dict:
+               gaze: dict = None,
+               external_pose: Optional[Tuple[float, float, float]] = None) -> dict:
+        """external_pose: fresh (yaw, pitch, roll) degrees from a better source
+        (e.g. MediaPipe facial transformation matrix); overrides 5-pt solvePnP."""
         if landmarks is None or len(landmarks) < 5:
             return {"has_face": False}
 
-        yaw, pitch, roll = self._pose.estimate(landmarks, img_w, img_h)
+        if external_pose is not None:
+            yaw, pitch, roll = external_pose
+        else:
+            yaw, pitch, roll = self._pose.estimate(landmarks, img_w, img_h)
         stability = self._stability.update(nose_xy)
         self._baseline.add_sample(yaw, pitch)
 

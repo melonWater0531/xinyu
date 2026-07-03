@@ -326,6 +326,8 @@
     .cal-day.has-entry:not(.selected) { background: rgba(255,255,255,.78); border-color: var(--line); }
     .day-num { font-size: 9px; position: absolute; left: 6px; top: 4px; }
     .day-emo { font-size: 14px; }
+    /* Machine-observed emotion marker (differs from the user's own pick) */
+    .day-observed { position: absolute; right: 5px; top: 4px; width: 7px; height: 7px; border-radius: 50%; border: 1px solid rgba(255,255,255,.8); box-shadow: 0 0 0 1px rgba(139,115,85,.25); }
     .cal-blank { aspect-ratio: 1; }
     .entry-empty-state { display: grid; gap: 10px; text-align: center; padding: 24px 0; }
     .empty-face { font-size: 40px; display: block; }
@@ -556,6 +558,8 @@
             <div class="comp-eye-row">
               <div class="comp-eye-cell"><small>EAR</small><strong id="comp-ear">—</strong></div>
               <div class="comp-eye-cell"><small>闪烁率</small><strong id="comp-blink">—</strong></div>
+              <div class="comp-eye-cell"><small>疲劳</small><strong id="comp-fatigue">—</strong></div>
+              <div class="comp-eye-cell"><small>校准</small><strong id="comp-ear-calib" style="font-size:12px">—</strong></div>
             </div>
           </article>
           <article class="card">
@@ -571,8 +575,13 @@
         </div>
 
         <article class="card">
-          <p class="eyebrow">XIAOYU</p>
-          <h2>和小屿聊聊</h2>
+          <div class="card__head compact">
+            <div><p class="eyebrow">XIAOYU</p><h2>和小屿聊聊</h2></div>
+            <span class="chip" id="chat-llm-chip" title="云端模型状态">
+              <span class="chip__dot" id="chat-llm-dot"></span>
+              <span id="chat-llm-text">检查中</span>
+            </span>
+          </div>
           <div class="chat-thread" id="comp-chat-thread">
             <div class="chat-bubble">你可以把此刻想说的话放在这里，小屿会结合今天的状态回应你。</div>
           </div>
@@ -679,6 +688,7 @@
           <div class="week-summary">
             <div class="metric"><span class="metric__label">主要情绪</span><span class="metric__value text" style="font-size:15px" id="rec-week-top-emotion">—</span></div>
             <div class="metric"><span class="metric__label">记录天数</span><span class="metric__value" id="rec-week-days">—</span></div>
+            <div class="metric"><span class="metric__label">自评 vs 观察一致</span><span class="metric__value" id="rec-week-agreement">—</span></div>
           </div>
           <p class="week-letter-text" id="rec-week-letter">这一周还没有留下记录。可以从今天的一句话开始。</p>
           <button class="btn-soft" type="button" id="rec-week-generate">让小屿写周报</button>
@@ -795,6 +805,7 @@
 
       <!-- Step 1: Emotion pick -->
       <div id="diary-step-1">
+        <p id="diary-observed" hidden style="text-align:center;font-size:12px;color:var(--primary);background:rgba(232,185,138,.16);border:1px solid rgba(232,185,138,.32);border-radius:var(--radius-md);padding:8px 12px;margin:0 0 10px;line-height:1.6"></p>
         <div class="emotion-wheel" id="emotion-wheel" role="radiogroup" aria-label="选择情绪"></div>
         <p style="color:var(--muted);text-align:center;font-size:12px;margin:4px 0 14px">没有好坏，只是给此刻一个名字。</p>
         <button type="button" class="btn-primary btn-wide" id="diary-next" disabled>继续记录</button>
@@ -875,6 +886,8 @@
       ENTRIES:"xinyu_diary_entries",
       WEEKLY_REPORTS:"xinyu_weekly_reports",
       CHAT_PREFIX:"xinyu_chat_",
+      DRAFT_PREFIX:"xinyu_diary_draft_",
+      POLISH_QUEUE:"xinyu_polish_queue",
     };
 
     const GIMBAL = { standby:"/api/gimbal/standby", sleep:"/api/gimbal/sleep", stop:"/api/gimbal/stop", calibrate:"/api/gimbal/calibrate" };
@@ -888,7 +901,7 @@
     const App = {
       ws:null, wsLastAt:0, pollTimer:0,
       state:null, connected:false, currentPage:"home",
-      companionSid:"", companionStartedAt:0, focusTickTimer:0, heartbeatTimer:0,
+      companionSid:"", companionStartedAt:0, focusTickTimer:0, companionHbTimer:0, meetingHbTimer:0,
       meetingSid:"", meetingActive:false, meetingStartedAt:0, meetingElapsedTimer:0,
       lastGestureAt:null, lastCareShownAt:0,
       diaryEditKey:"", diaryChosenEmotion:"",
@@ -1096,14 +1109,14 @@
       const data=await apiPost("/api/single_track/start",{});
       if(data.session_id){App.companionSid=data.session_id;localStorage.setItem(LS.CONTROL_SID,data.session_id);}
       // Start heartbeat (lease=5000ms, send every 1000ms)
-      clearInterval(App.heartbeatTimer);
-      App.heartbeatTimer=setInterval(()=>{
+      clearInterval(App.companionHbTimer);
+      App.companionHbTimer=setInterval(()=>{
         if(App.companionSid)apiPost("/api/control/heartbeat",{session_id:App.companionSid}).catch(()=>{});
       },1000);
       return data;
     }
     async function stopSingleTrack(){
-      clearInterval(App.heartbeatTimer);App.heartbeatTimer=0;
+      clearInterval(App.companionHbTimer);App.companionHbTimer=0;
       if(!App.companionSid)return;
       await apiPost("/api/single_track/stop",{session_id:App.companionSid}).catch(()=>{});
       App.companionSid=""; localStorage.removeItem(LS.CONTROL_SID);
@@ -1112,8 +1125,8 @@
       const data=await apiPost("/api/conversation/start",{control_session:true,save_audio:true});
       if(data.session_id){
         App.meetingSid=data.session_id;localStorage.setItem(LS.RECORDING_SID,data.session_id);
-        clearInterval(App.heartbeatTimer);
-        App.heartbeatTimer=setInterval(()=>{
+        clearInterval(App.meetingHbTimer);
+        App.meetingHbTimer=setInterval(()=>{
           if(App.meetingSid)apiPost("/api/control/heartbeat",{session_id:App.meetingSid}).catch(()=>{});
         },1000);
       }
@@ -1121,7 +1134,7 @@
     }
     async function stopMeetingRecording(){
       if(!App.meetingSid)return;
-      clearInterval(App.heartbeatTimer);App.heartbeatTimer=0;
+      clearInterval(App.meetingHbTimer);App.meetingHbTimer=0;
       await apiPost("/api/conversation/stop",{session_id:App.meetingSid,finalize:true}).catch(()=>{});
       App.meetingSid=""; localStorage.removeItem(LS.RECORDING_SID);
     }
@@ -1168,7 +1181,7 @@
       try{
         const scheme=location.protocol==="https:"?"wss":"ws";
         App.ws=new WebSocket(`${scheme}://${location.host}/ws`);
-        App.ws.onopen=()=>{wsReconnectCount=0;App.wsLastAt=Date.now();App.connected=true;try{App.ws.send("request_state");}catch{}};
+        App.ws.onopen=()=>{wsReconnectCount=0;App.wsLastAt=Date.now();App.connected=true;try{App.ws.send("request_state");}catch{};processPolishQueue().catch(()=>{});};
         App.ws.onmessage=ev=>{
           App.wsLastAt=Date.now();
           try{const s=normalizeWS(JSON.parse(ev.data));if(s)applyState(s);}catch{}
@@ -1225,6 +1238,20 @@
       App.focusTickTimer=setInterval(renderFocusDuration,1000);
       renderCompanion();
       restoreCompanionChat();
+      refreshChatLlmStatus();
+    }
+
+    async function refreshChatLlmStatus(){
+      // Honest LLM attribution: green=cloud OK, amber=degraded, gray=template
+      const dot=$("chat-llm-dot"),txt=$("chat-llm-text");
+      if(!dot||!txt)return;
+      try{
+        const res=await fetch("/api/chat/status",{cache:"no-store"});
+        const st=await res.json();
+        if(!st.configured){dot.className="chip__dot";txt.textContent="本地回应";}
+        else if(st.reason){dot.className="chip__dot warn";txt.textContent=st.reason.substring(0,18);}
+        else{dot.className="chip__dot ok";txt.textContent="云端已连接";}
+      }catch{dot.className="chip__dot";txt.textContent="离线";}
     }
     async function onCompanionLeave(){
       clearInterval(App.focusTickTimer);App.focusTickTimer=0;
@@ -1315,10 +1342,19 @@
       const em=App.state?.eye_metrics||{};
       setText("comp-ear",em.ear_avg!=null?Number(em.ear_avg).toFixed(2):"—");
       setText("comp-blink",em.blink_rate!=null?`${Number(em.blink_rate).toFixed(1)}/min`:"—");
+      const FATIGUE_ZH={alert:"清醒",mild:"轻度",drowsy:"困倦",severe:"很疲惫"};
+      setText("comp-fatigue",FATIGUE_ZH[em.fatigue_level]||"—");
+      setText("comp-ear-calib",em.calibrated?"已校准":"校准中");
       const gest=App.state?.gesture||{};
-      if(gest.intent_ready&&gest.intent&&GESTURE_LABELS[gest.intent]){
+      if(gest.pending_confirm&&GESTURE_LABELS[gest.pending_confirm]){
+        setText("comp-gesture-state",`再做一次确认（${Math.ceil(gest.confirm_remaining||0)}s）`);
+        setText("comp-gesture-copy","松开手，再握拳一次即可确认。");
+      }else if((gest.intent_confirmed||gest.intent_ready)&&gest.intent&&GESTURE_LABELS[gest.intent]){
         setText("comp-gesture-state",GESTURE_LABELS[gest.intent]);
         setText("comp-gesture-copy","已识别到手势意图。");
+      }else if(gest.available&&gest.intent&&gest.progress>0&&gest.progress<1){
+        setText("comp-gesture-state",`保持手势 ${gest.stable_frames}/${Math.max(gest.stable_frames,3)}…`);
+        setText("comp-gesture-copy","保持住，快好了。");
       }else if(gest.available&&gest.name){
         setText("comp-gesture-state",gest.name.replace(/_/g," "));
       }else{setText("comp-gesture-state","暂未识别到手势");}
@@ -1364,8 +1400,9 @@
         btn.type="button";
         btn.className=`cal-day${entry?" has-entry":""}${key===todayKey?" today":""}${key===App.selectedDayKey?" selected":""}`;
         btn.setAttribute("role","gridcell");
-        btn.setAttribute("aria-label",`${mo+1}月${d}日${emo?`，${emo.zh}`:"，没有记录"}`);
-        btn.innerHTML=`<span class="day-num">${d}</span>${emo?`<span class="day-emo">${emo.icon}</span>`:""}`;
+        const obsDiffers=entry?.observed_emotion&&entry.observed_emotion!==entry.emotion&&EMOTION_MAP[entry.observed_emotion];
+        btn.setAttribute("aria-label",`${mo+1}月${d}日${emo?`，${emo.zh}`:"，没有记录"}${obsDiffers?`，心屿观察到${EMOTION_MAP[entry.observed_emotion].zh}`:""}`);
+        btn.innerHTML=`<span class="day-num">${d}</span>${emo?`<span class="day-emo">${emo.icon}</span>`:""}${obsDiffers?`<span class="day-observed" style="background:${EMOTION_MAP[entry.observed_emotion].color}"></span>`:""}`;
         if(emo&&key!==App.selectedDayKey)btn.style.backgroundColor=`${emo.color}88`;
         btn.addEventListener("click",()=>{App.selectedDayKey=key;renderCalendar();renderEntryDetail(key);});
         grid.append(btn);
@@ -1383,7 +1420,8 @@
       setText("entry-emotion-icon",emo.icon);
       setText("entry-mood-name",emo.zh);
       $("entry-note").textContent=entry.content||emo.note;
-      const firstReply=entry.conversation?.[0];
+      const first=entry.conversation?.[0];
+      const firstReply=(first&&first.role==="assistant")?first:null;
       const replyEl=$("entry-reply");
       if(replyEl){replyEl.textContent=firstReply?.content||"";replyEl.style.display=firstReply?.content?"block":"none";}
       $("entry-tags").innerHTML=(entry.tags||[]).map(t=>`<span class="entry-tag">${escapeHTML(t)}</span>`).join("");
@@ -1412,6 +1450,13 @@
       const topInfo=topEmo?EMOTION_MAP[topEmo]:null;
       setText("rec-week-top-emotion",topInfo?`${topInfo.icon} ${topInfo.zh}`:"—");
       setText("rec-week-days",totalDays?`${totalDays} 天`:"—");
+      // Agreement between the user's picked emotion and what the camera observed
+      let obsN=0,agreeN=0;
+      days.forEach(d=>{
+        const e=getEntryByDate(dateKey(d));
+        if(e?.observed_emotion){obsN++;if(e.observed_emotion===e.emotion)agreeN++;}
+      });
+      setText("rec-week-agreement",obsN?`${Math.round(agreeN/obsN*100)}%`:"—");
       // Render last saved weekly report if available, otherwise default text
       const reports=loadWeeklyReports();
       const latestReport=reports[0];
@@ -1449,20 +1494,100 @@
       setText("mine-service-copy",App.connected?"实时陪伴、会议和小屿回应均已可用。":"本地记录始终可用。");
     }
 
+    // ── Diary draft autosave ──────────────────────────────────────────────────
+    let draftTimer=0;
+    function draftLsKey(){return LS.DRAFT_PREFIX+App.diaryEditKey;}
+    function loadDraft(){return App.diaryEditKey?safeJSON(localStorage.getItem(draftLsKey()),null):null;}
+    function clearDraft(){if(App.diaryEditKey)localStorage.removeItem(draftLsKey());}
+    function saveDraftNow(){
+      if(!App.diaryEditKey||!$("diary-dialog")?.open)return;
+      const note=$("diary-note")?.value||"";
+      const tags=[...document.querySelectorAll("input[name='diary-tag']:checked")].map(i=>i.value);
+      if(!note&&!App.diaryChosenEmotion&&!tags.length)return;
+      lsWrite(draftLsKey(),{emotion:App.diaryChosenEmotion,note,tags,ts:Date.now()});
+    }
+    function scheduleDraftSave(){clearTimeout(draftTimer);draftTimer=setTimeout(saveDraftNow,2000);}
+
+    // ── Offline polish queue: retry "小屿帮我整理" when the cloud comes back ──
+    function loadPolishQueue(){return safeJSON(localStorage.getItem(LS.POLISH_QUEUE),[]);}
+    function queuePolish(date,text){
+      const q=loadPolishQueue().filter(i=>i.date!==date);
+      q.push({date,text,ts:Date.now()});
+      lsWrite(LS.POLISH_QUEUE,q.slice(-14));
+    }
+    async function processPolishQueue(){
+      const q=loadPolishQueue();if(!q.length)return;
+      const rest=[];
+      for(const item of q){
+        const entry=getEntryByDate(item.date);
+        if(!entry||entry.content!==item.text)continue; // edited since; drop silently
+        try{
+          const data=await apiReflect(item.text||"（用户未输入文字，请根据情绪状态生成一段温柔的日记草稿）");
+          if(data?.diary&&data.source&&data.source!=="template"){
+            const fresh=getEntryByDate(item.date);
+            if(fresh&&fresh.content===item.text){
+              fresh.content=item.text?`${item.text}\n\n${data.diary}`:data.diary;
+              fresh.polish_status="done";
+              saveEntry(fresh);
+              if(App.currentPage==="records")renderRecords();
+              showToast("小屿补上了那天的整理 🌿");
+            }
+          }else{rest.push(item);}
+        }catch{rest.push(item);}
+      }
+      lsWrite(LS.POLISH_QUEUE,rest);
+    }
+
     // ── Diary dialog ──────────────────────────────────────────────────────────
+    async function fetchDaySummary(date){
+      // Cache per date; observed-emotion summary from the camera side
+      App.daySummaries=App.daySummaries||{};
+      if(App.daySummaries[date])return App.daySummaries[date];
+      try{
+        const res=await fetch(`/api/day_summary?date=${encodeURIComponent(date)}`,{cache:"no-store"});
+        const b=await res.json();
+        if(b&&b.available){App.daySummaries[date]=b;return b;}
+      }catch{}
+      return null;
+    }
+    function describeDaySummary(sum){
+      if(!sum||!sum.available)return "";
+      const parts=[];
+      const emoInfo=EMOTION_MAP[sum.dominant_emotion];
+      if(emoInfo)parts.push(`大部分时间${emoInfo.zh}`);
+      if(sum.dips&&sum.dips.length)parts.push(`${sum.dips[0].ts} 有一次情绪低点`);
+      if(sum.attention_avg!=null)parts.push(`专注均值 ${Math.round(sum.attention_avg)}`);
+      if(sum.presence_min>=1)parts.push(`陪伴约 ${Math.round(sum.presence_min)} 分钟`);
+      return parts.length?`今天心屿看到你：${parts.join("，")}。`:"";
+    }
     function openDiaryDialog(key){
       App.diaryEditKey=key||dateKey(new Date());
       App.diaryChosenEmotion="";
-      // Pre-select: existing entry first, then live emotion
+      // Pre-select: existing entry > unsaved draft > live emotion (day summary may refine below)
       const existing=getEntryByDate(App.diaryEditKey);
+      const draft=loadDraft();
       if(existing?.emotion)App.diaryChosenEmotion=existing.emotion;
+      else if(draft?.emotion)App.diaryChosenEmotion=draft.emotion;
       else{const live=currentEmotionKey();if(live&&live!=="Neutral")App.diaryChosenEmotion=live;}
       $("diary-step-1").hidden=false;$("diary-step-2").hidden=true;
       setText("diary-step-label","STEP 1 OF 2");
       setText("diary-dialog-title",existing?"想重新看看这一天吗？":"亲，今天过得怎么样？");
       $("diary-next").disabled=!App.diaryChosenEmotion;
+      const obs=$("diary-observed");if(obs)obs.hidden=true;
       renderEmotionWheel();
       $("diary-dialog").showModal();
+      // Async: show what the camera observed today; prefer the DAY's dominant
+      // emotion over the instantaneous frame for pre-selection
+      fetchDaySummary(App.diaryEditKey).then(sum=>{
+        if(!sum||App.diaryEditKey!==(sum.date||App.diaryEditKey))return;
+        const line=describeDaySummary(sum);
+        if(line&&obs){obs.textContent=line;obs.hidden=false;}
+        if(!existing?.emotion&&!draft?.emotion&&sum.dominant_emotion&&EMOTION_MAP[sum.dominant_emotion]&&sum.dominant_emotion!=="Neutral"){
+          App.diaryChosenEmotion=sum.dominant_emotion;
+          $$(".emotion-btn").forEach(b=>b.setAttribute("aria-checked",String(b.dataset.emotion===sum.dominant_emotion)));
+          $("diary-next").disabled=false;
+        }
+      });
     }
 
     function renderEmotionWheel(){
@@ -1478,6 +1603,7 @@
           App.diaryChosenEmotion=key;
           $$(".emotion-btn").forEach(b=>b.setAttribute("aria-checked",String(b.dataset.emotion===key)));
           $("diary-next").disabled=false;
+          scheduleDraftSave();
         });
         wheel.append(btn);
       });
@@ -1498,7 +1624,17 @@
         lbl.innerHTML=`<input type="checkbox" name="diary-tag" value="${tag}"${selTags.includes(tag)?" checked":""}><span>${tag}</span>`;
         to.append(lbl);
       });
-      const noteEl=$("diary-note");if(noteEl){noteEl.value=existing?.content||"";setText("diary-note-count",String(noteEl.value.length));}
+      const draft=loadDraft();
+      const noteEl=$("diary-note");
+      if(noteEl){
+        noteEl.value=existing?.content||draft?.note||"";
+        setText("diary-note-count",String(noteEl.value.length));
+      }
+      // Restore drafted tags when there's no saved entry
+      if(!existing&&draft?.tags?.length){
+        document.querySelectorAll("input[name='diary-tag']").forEach(i=>{i.checked=draft.tags.includes(i.value);});
+      }
+      to.addEventListener("change",scheduleDraftSave);
       setTimeout(()=>noteEl?.focus(),80);
     }
 
@@ -1512,12 +1648,21 @@
         const noteEl=$("diary-note");
         if(noteEl&&data?.diary){noteEl.value=text?`${text}\n\n${data.diary}`:data.diary;}
         if(noteEl){setText("diary-note-count",String(noteEl.value.length));const w=$("diary-note-warn");if(w)w.hidden=noteEl.value.length<=2000;}
-        showToast(data?.reply||"小屿已经整理好一版草稿");
+        if(data?.source==="template"){
+          // Cloud unavailable — this was a local template; retry later automatically
+          queuePolish(App.diaryEditKey,text);
+          showToast("云端暂不可用，先用本地整理；恢复后小屿会自动补上");
+        }else{
+          showToast(data?.reply||"小屿已经整理好一版草稿");
+        }
+        scheduleDraftSave();
       }catch{
         const info=EMOTION_MAP[App.diaryChosenEmotion]||EMOTION_MAP.Neutral;
         const noteEl=$("diary-note");
         if(noteEl&&!text){noteEl.value=`今天的主要感受是${info.zh}。${info.note}`;setText("diary-note-count",String(noteEl.value.length));}
-        showToast("已为你保留一版本地草稿");
+        queuePolish(App.diaryEditKey,text);
+        showToast("已为你保留一版本地草稿，联网后小屿会自动补上整理");
+        scheduleDraftSave();
       }
       btn.disabled=false;btn.textContent=orig;
     }
@@ -1527,6 +1672,7 @@
       const tags=[...document.querySelectorAll("input[name='diary-tag']:checked")].map(i=>i.value);
       const s=App.state||{};
       const existingConv=getEntryByDate(App.diaryEditKey)?.conversation||[];
+      const daySum=(App.daySummaries||{})[App.diaryEditKey]||null;
       const entry={
         id:`diary_${App.diaryEditKey.replace(/-/g,"")}`,
         date:App.diaryEditKey,
@@ -1534,11 +1680,17 @@
         emotion:App.diaryChosenEmotion||"Neutral",
         emotion_confidence:Number(s.emotieff?.confidence||0.8),
         valence:Number(s.emotieff?.valence||0),
-        attention_avg:currentAttentionScore()||76,
+        // Prefer the day's aggregated attention over the instantaneous frame
+        attention_avg:(daySum?.attention_avg!=null?Math.round(daySum.attention_avg):currentAttentionScore())||76,
+        // Machine-observed emotion kept alongside the user's own choice
+        observed_emotion:daySum?.dominant_emotion||"",
+        observed_confidence:Number(daySum?.dominant_confidence||0),
+        observed_attention_avg:daySum?.attention_avg!=null?Math.round(daySum.attention_avg):null,
         tags,content:text,
         conversation:existingConv.length?existingConv:[],
       };
       saveEntry(entry);
+      clearDraft();
       App.selectedDayKey=App.diaryEditKey;
       $("diary-dialog").close();
       if(App.currentPage==="records")renderRecords();
@@ -1569,7 +1721,14 @@
             });
             const reply=data?.reply||"";
             pend.textContent=reply||"小屿暂时无法回复，但你的日记已安全保存 🌿";
-            if(reply){entry.conversation=[{role:"assistant",content:reply,ts:new Date().toISOString()},...entry.conversation.slice(1)];saveEntry(entry);}
+            if(reply){
+              // Merge into the CURRENT stored entry (may have changed during the await)
+              const fresh=getEntryByDate(entry.date)||entry;
+              const conv=fresh.conversation||[];
+              const rest=conv[0]?.role==="assistant"?conv.slice(1):conv; // replace old auto-reply only
+              fresh.conversation=[{role:"assistant",content:reply,ts:new Date().toISOString()},...rest];
+              saveEntry(fresh);
+            }
           }catch{pend.textContent="小屿暂时无法回复，但你的日记已安全保存 🌿";}
           if($("diary-reply-compose"))$("diary-reply-compose").style.display="grid";
         }
@@ -1579,8 +1738,9 @@
     function renderDiaryConvThread(entry){
       const el=$("diary-conv-thread");if(!el)return;el.innerHTML="";
       const msgs=entry.conversation||[];
-      // skip index-0 assistant reply (shown in entry-reply), show rest
-      msgs.slice(1).forEach(m=>_appendBubble(el,m.role,m.content));
+      // The leading assistant auto-reply (if any) is shown in entry-reply; show the rest here
+      const skipFirst=msgs[0]?.role==="assistant"?1:0;
+      msgs.slice(skipFirst).forEach(m=>_appendBubble(el,m.role,m.content));
       el.scrollTop=el.scrollHeight;
     }
 
@@ -1605,8 +1765,9 @@
         });
         const reply=data?.reply||"（小屿正在思考）";
         pend.textContent=reply;
-        entry.conversation.push({role:"assistant",content:reply,ts:new Date().toISOString()});
-        saveEntry(entry);
+        const fresh=getEntryByDate(entry.date)||entry;
+        (fresh.conversation=fresh.conversation||[]).push({role:"assistant",content:reply,ts:new Date().toISOString()});
+        saveEntry(fresh);
       }catch{pend.textContent="小屿暂时无法回复 🌿";}
       if(el)el.scrollTop=el.scrollHeight;
     }
@@ -1633,11 +1794,16 @@
 
     function evaluateGesture(){
       const g=App.state?.gesture||{};
-      if(!g.intent_ready||!g.intent)return;
       if(!g.available)return; // silent if gesture not available
+      if((!g.intent_ready&&!g.intent_confirmed)||!g.intent)return;
       const at=g.updated_at||g.intent;
       if(at===App.lastGestureAt)return;
       App.lastGestureAt=at;
+      // Two-stage intent: stage 1 (intent_ready) only prompts for confirmation
+      if(g.intent==="pause_or_mute"&&!g.intent_confirmed){
+        showToast("再握拳一次，确认暂停 ✊");
+        return;
+      }
       if(g.intent==="summon_xinyu"){
         if(App.currentPage==="companion"){
           $("comp-chat-input")?.focus();
@@ -1730,6 +1896,33 @@
       return d;
     }
 
+    async function apiChatStream(body,onDelta){
+      // SSE streaming via ReadableStream; throws on transport failure
+      const res=await fetch("/api/chat/stream",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(body),
+      });
+      if(!res.ok||!res.body)throw new Error("stream unavailable");
+      const reader=res.body.getReader(),dec=new TextDecoder();
+      let buf="",full="",meta=null;
+      for(;;){
+        const{done,value}=await reader.read();
+        if(done)break;
+        buf+=dec.decode(value,{stream:true});
+        const events=buf.split("\n\n");buf=events.pop();
+        for(const ev of events){
+          const dataLine=ev.split("\n").find(l=>l.startsWith("data:"));
+          if(!dataLine)continue;
+          let obj;try{obj=JSON.parse(dataLine.slice(5).trim());}catch{continue;}
+          if(ev.includes("event: done")){meta=obj;}
+          else if(ev.includes("event: error")){/* mid-stream error; keep what we have */}
+          else if(obj.delta){full+=obj.delta;onDelta(full);}
+        }
+      }
+      App.connected=true;
+      return{reply:full,...(meta||{})};
+    }
+
     async function sendCompanionChat(){
       const inp=$("comp-chat-input");if(!inp)return;
       const msg=inp.value.trim();if(!msg)return;
@@ -1737,35 +1930,58 @@
       const thread=$("comp-chat-thread");
       const pend=document.createElement("div");pend.className="chat-bubble";pend.textContent="小屿正在读你的这句话……";
       if(thread){thread.append(pend);thread.scrollTop=thread.scrollHeight;}
+      const s=App.state||{};
+      const body={
+        message:msg,
+        emotion:currentEmotionInfo().zh,
+        context:`情绪：${currentEmotionInfo().zh}；专注：${currentAttentionScore()}`,
+        user_name:getUserName(),
+      };
       try{
-        const data=await apiChat(msg);
+        // Streaming first; tokens render as they arrive
+        const data=await apiChatStream(body,partial=>{
+          pend.textContent=partial;
+          if(thread)thread.scrollTop=thread.scrollHeight;
+        });
         const reply=data?.reply||"心屿收到了你的话。";
         pend.textContent=reply;
         saveChatMsg("assistant",reply);
       }catch{
-        const fb=currentEmotionInfo().note+" 可以先把最想被理解的一件事写下来。";
-        pend.textContent=fb;saveChatMsg("assistant",fb);
+        // Transport failed — fall back to the non-streaming endpoint
+        try{
+          const data=await apiChat(msg);
+          const reply=data?.reply||"心屿收到了你的话。";
+          pend.textContent=reply;saveChatMsg("assistant",reply);
+        }catch{
+          const fb=currentEmotionInfo().note+" 可以先把最想被理解的一件事写下来。";
+          pend.textContent=fb;saveChatMsg("assistant",fb);
+        }
       }
       if(thread)thread.scrollTop=thread.scrollHeight;
     }
 
     // ── Weekly report ─────────────────────────────────────────────────────────
     function aggregateWeekData(){
-      const now=new Date(),weekAgo=new Date(now-7*86400000);
-      const week=loadEntries().filter(e=>new Date(e.date)>=weekAgo);
+      // All keys are LOCAL dates (dateKey); avoid UTC toISOString/Date("YYYY-MM-DD")
+      const now=new Date();
+      const weekAgoKey=dateKey(new Date(now-6*86400000));
+      const week=loadEntries().filter(e=>e.date>=weekAgoKey);
       const emotionCounts={},tagCounts={};
       week.forEach(e=>{
         emotionCounts[e.emotion]=(emotionCounts[e.emotion]||0)+1;
         (e.tags||[]).forEach(t=>{tagCounts[t]=(tagCounts[t]||0)+1;});
       });
+      const observed=week.filter(e=>e.observed_emotion);
       return{
         total:week.length,emotions:emotionCounts,
         avg_attention:week.length?Math.round(week.reduce((s,e)=>s+(e.attention_avg||0),0)/week.length):null,
         avg_valence:week.length?+(week.reduce((s,e)=>s+(e.valence||0),0)/week.length).toFixed(2):null,
         tags:tagCounts,
         excerpts:week.map(e=>({date:e.date,emotion:e.emotion,excerpt:(e.content||"").substring(0,50)})),
-        week_start:new Date(now-6*86400000).toISOString().slice(0,10),
-        week_end:now.toISOString().slice(0,10),
+        observed_agreement:observed.length?Math.round(observed.filter(e=>e.observed_emotion===e.emotion).length/observed.length*100):null,
+        observed_divergences:observed.filter(e=>e.observed_emotion!==e.emotion).map(e=>({date:e.date,self:e.emotion,observed:e.observed_emotion})),
+        week_start:weekAgoKey,
+        week_end:dateKey(now),
       };
     }
 
@@ -1777,18 +1993,21 @@
       const existing=reports.find(r=>r.week_end===data.week_end);
       if(existing&&!confirm("本周已生成周报，要重新生成吗？"))return;
       if(letter){letter.textContent="小屿正在回顾这一周…";letter.dataset.custom="1";}
-      const topEmotion=Object.entries(data.emotions).sort((a,b)=>b[1]-a[1])[0]?.[0]||"Neutral";
-      const topInfo=EMOTION_MAP[topEmotion]||EMOTION_MAP.Neutral;
       try{
-        const d=await apiChatWithTimeout({
-          message:[
-            `你是心屿，请给 ${getUserName()} 写一封温暖的周报信（书信体，300-500字）。`,
-            "要求：总结情绪趋势、专注情况（低于60温柔提醒）、引用1-2个日记片段、给下周一个小建议。",
-            `本周数据：${JSON.stringify(data)}`,
-          ].join("\n"),
-          emotion:topInfo.zh,user_name:getUserName(),
-        });
-        const content=d?.reply||"";
+        // Dedicated weekly-report endpoint: real entries + server-side day observations
+        const weekEntries=loadEntries().filter(e=>e.date>=data.week_start&&e.date<=data.week_end);
+        const ctrl=new AbortController();const tid=setTimeout(()=>ctrl.abort(),20000);
+        let d;
+        try{
+          const res=await fetch("/api/report/weekly",{
+            method:"POST",signal:ctrl.signal,
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({week_start:data.week_start,week_end:data.week_end,
+              entries:weekEntries,user_name:getUserName()}),
+          });
+          d=await res.json();
+        }finally{clearTimeout(tid);}
+        const content=d?.content||"";
         if(letter){letter.textContent=content||"小屿这会有点忙，稍后再试";letter.dataset.custom="1";}
         if(content){saveWeeklyReport({id:`weekly_${data.week_end.replace(/-/g,"")}`,week_start:data.week_start,week_end:data.week_end,generated_at:new Date().toISOString(),content,data_snapshot:data});}
         showToast("小屿写好这一周的回信了");
@@ -1880,6 +2099,7 @@
     bindEvents();
     renderHeader();renderHome();renderServiceStatus();
     connectWS();startPolling();
+    setTimeout(()=>{processPolishQueue().catch(()=>{});},3000);
     checkStorageQuota();
     if("serviceWorker"in navigator){
       navigator.serviceWorker.register("/sw.js",{scope:"/"}).catch(()=>{});
@@ -1891,25 +2111,28 @@
     const orphan=localStorage.getItem(LS.CONTROL_SID);
     if(orphan){apiPost("/api/single_track/stop",{session_id:orphan}).catch(()=>{});localStorage.removeItem(LS.CONTROL_SID);}
 
-    // Reconnect WS when page becomes visible again
+    // Reconnect WS + restart polling fallback when page becomes visible again
     document.addEventListener("visibilitychange",()=>{
       if(document.visibilityState==="visible"){
         if(!App.ws||App.ws.readyState!==WebSocket.OPEN){wsReconnectCount=0;connectWS();}
+        if(!App.pollTimer)startPolling();
       }else{
-        clearInterval(App.pollTimer);
+        clearInterval(App.pollTimer);App.pollTimer=0;
       }
     });
 
     window.addEventListener("beforeunload",()=>{
-      clearInterval(App.heartbeatTimer);
+      clearInterval(App.companionHbTimer);
+      clearInterval(App.meetingHbTimer);
       if(App.companionSid)navigator.sendBeacon("/api/single_track/stop",new Blob([JSON.stringify({session_id:App.companionSid})],{type:"application/json"}));
       if(App.meetingSid&&App.meetingActive)navigator.sendBeacon("/api/conversation/stop",new Blob([JSON.stringify({session_id:App.meetingSid,finalize:true})],{type:"application/json"}));
     });
 
-    // Note-length warning in diary dialog
+    // Note-length warning + draft autosave in diary dialog
     $("diary-note")?.addEventListener("input",e=>{
       setText("diary-note-count",String(e.target.value.length));
       const w=$("diary-note-warn");if(w)w.hidden=e.target.value.length<=2000;
+      scheduleDraftSave();
     });
   })();
   </script>
