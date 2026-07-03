@@ -97,8 +97,17 @@ class Orchestrator:
         self.target_x, self.target_y = 0.5, 0.32
         self.face_confidence_threshold = 0.65
         self.lock_confirm_required = 3
+        # Speaker-seek fast confirm: right after an audio_coarse turn we accept
+        # a face in 1 frame at high confidence (2 frames otherwise) instead of 3.
+        self.seek_confidence = 0.80
+        self.seek_confirm_fast = 1
+        self.seek_confirm_required = 2
+        # DOA rear blind cone (mechanical dead zone): corrected DOA within
+        # 180 +/- rear_cone_deg is ignored instead of slamming into the clamps.
+        self.rear_cone_deg = 30.0
         self.occlusion_hold_s = 1.2
         self.doa_offset_deg, self.doa_direction = 0.0, 1.0
+        self._load_doa_calibration()
         self.session = ControlSession(default_lease_ms=lease_ms)
         self.locked_track_id = None
         self.tracking_phase, self.stop_state = "inactive", "stopped"
@@ -116,6 +125,8 @@ class Orchestrator:
         self._doa_candidate_since = self._last_speech_at = 0.0
         self._speaker_seek = False
         self._speaker_confidence = 0.0
+        self._seek_started_at = 0.0   # monotonic ts of the last audio_coarse
+        self._seek_to_lock_ms = None  # latency of the last seek->face lock
         self.lock_state = "acquiring"
         self._lock_candidate_id = None
         self._lock_candidate_frames = 0
@@ -132,6 +143,20 @@ class Orchestrator:
         self._telemetry.update(config_telemetry)
         self._control_params = self._load_control_params()
         self._clear_current_target_telemetry()
+
+    def _load_doa_calibration(self):
+        """Load the persisted mic↔camera yaw offset written by the dashboard's
+        对准我 calibration (runtime/doa_calibration.json)."""
+        path = Path(__file__).resolve().parents[1] / "runtime" / "doa_calibration.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            offset = float(data.get("doa_offset_deg", 0.0))
+            if -180.0 <= offset <= 180.0:
+                self.doa_offset_deg = offset
+            direction = float(data.get("doa_direction", self.doa_direction))
+            self.doa_direction = -1.0 if direction < 0 else 1.0
+        except (OSError, ValueError, TypeError):
+            pass
 
     @property
     def state(self):
@@ -167,7 +192,7 @@ class Orchestrator:
             return self._command(stop=True, reason=event.name) if event.name in {"shutdown", "emergency_stop"} else None
         if event.type == "vision" and event.name == "observation":
             return self._observation(event)
-        if event.type == "audio" and self.session.mode in {ControlMode.MULTI_SOUND_YAW, ControlMode.MEETING_SOUND_YAW}:
+        if event.type == "audio" and self.session.mode in {ControlMode.MULTI_SOUND_YAW, ControlMode.MEETING_SOUND_YAW, ControlMode.MEETING_RECORDING}:
             return self._audio(event)
         if event.type == "vision" and self.session.mode is ControlMode.SINGLE_FACE_ANALYSIS:
             return self._legacy_vision(event)
@@ -306,9 +331,11 @@ class Orchestrator:
         if self.locked_track_id is not None:
             self._unlock(preserve_established=True)
         if self._speaker_seek:
-            face = self._confirm_face(faces, reacquiring=True, weight=1.4)
+            face = self._confirm_face(faces, reacquiring=True, weight=1.4, seek=True)
             if face:
                 self._speaker_seek = False
+                if self._seek_started_at:
+                    self._seek_to_lock_ms = round((time.monotonic() - self._seek_started_at) * 1000.0, 1)
                 self.tracking_phase = "speaker_face_lock"
                 self.lock_state = "locked"
                 return self._track(face, "speaker_face_lock")
@@ -339,12 +366,32 @@ class Orchestrator:
         required_confidence = 0.75 if switching else 0.65
         if now - self._doa_candidate_since < required_hold or confidence < required_confidence:
             return None
+        # Rear blind cone: the gimbal cannot physically point behind itself
+        # (yaw clamp 1-345). Ignore rather than slam into an end stop.
+        corrected = (doa + self.doa_offset_deg) % 360
+        if abs(((corrected - 180.0 + 180.0) % 360) - 180.0) <= self.rear_cone_deg:
+            self.tracking_phase = "audio_rear_ignored"
+            self._command_suppressed_reason = "rear_cone"
+            self._doa_candidate = None
+            return None
+        # Motor busy: previous motion still in flight -> keep the candidate
+        # armed and commit on a later event instead of stacking commands.
+        if (self._gimbal_yaw is not None
+                and abs(self._gimbal_yaw - self._yaw_target) > 8.0):
+            self._command_suppressed_reason = "motor_busy"
+            return None
         self._active_doa, self._doa_candidate, self._speaker_seek = doa, None, True
         self._speaker_confidence = confidence
+        self._seek_started_at = now
+        self._seek_to_lock_ms = None
         self._unlock()
         yaw = self._doa_yaw(doa)
         self.tracking_phase = "audio_coarse"
         self.fsm.transition(Event.make("audio", "speech_detected", "orchestrator"))
+        # Track the commanded yaw so fine tracking and the safety slew cap
+        # reference the real baseline (was previously left stale).
+        self._yaw_target = yaw
+        self._last_motion_at = now
         return self._command(yaw=yaw, speed=360, reason="audio_coarse")
 
     def _track(self, item, reason):
@@ -536,7 +583,7 @@ class Orchestrator:
                 return face
         return None
 
-    def _confirm_face(self, faces, *, reacquiring=False, weight=.6):
+    def _confirm_face(self, faces, *, reacquiring=False, weight=.6, seek=False):
         valid = [face for face in faces
                  if face.get("track_id") is not None
                  and float(face.get("confidence", face.get("conf", 0.0))) >= self.face_confidence_threshold]
@@ -552,7 +599,13 @@ class Orchestrator:
         else:
             self._lock_candidate_id, self._lock_candidate_frames = candidate_id, 1
         self.lock_state = "reacquiring" if reacquiring else "acquiring"
-        if self._lock_candidate_frames < self.lock_confirm_required:
+        if seek:
+            # Speaker seek: lock fast — 1 frame at high confidence, else 2
+            conf = float(face.get("confidence", face.get("conf", 0.0)))
+            needed = self.seek_confirm_fast if conf >= self.seek_confidence else self.seek_confirm_required
+        else:
+            needed = self.lock_confirm_required
+        if self._lock_candidate_frames < needed:
             return None
         self._lock(face)
         return face
@@ -626,6 +679,8 @@ class Orchestrator:
         self._doa_candidate = self._active_doa = None
         self._speaker_seek = False
         self._speaker_confidence = 0.0
+        self._seek_started_at = 0.0
+        self._seek_to_lock_ms = None
         self._outside_frames = 0
         self._last_motion_at = 0.0
         self._last_yaw_direction = self._last_pitch_direction = 0
@@ -659,6 +714,16 @@ class Orchestrator:
         return None
 
     def _doa_yaw(self, doa):
+        """Map a ReSpeaker DOA angle to an absolute gimbal yaw.
+
+        Conventions: ReSpeaker DOA 0° = straight ahead, increasing clockwise
+        when viewed from above (90° = right of the camera). Gimbal yaw 180 =
+        mechanical center, usable range [1, 345]; the ~±30° zone around DOA
+        180° (directly behind) is unreachable and filtered in _audio via
+        rear_cone_deg. `doa_offset_deg` compensates rotational mounting offset
+        between the mic array and the camera (set via 对准我 calibration);
+        `doa_direction` (±1) flips handedness for mirrored mounts.
+        """
         corrected=(float(doa)+self.doa_offset_deg)%360
         signed=corrected if corrected<=180 else corrected-360
         return self._clamp(self.center_yaw+signed*self.doa_direction,1,345)
@@ -680,6 +745,8 @@ class Orchestrator:
                 "tracking_error":dict(self._tracking_error),
                 "command_suppressed_reason":self._command_suppressed_reason,
                 "speaker_confidence":round(self._speaker_confidence,3),
+                "speaker_seek":bool(self._speaker_seek),
+                "seek_to_lock_ms":self._seek_to_lock_ms,
                 "stop_state":self.stop_state,"last_observation_id":self._last_observation_id}
         runtime.update(self._phase1a_telemetry())
         return runtime

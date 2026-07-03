@@ -352,7 +352,7 @@ button,input,select{font:inherit}
                 <div class="kv"><span>实体 LED</span><span id="hardwareLedState">--</span></div>
               </div>
             </div>
-            <div class="param-row"><span>DOA 零点偏移</span><input id="doaOffset" type="number" min="-180" max="180" value="0"><span>°</span></div>
+            <div class="param-row"><span>DOA 零点偏移</span><input id="doaOffset" type="number" min="-180" max="180" value="0"><span>°</span><button class="btn" id="btnDoaCalibrate" onclick="calibrateDoa()" title="站在摄像头正前方说话约2秒，自动测算偏移">对准我</button></div>
             <div class="param-row"><span>DOA 方向</span><select id="doaDirection"><option value="1">正向</option><option value="-1">反向</option></select><button class="btn requires-feature" data-page-lock="multi_sound_yaw" onclick="applyControlConfig()">应用</button></div>
           </section>
         </div>
@@ -383,6 +383,7 @@ button,input,select{font:inherit}
           <h2>闭环状态说明</h2>
           <div class="kv"><span>声源输入</span><span id="meetingDoaHealth">--</span></div>
           <div class="kv"><span>人脸关联</span><span id="meetingFaceHealth">--</span></div>
+          <div class="kv"><span>寻人锁定延迟</span><span id="meetingSeekLatency">--</span></div>
           <div class="kv"><span>录音存储</span><span id="meetingStorageHealth">--</span></div>
           <div class="kv"><span>ASR / LLM</span><span id="meetingAiHealth">--</span></div>
         </section>
@@ -730,6 +731,19 @@ async function stopManualPage(){
   await apiPost('/api/control/manual/stop',{session_id:currentSessionId});clearSession();
   log('手动云台功能已关闭');
 }
+async function calibrateDoa(){
+  const btn=$('btnDoaCalibrate');if(btn){btn.disabled=true;btn.textContent='请说话…';}
+  try{
+    const r=await apiPost('/api/control/doa_calibrate',{session_id:currentSessionId||''},{timeoutMs:8000});
+    if(r&&r.ok){
+      if($('doaOffset'))$('doaOffset').value=r.doa_offset_deg;
+      log(`DOA 校准完成：偏移 ${r.doa_offset_deg}°（实测中值 ${r.measured_doa_median}°，${r.samples} 样本）`);
+    }else{
+      log(`DOA 校准失败：${(r&&r.error)||'未检测到语音'}`);
+    }
+  }catch(e){log('DOA 校准请求失败，请正对摄像头说话后重试');}
+  if(btn){btn.disabled=false;btn.textContent='对准我';}
+}
 async function applyControlConfig(){
   if(!currentSessionId)return;
   const speed=Number($('controlSpeed')?.value||180),doa_offset_deg=Number($('doaOffset')?.value||0),doa_direction=Number($('doaDirection')?.value||1);
@@ -852,6 +866,8 @@ function renderMeetingWorkflow(conv={},context={}){
   $('meetingReportError').textContent=report.error?`${report.error}。请检查 ASR 配置或录音片段后重试。`:'';
   $('meetingDoaHealth').textContent=context.doaAvailable?'ReSpeaker 已连接':'等待 ReSpeaker';
   $('meetingFaceHealth').textContent=context.faceLocked?`已关联 Track ${context.trackId??'--'}`:(active?'持续搜索':'未运行');
+  const seekMs=context.seekToLockMs;
+  $('meetingSeekLatency').textContent=seekMs!=null?`${Math.round(Number(seekMs))} ms${Number(seekMs)<1500?' ✓':''}`:(context.speakerSeek?'寻人中…':'--');
   $('meetingStorageHealth').textContent=conv.error?`异常：${conv.error}`:(active?'增量保存中':recorded?'已封存':'待启动');
   $('meetingAiHealth').textContent=reportStatus==='ready'?'转写与纪要完成':(['stopping','summarizing'].includes(reportStatus)?`处理中 · 成功 ${asrDone} / 失败 ${asrFailed}`:reportStatus==='error'?'需要检查':'等待终止会议');
 }
@@ -922,7 +938,7 @@ function renderState(s){
   $('hardwareLedState').textContent=ledText;
 
   try{
-    renderMeetingWorkflow(conv,{hasSpeech,doaAvailable:!!doa.available,doaText:deg!=null?`${Math.round(deg)}°`:'--',faceLocked:!!(s.face_lock?.locked||ctrl.locked_track_id!=null),trackId:s.face_lock?.track_id??ctrl.locked_track_id});
+    renderMeetingWorkflow(conv,{hasSpeech,doaAvailable:!!doa.available,doaText:deg!=null?`${Math.round(deg)}°`:'--',faceLocked:!!(s.face_lock?.locked||ctrl.locked_track_id!=null),trackId:s.face_lock?.track_id??ctrl.locked_track_id,seekToLockMs:ctrl.seek_to_lock_ms,speakerSeek:!!ctrl.speaker_seek});
   }catch(e){log(`Meeting render error ${e.message}`)}
   $('gestureModeText').textContent=featureActive.gesture_interaction?'运行中':'未激活';
   $('gestureReady').textContent=gesture.available?'模型可用':(gesture.reason||'未加载');

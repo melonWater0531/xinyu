@@ -19,11 +19,13 @@ class SafetyLayer:
         max_step_deg: float = 2.5,
         max_accel_ratio: float = 0.30,
         rate_limit_hz: float = 8.0,
+        max_abs_step_deg: float = 45.0,
         **_: object,
     ) -> None:
         self._safe_mode = bool(safe_mode)
         self._enable_real_control = bool(enable_real_control)
         self._max_step = float(max_step_deg)
+        self._max_abs_step = float(max_abs_step_deg)
         self._max_accel = float(max_accel_ratio)
         self._rate_limit_s = 1.0 / max(0.5, float(rate_limit_hz))
         self._last_cmd_time = 0.0
@@ -66,6 +68,17 @@ class SafetyLayer:
                 return self._block("yaw_range")
             if command.pitch is not None and not (30.0 <= command.pitch <= 180.0):
                 return self._block("pitch_range")
+            # Absolute slew cap: a large jump (e.g. audio_coarse across the
+            # room) is truncated toward the target; the next command continues
+            # the ramp. Fine-tracking steps are far below the cap.
+            if (self._max_abs_step > 0 and command.yaw is not None
+                    and self._last_output is not None
+                    and self._last_output.yaw is not None
+                    and not self._last_output.stop):
+                delta = command.yaw - self._last_output.yaw
+                if abs(delta) > self._max_abs_step:
+                    capped = self._last_output.yaw + (self._max_abs_step if delta > 0 else -self._max_abs_step)
+                    command = replace(command, yaw=max(1.0, min(345.0, capped)))
         if command.speed is not None and not (1 <= command.speed <= 720):
             return self._block("speed_range")
 

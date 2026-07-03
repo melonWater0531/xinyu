@@ -76,10 +76,17 @@ class ConversationRecorder:
         block_ms: int = 100,
         device: Optional[int | str] = None,
         segment_callback: Optional[Callable[[dict], None]] = None,
+        end_silence_ms: int = 500,
+        max_segment_ms: int = 10000,
     ) -> None:
         self.root = Path(root)
         self.sample_rate = int(sample_rate)
         self.block_ms = int(block_ms)
+        # Segmentation latency knobs: a turn is emitted after end_silence_ms
+        # of trailing silence or at max_segment_ms — this bounds how fast the
+        # live transcript can appear.
+        self.end_silence_ms = int(end_silence_ms)
+        self.max_segment_ms = int(max_segment_ms)
         self.block_size = max(160, int(self.sample_rate * self.block_ms / 1000))
         self.device = device
         self.doa_provider = doa_provider
@@ -132,6 +139,19 @@ class ConversationRecorder:
 
         try:
             import sounddevice as sd
+            # Fast probe (no device open): fail in milliseconds when no input
+            # device exists instead of hanging inside PortAudio.
+            try:
+                devices = sd.query_devices()
+                has_input = any(int(d.get("max_input_channels", 0)) > 0 for d in devices)
+            except Exception as probe_exc:
+                self._error = f"audio device probe failed: {str(probe_exc)[:100]}"
+                logger.warning("Conversation recorder: %s", self._error)
+                return False
+            if not has_input:
+                self._error = "未检测到录音输入设备"
+                logger.warning("Conversation recorder: no input device present")
+                return False
             self._stream = sd.InputStream(
                 samplerate=self.sample_rate,
                 channels=1,
@@ -218,9 +238,9 @@ class ConversationRecorder:
         in_speech = False
 
         pre_blocks = max(1, int(200 / self.block_ms))
-        end_silence_blocks = max(2, int(700 / self.block_ms))
+        end_silence_blocks = max(2, int(self.end_silence_ms / self.block_ms))
         min_speech_blocks = max(2, int(400 / self.block_ms))
-        max_speech_blocks = max(min_speech_blocks, int(18000 / self.block_ms))
+        max_speech_blocks = max(min_speech_blocks, int(self.max_segment_ms / self.block_ms))
 
         noise_floor = 0.008
 

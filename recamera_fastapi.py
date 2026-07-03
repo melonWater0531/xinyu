@@ -329,6 +329,7 @@ _meeting_summary_task = None
 _meeting_recording_task = None
 _asr_queue = None
 _asr_worker_task = None
+_asr_worker_tasks: list = []
 _asr_loop = None
 _asr_enqueued_turns: set[str] = set()
 _asr_running_turns: set[str] = set()
@@ -683,7 +684,7 @@ def _apply_runtime_result(result: dict) -> None:
     _runtime_cache = _runtime_with_telemetry_defaults({**runtime, "connected": True})
     feature = _runtime_cache.get("active_feature", "inactive")
     _single_track_active = feature == "single_face_analysis"
-    _multi_track_active = feature in {"multi_sound_yaw", "meeting_sound_yaw"}
+    _multi_track_active = feature in {"multi_sound_yaw", "meeting_sound_yaw", "meeting_recording"}
     if feature == "inactive" and previous_feature in {"multi_sound_yaw", "meeting_recording", "meeting_sound_yaw"}:
         _conversation_recording_requested = False
         _stop_conversation_recording(finalize=True)
@@ -715,6 +716,8 @@ def _apply_runtime_result(result: dict) -> None:
         "target_point": runtime.get("target_point", {"x": 0.5, "y": 0.32, "framing_mode": "upper_body"}),
         "tracking_error": runtime.get("tracking_error", {"x": 0.0, "y": 0.0}),
         "command_suppressed_reason": runtime.get("command_suppressed_reason", ""),
+        "speaker_seek": bool(runtime.get("speaker_seek", False)),
+        "seek_to_lock_ms": runtime.get("seek_to_lock_ms"),
         "heartbeat_state": dict(_heartbeat_state),
         "last_heartbeat_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
         "last_heartbeat_error": _heartbeat_state.get("last_error", ""),
@@ -757,13 +760,28 @@ async def runtime_sync_loop() -> None:
         await asyncio.sleep(0.25)
 
 
+def _circular_mean_deg(samples) -> float:
+    """Mean of angles in degrees, correct across the 0/360 wrap."""
+    import math
+    s = sum(math.sin(math.radians(a)) for a in samples)
+    c = sum(math.cos(math.radians(a)) for a in samples)
+    return math.degrees(math.atan2(s, c)) % 360.0
+
+
+# Features whose sessions should drive DOA→gimbal (meeting_recording included
+# so home.html's 会议记录 gets sound-follow + face aiming too).
+DOA_CONTROL_FEATURES = {"multi_sound_yaw", "meeting_sound_yaw", "meeting_recording"}
+
+
 async def doa_event_loop() -> None:
     global _last_audio_event_active, _last_audio_event_session_id
+    from collections import deque
     loop = asyncio.get_running_loop()
+    doa_window: deque = deque(maxlen=5)  # ~0.5s of samples at 10Hz
     while True:
         feature = str(_runtime_cache.get("active_feature", "inactive"))
         session_id = str(_runtime_cache.get("session_id", ""))
-        control_active = feature in {"multi_sound_yaw", "meeting_sound_yaw"} and bool(session_id)
+        control_active = feature in DOA_CONTROL_FEATURES and bool(session_id)
         active = bool(
             control_active
             and _doa_reader is not None
@@ -772,11 +790,13 @@ async def doa_event_loop() -> None:
         )
         if active:
             _last_audio_event_session_id = session_id
+            doa_window.append(float(_doa_reader.doa))
+            smoothed_doa = _circular_mean_deg(doa_window)
             lip_motion, lip_score, lip_track_id = _lip_motion_evidence()
             event = Event.make(
                 "audio", "speech_detected", "respeaker",
                 payload={
-                    "doa_deg": float(_doa_reader.doa), "speech": True, "session_id": session_id,
+                    "doa_deg": smoothed_doa, "speech": True, "session_id": session_id,
                     "vad_confidence": 0.8, "lip_motion": lip_motion,
                     "lip_motion_score": lip_score, "lip_track_id": lip_track_id,
                 },
@@ -791,6 +811,8 @@ async def doa_event_loop() -> None:
             result = await loop.run_in_executor(_bus_pool, lambda: _eventbus.emit(event))
             _apply_runtime_result(result)
             _last_audio_event_session_id = ""
+        if not active:
+            doa_window.clear()
         _last_audio_event_active = active
         await asyncio.sleep(0.1)
 
@@ -1025,23 +1047,33 @@ def _mark_asr_error(message: str) -> None:
     _asr_stats["last_error_at"] = time.time()
 
 
+_LIVE_ASR_WORKERS = int(os.environ.get("RECAMERA_LIVE_ASR_WORKERS", "3"))
+
+
 def _ensure_asr_worker():
-    global _asr_queue, _asr_worker_task, _asr_loop
+    """Keep _LIVE_ASR_WORKERS concurrent consumers on the shared queue so
+    overlapping turns transcribe in parallel during a live meeting."""
+    global _asr_queue, _asr_worker_task, _asr_worker_tasks, _asr_loop
     loop = _current_running_loop()
     if loop is None:
         return None
     if _asr_loop is not None and _asr_loop is not loop:
-        if _asr_worker_task is not None and not _asr_worker_task.done():
-            _asr_worker_task.cancel()
+        for t in _asr_worker_tasks:
+            if not t.done():
+                t.cancel()
         _asr_queue = None
+        _asr_worker_tasks = []
         _asr_worker_task = None
         _asr_enqueued_turns.clear()
         _asr_running_turns.clear()
     _asr_loop = loop
     if _asr_queue is None:
         _asr_queue = asyncio.Queue(maxsize=200)
-    if _asr_worker_task is None or _asr_worker_task.done():
-        _asr_worker_task = asyncio.create_task(_asr_worker_loop(), name="meeting-asr-worker")
+    _asr_worker_tasks = [t for t in _asr_worker_tasks if not t.done()]
+    while len(_asr_worker_tasks) < _LIVE_ASR_WORKERS:
+        _asr_worker_tasks.append(
+            asyncio.create_task(_asr_worker_loop(), name=f"meeting-asr-worker-{len(_asr_worker_tasks)}"))
+    _asr_worker_task = _asr_worker_tasks[0]
     return _asr_worker_task
 
 
@@ -1136,12 +1168,22 @@ def _start_conversation_recording() -> bool:
     return bool(recorder.start())
 
 
+class RecorderBusyError(RuntimeError):
+    """A previous recorder start is still wedged inside PortAudio."""
+
+
 async def _start_conversation_recording_async() -> bool:
+    global _recorder_start_future
     loop = _current_running_loop()
     if loop is None:
         return _start_conversation_recording()
+    # A stranded start (PortAudio blocked in C) keeps the single recorder
+    # worker busy; report degraded immediately instead of queueing behind it.
+    if _recorder_start_future is not None and not _recorder_start_future.done():
+        raise RecorderBusyError("录音设备无响应（上一次启动仍未返回），请检查麦克风连接")
+    _recorder_start_future = loop.run_in_executor(_recorder_pool, _start_conversation_recording)
     return bool(await asyncio.wait_for(
-        loop.run_in_executor(None, _start_conversation_recording),
+        asyncio.shield(_recorder_start_future),
         timeout=RECORDING_START_TIMEOUT_S,
     ))
 
@@ -1184,6 +1226,14 @@ async def _start_meeting_recording_background() -> None:
             "error": f"录音设备启动超过 {RECORDING_START_TIMEOUT_S:.1f}s，已降级为仅定位",
             "progress": 0,
         }
+    except RecorderBusyError as exc:
+        _conversation_recording_requested = False
+        _meeting_report = {
+            **_meeting_report,
+            "status": "recording_degraded",
+            "error": str(exc),
+            "progress": 0,
+        }
     except Exception as exc:
         _conversation_recording_requested = False
         _meeting_report = {
@@ -1206,7 +1256,7 @@ async def _stop_conversation_recording_async(finalize: bool = True) -> bool:
         return True
     try:
         await asyncio.wait_for(
-            loop.run_in_executor(None, lambda: _stop_conversation_recording(finalize=finalize)),
+            loop.run_in_executor(_recorder_pool, lambda: _stop_conversation_recording(finalize=finalize)),
             timeout=RECORDING_STOP_TIMEOUT_S,
         )
         return True
@@ -1595,7 +1645,7 @@ def _build_vision_observation() -> dict:
 
 async def _publish_vision_observation() -> None:
     feature = str(_runtime_cache.get("active_feature", "inactive"))
-    if feature not in {"single_face_analysis", "multi_sound_yaw", "meeting_sound_yaw"}:
+    if feature not in {"single_face_analysis", "multi_sound_yaw", "meeting_sound_yaw", "meeting_recording"}:
         return
     payload = _build_vision_observation()
     if not payload["session_id"]:
@@ -1911,11 +1961,12 @@ async def lifespan(app: FastAPI):
     push_task.cancel()
     runtime_task.cancel()
     doa_task.cancel()
-    if _asr_worker_task is not None:
-        _asr_worker_task.cancel()
+    for t in _asr_worker_tasks:
+        if not t.done():
+            t.cancel()
     try: await push_task
     except asyncio.CancelledError: pass
-    for task in (runtime_task, doa_task, _asr_worker_task):
+    for task in (runtime_task, doa_task, *_asr_worker_tasks):
         if task is None:
             continue
         try: await task
@@ -3009,7 +3060,7 @@ async def _start_feature(feature: str) -> dict:
     if result.get("accepted"):
         _ui_session_id = session_id
         _single_track_active = feature == "single_face_analysis"
-        _multi_track_active = feature in {"multi_sound_yaw", "meeting_sound_yaw"}
+        _multi_track_active = feature in {"multi_sound_yaw", "meeting_sound_yaw", "meeting_recording"}
     return {**result, "session_id": session_id, "feature": feature}
 
 
@@ -3072,15 +3123,64 @@ async def api_meeting_yaw_stop(payload: dict = Body(default={})):
 @app.post("/api/control/config")
 async def api_control_config(payload: dict = Body(default={})):
     framing_mode = str(payload.get("framing_mode", "upper_body"))
-    return await _emit_ui_event("control_config", {
+    config = {
         "session_id": str(payload.get("session_id", "")),
         "speed": payload.get("speed", 180),
-        "doa_offset_deg": payload.get("doa_offset_deg", 0),
-        "doa_direction": payload.get("doa_direction", 1),
         "framing_mode": framing_mode,
         "target_x": payload.get("target_x", 0.5),
         "target_y": payload.get("target_y", 0.5 if framing_mode == "face_center" else 0.32),
-    })
+    }
+    # Only forward DOA calibration when explicitly provided — a defaulted 0
+    # here used to silently wipe the persisted 对准我 offset.
+    if "doa_offset_deg" in payload:
+        config["doa_offset_deg"] = payload["doa_offset_deg"]
+    if "doa_direction" in payload:
+        config["doa_direction"] = payload["doa_direction"]
+    return await _emit_ui_event("control_config", config)
+
+
+@app.post("/api/control/doa_calibrate")
+async def api_control_doa_calibrate(payload: dict = Body(default={})):
+    """对准我: user stands directly in front of the camera and speaks.
+    Samples the DOA median over ~1.5s, derives the mic↔camera mounting offset,
+    persists it (runtime/doa_calibration.json) and applies it live."""
+    import statistics
+    if _doa_reader is None:
+        return {"ok": False, "error": "DOA 数据源不可用"}
+    samples = []
+    deadline = time.monotonic() + 1.8
+    while time.monotonic() < deadline:
+        if getattr(_doa_reader, "has_speech", False) and float(getattr(_doa_reader, "age", 999.0)) <= 1.0:
+            samples.append(float(_doa_reader.doa))
+        await asyncio.sleep(0.1)
+    if len(samples) < 5:
+        return {"ok": False, "error": "未检测到语音，请正对摄像头说话后重试"}
+    median = statistics.median(samples)
+    # Corrected front should be 0: offset cancels the measured angle
+    offset = -median
+    if offset <= -180.0:
+        offset += 360.0
+    offset = max(-180.0, min(180.0, offset))
+    calib_path = Path(__file__).resolve().parent / "runtime" / "doa_calibration.json"
+    try:
+        calib_path.parent.mkdir(parents=True, exist_ok=True)
+        calib_path.write_text(json.dumps({
+            "doa_offset_deg": round(offset, 1),
+            "measured_doa_median": round(median, 1),
+            "samples": len(samples),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }, ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("DOA calibration persist failed: %s", str(exc)[:80])
+    # Apply live to the running control session (if any)
+    session_id = str(payload.get("session_id", "") or _ui_session_id)
+    if session_id:
+        await _emit_ui_event("control_config", {
+            "session_id": session_id,
+            "doa_offset_deg": round(offset, 1),
+        })
+    return {"ok": True, "doa_offset_deg": round(offset, 1),
+            "measured_doa_median": round(median, 1), "samples": len(samples)}
 
 
 @app.post("/api/gimbal/home")
@@ -3688,6 +3788,7 @@ async def _meeting_summarize_impl(payload: dict) -> dict:
         "turns": len(transcripts),
         "duration_min": duration_min,
         "report_path": report_path,
+        "structured": _meeting_report.get("structured", {}),
     }
 
 

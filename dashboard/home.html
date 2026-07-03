@@ -297,6 +297,16 @@
     .chat-compose button { min-width: 60px; border: 0; border-radius: var(--radius-md); background: var(--primary); color: white; font-weight: 500; }
 
     /* ── Tab 3: Meeting ── */
+    .mtg-transcript { max-height: 260px; overflow-y: auto; display: grid; gap: 8px; padding: 4px 0; }
+    .mtg-transcript-empty { color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .mtg-turn { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; font-size: 13px; line-height: 1.65; }
+    .mtg-turn__speaker {
+      padding: 2px 8px; border-radius: var(--radius-pill); font-size: 11px; white-space: nowrap;
+      border: 1px solid var(--line); background: rgba(255,255,255,.5); color: var(--muted); margin-top: 1px;
+    }
+    .mtg-turn__text { word-break: break-word; }
+    .mtg-turn--pending .mtg-turn__text { color: var(--muted); animation: badge-pulse 1.4s ease-in-out infinite; }
+    .mtg-turn--failed .mtg-turn__text { color: var(--gray); font-style: italic; }
     .mtg-timer { display: flex; align-items: baseline; gap: 8px; margin: 10px 0; }
     .mtg-elapsed { font-family: "DM Mono","Menlo",monospace; font-size: 32px; }
     .meeting-notes {
@@ -607,6 +617,7 @@
           <div class="inline-btns">
             <button class="btn-primary" type="button" id="mtg-toggle">开始会议记录</button>
             <button class="btn-soft" type="button" id="mtg-summarize">整理</button>
+            <button class="btn-soft" type="button" id="mtg-doa-calibrate" title="站在摄像头正前方说话，校准声源方向">对准我</button>
           </div>
         </article>
 
@@ -626,8 +637,26 @@
         </div>
 
         <article class="card">
+          <div class="card__head compact">
+            <div><p class="eyebrow">LIVE TRANSCRIPT</p><h2>实时转写</h2></div>
+            <span class="badge badge--off" id="mtg-asr-badge">待录音</span>
+          </div>
+          <div class="mtg-transcript" id="mtg-transcript">
+            <p class="mtg-transcript-empty" id="mtg-transcript-empty">开始会议后，每句话说完停顿约 2-3 秒会出现在这里。</p>
+          </div>
+        </article>
+
+        <article class="card">
           <p class="eyebrow">SUMMARY</p>
           <h2>会议整理</h2>
+          <div id="mtg-progress" style="display:none;margin-top:10px">
+            <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:6px">
+              <span id="mtg-progress-stage">整理中…</span><span id="mtg-progress-pct">0%</span>
+            </div>
+            <div style="height:6px;border-radius:3px;background:rgba(139,115,85,.12);overflow:hidden">
+              <div id="mtg-progress-bar" style="height:100%;width:0%;border-radius:3px;background:linear-gradient(90deg,var(--primary),var(--green));transition:width .4s"></div>
+            </div>
+          </div>
           <div class="meeting-notes" id="mtg-notes" style="margin-top:10px">还没有整理结果。</div>
         </article>
       </section>
@@ -1085,11 +1114,15 @@
     }
 
     // ── API ───────────────────────────────────────────────────────────────────
-    async function apiPost(path,payload={}){
-      const res=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-      const body=await res.json().catch(()=>({}));
-      if(!res.ok||body.ok===false||body.success===false)throw Object.assign(new Error(body.error||body.reason||body.message||"暂不可用"),body);
-      App.connected=true; return body;
+    async function apiPost(path,payload={},timeoutMs=8000){
+      const ctrl=new AbortController();
+      const tid=setTimeout(()=>ctrl.abort(),timeoutMs);
+      try{
+        const res=await fetch(path,{method:"POST",signal:ctrl.signal,headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+        const body=await res.json().catch(()=>({}));
+        if(!res.ok||body.ok===false||body.success===false)throw Object.assign(new Error(body.error||body.reason||body.message||"暂不可用"),body);
+        App.connected=true; return body;
+      }finally{clearTimeout(tid);}
     }
 
     async function apiChatWithTimeout(payload,timeoutMs=10000){
@@ -1377,6 +1410,63 @@
       setText("mtg-copy",active?"心屿正在记录可整理的发言片段。":"点击开始后，心屿会记录可整理的发言片段。");
       const timer=$("mtg-timer");if(timer)timer.style.display=active?"flex":"none";
       setText("mtg-doa",speakerDirection());setText("mtg-people",peopleText());
+      renderMeetingTranscript();
+    }
+
+    // ── Live transcript ───────────────────────────────────────────────────────
+    const SPEAKER_COLORS=["#8B7355","#4d7a46","#8a5c2e","#7d3838","#4a6b8a","#6b4a8a"];
+    function speakerColor(label){
+      let h=0;for(const c of String(label||""))h=(h*31+c.charCodeAt(0))>>>0;
+      return SPEAKER_COLORS[h%SPEAKER_COLORS.length];
+    }
+    function renderMeetingTranscript(){
+      const box=$("mtg-transcript");if(!box)return;
+      const conv=App.state?.conversation||{};
+      const turns=conv.timeline||[];
+      const asrBadge=$("mtg-asr-badge");
+      if(asrBadge){
+        const asr=conv.asr||{};
+        const busy=(asr.queue||0)+(asr.running||0)+(asr.pending||0);
+        if(App.meetingActive&&busy>0){asrBadge.className="badge badge--warn";asrBadge.textContent=`转写中 ×${busy}`;}
+        else if(App.meetingActive){asrBadge.className="badge badge--ok";asrBadge.textContent="监听中";}
+        else{asrBadge.className="badge badge--off";asrBadge.textContent="待录音";}
+      }
+      const empty=$("mtg-transcript-empty");
+      if(empty)empty.style.display=turns.length?"none":"block";
+      if(!turns.length)return;
+      // Incremental DOM update keyed by turn id; auto-scroll only if at bottom
+      const atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<40;
+      const seen=new Set();
+      for(const t of turns){
+        const id=String(t.id||"");if(!id)continue;
+        seen.add(id);
+        let row=box.querySelector(`[data-turn="${CSS.escape(id)}"]`);
+        if(!row){
+          row=document.createElement("div");
+          row.dataset.turn=id;
+          const label=t.speaker_label||"未知说话人";
+          row.innerHTML=`<span class="mtg-turn__speaker"></span><span class="mtg-turn__text"></span>`;
+          const chip=row.firstChild;
+          chip.textContent=label;
+          chip.style.borderColor=speakerColor(label);
+          chip.style.color=speakerColor(label);
+          box.append(row);
+        }
+        const status=String(t.status||"");
+        const textEl=row.querySelector(".mtg-turn__text");
+        if(t.text){
+          row.className="mtg-turn";textEl.textContent=t.text;
+        }else if(status==="asr_failed"){
+          row.className="mtg-turn mtg-turn--failed";textEl.textContent="（转写失败）";
+        }else if(status==="asr_empty"){
+          row.className="mtg-turn mtg-turn--failed";textEl.textContent="（未识别到内容）";
+        }else{
+          row.className="mtg-turn mtg-turn--pending";textEl.textContent="转写中…";
+        }
+      }
+      // Drop rows for turns no longer in the (last-80) window
+      box.querySelectorAll("[data-turn]").forEach(el=>{if(!seen.has(el.dataset.turn))el.remove();});
+      if(atBottom)box.scrollTop=box.scrollHeight;
     }
 
     function renderMeetingTimer(){
@@ -1850,32 +1940,136 @@
       const btn=$("mtg-toggle");if(!btn)return;btn.disabled=true;
       try{
         if(App.meetingActive){
-          await stopMeetingRecording();App.meetingActive=false;
+          const sid=App.meetingSid;
+          App.meetingActive=false;
           clearInterval(App.meetingElapsedTimer);App.meetingElapsedTimer=0;App.meetingStartedAt=0;
-          showToast("会议记录已结束");
+          clearInterval(App.mtgPollTimer);App.mtgPollTimer=0;
+          clearInterval(App.meetingHbTimer);App.meetingHbTimer=0;
+          try{
+            // One click: stop recording + background ASR drain + LLM minutes
+            await apiPost("/api/meeting/complete",{session_id:sid});
+            App.meetingSid="";localStorage.removeItem(LS.RECORDING_SID);
+            showToast("录音已结束，小屿开始整理");
+            startSummaryProgressPolling();
+          }catch(e){
+            // Fallback: plain stop without minutes
+            App.meetingSid=sid;
+            await stopMeetingRecording().catch(()=>{});
+            showToast("会议记录已结束");
+          }
         }else{
           const data=await startMeetingRecording();
           App.meetingActive=true;App.meetingStartedAt=Date.now();
           App.meetingElapsedTimer=setInterval(renderMeetingTimer,1000);
+          // Fallback transcript refresh when the WS snapshot is slow/broken
+          clearInterval(App.mtgPollTimer);
+          App.mtgPollTimer=setInterval(async()=>{
+            if(!App.meetingActive)return;
+            if(App.ws&&App.ws.readyState===WebSocket.OPEN&&Date.now()-App.wsLastAt<1500)return;
+            try{
+              const res=await fetch("/api/conversation/state",{cache:"no-store"});
+              const st=await res.json();
+              if(App.state)App.state.conversation=st;
+              if(App.currentPage==="meeting")renderMeetingTranscript();
+            }catch{}
+          },2000);
           showToast("会议记录已开始");
+          // Recording starts in the background; verify it actually came up
+          setTimeout(async()=>{
+            if(!App.meetingActive)return;
+            try{
+              const res=await fetch("/api/conversation/state",{cache:"no-store"});
+              const st=await res.json();
+              const rep=st.report||st.meeting_report||{};
+              if((st.meeting_state||rep.status)==="recording_degraded"){
+                showToast(rep.error||st.last_recording_error||"录音不可用，仅保留定位",5000);
+              }
+            }catch{}
+          },2500);
         }
       }catch{showToast(App.meetingActive?"暂时无法结束会议记录":"暂时无法开始会议记录");}
       btn.disabled=false;renderMeeting();
     }
 
+    // ── Meeting summary: progress + structured minutes ───────────────────────
+    function updateSummaryProgress(rep){
+      const prog=$("mtg-progress");if(!prog)return;
+      prog.style.display="block";
+      const pct=Math.max(0,Math.min(100,Number(rep.progress||0)));
+      const bar=$("mtg-progress-bar");if(bar)bar.style.width=`${pct}%`;
+      setText("mtg-progress-pct",`${pct}%`);
+      const status=String(rep.status||"");
+      const stage=status==="stopping"?"正在停止录音…"
+        :status==="summarizing"?(pct<=65?"转写收尾…":"小屿整理中…")
+        :status==="ready"?"完成":status==="error"?"出错了":"处理中…";
+      setText("mtg-progress-stage",stage);
+    }
+    function renderStructuredMinutes(rep){
+      const el=$("mtg-notes");if(!el)return;
+      const s=rep.structured||{};
+      el.textContent="";
+      const addSection=(title,items)=>{
+        if(!items||!items.length)return;
+        const h=document.createElement("div");h.style.fontWeight="600";h.style.marginTop="10px";h.textContent=title;
+        el.append(h);
+        for(const it of items){
+          const li=document.createElement("div");li.style.paddingLeft="10px";
+          li.textContent="· "+(typeof it==="string"?it
+            :`${it.task||it.item||JSON.stringify(it)}${it.owner&&it.owner!=="待确认"?`（${it.owner}）`:""}`);
+          el.append(li);
+        }
+      };
+      const summary=rep.summary||s.summary||"";
+      if(summary){const p=document.createElement("div");p.textContent=summary;el.append(p);}
+      addSection("议题",s.topics);
+      addSection("决定",s.decisions);
+      addSection("行动项",s.actions);
+      addSection("待确认",s.open_questions);
+      if(!el.childNodes.length)el.textContent=rep.minutes||rep.diary||"这次交流已经整理完成。";
+      return summary||rep.minutes||"";
+    }
+    function startSummaryProgressPolling(){
+      updateSummaryProgress({status:"stopping",progress:0});
+      setText("mtg-notes","小屿正在整理这段交流……");
+      clearInterval(App.summaryPollTimer);
+      App.summaryPollTimer=setInterval(async()=>{
+        try{
+          const res=await fetch("/api/conversation/state",{cache:"no-store"});
+          const st=await res.json();
+          const rep=st.report||{};
+          updateSummaryProgress(rep);
+          if(rep.status==="ready"){
+            clearInterval(App.summaryPollTimer);App.summaryPollTimer=0;
+            const headline=renderStructuredMinutes(rep);
+            saveMeetingNote({id:`mtg_${Date.now()}`,date:formatDate(new Date(),true),
+              summary:(headline||"")+(rep.minutes?`\n\n${rep.minutes}`:"")});
+            showToast("会议整理完成");
+            setTimeout(()=>{const p=$("mtg-progress");if(p)p.style.display="none";},2000);
+          }else if(rep.status==="error"){
+            clearInterval(App.summaryPollTimer);App.summaryPollTimer=0;
+            setText("mtg-notes",rep.error||"整理失败，可以点「整理」重试。");
+            setTimeout(()=>{const p=$("mtg-progress");if(p)p.style.display="none";},2000);
+          }
+        }catch{}
+      },1500);
+    }
+
     async function summarizeMeeting(){
       setText("mtg-notes","小屿正在整理这段交流……");
+      updateSummaryProgress({status:"summarizing",progress:5});
       try{
-        const data=await apiPost("/api/meeting/summarize",{});
+        const data=await apiPost("/api/meeting/summarize",{},260000);
         if(data.ok===false)throw data;
-        const summary=data.summary||data.reply||"这次交流已经整理完成。";
-        const diary=data.diary||"";
-        const full=summary+(diary?`\n\n${diary}`:"");
-        saveMeetingNote({id:`mtg_${Date.now()}`,date:formatDate(new Date(),true),summary:full});
-        setText("mtg-notes",full);showToast("会议整理完成");
+        updateSummaryProgress({status:"ready",progress:100});
+        const headline=renderStructuredMinutes({...data,structured:data.structured||{}});
+        const summary=headline||data.summary||data.reply||"这次交流已经整理完成。";
+        saveMeetingNote({id:`mtg_${Date.now()}`,date:formatDate(new Date(),true),summary:summary+(data.minutes?`\n\n${data.minutes}`:"")});
+        showToast("会议整理完成");
+        setTimeout(()=>{const p=$("mtg-progress");if(p)p.style.display="none";},2000);
       }catch(err){
-        const codes={recording_not_started:"请先开始录音。",no_segments:"未检测到有效语音，试试靠近麦克风。",asr_empty:"语音转文字未返回结果，录音可能太短。"};
+        const codes={recording_not_started:"请先开始录音。",no_segments:"未检测到有效语音，试试靠近麦克风。",asr_empty:"语音转文字未返回结果，录音可能太短。",summarize_in_progress:"已有一次整理正在进行，请稍候。"};
         setText("mtg-notes",codes[err?.error_code||err?.message]||"暂时没有整理出内容，可以稍后再试。");
+        const p=$("mtg-progress");if(p)p.style.display="none";
       }
     }
 
@@ -2034,6 +2228,14 @@
 
       $("mtg-toggle")?.addEventListener("click",toggleMeeting);
       $("mtg-summarize")?.addEventListener("click",summarizeMeeting);
+      $("mtg-doa-calibrate")?.addEventListener("click",async()=>{
+        const btn=$("mtg-doa-calibrate");btn.disabled=true;btn.textContent="请说话…";
+        try{
+          const d=await apiPost("/api/control/doa_calibrate",{session_id:App.meetingSid||App.companionSid||""},6000);
+          showToast(`已校准：声源偏移 ${d.doa_offset_deg}°`);
+        }catch(e){showToast(e.message||"校准失败，请正对摄像头说话后重试");}
+        btn.disabled=false;btn.textContent="对准我";
+      });
 
       $("rec-add-entry")?.addEventListener("click",()=>openDiaryDialog(dateKey(new Date())));
       $("entry-new-today")?.addEventListener("click",()=>openDiaryDialog(dateKey(new Date())));
