@@ -1,4 +1,4 @@
-const CACHE_NAME = "xinyu-pwa-v10";
+const CACHE_NAME = "xinyu-pwa-v11";
 const APP_SHELL = [
   "/home",
   "/manifest.webmanifest",

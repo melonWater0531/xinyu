@@ -75,8 +75,8 @@ button,input,select{font:inherit}
 .card-head h2{margin:0}
 .video-card{padding:0;overflow:hidden}
 .video-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line)}
-.video-wrap{position:relative;min-height:430px;background:#0e1522;display:flex;align-items:center;justify-content:center}
-#videoStream{width:100%;height:100%;object-fit:contain;display:block}
+.video-wrap{position:relative;width:100%;min-height:0;aspect-ratio:var(--video-aspect,16/9);background:#0e1522;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.video-wrap img{position:absolute;inset:0;width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;object-position:center;display:block}
 #overlay,#multiOverlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 .metric{border:1px solid var(--line);border-radius:8px;background:var(--panel-soft);padding:10px;min-height:72px}
@@ -154,7 +154,7 @@ button,input,select{font:inherit}
   .main{padding:12px}
   .metric-grid{grid-template-columns:1fr}
   .doa-card{grid-template-columns:1fr}
-  .video-wrap{min-height:300px}
+  .video-wrap{min-height:0}
   .workflow-strip{grid-template-columns:1fr}
   .turn{grid-template-columns:72px minmax(0,1fr)}.turn-time{grid-column:2;text-align:left}
 }
@@ -226,7 +226,7 @@ button,input,select{font:inherit}
         <section class="card video-card">
           <div class="video-head">
             <strong>摄像头信息源</strong>
-            <span class="pill" id="singleTargetText">等待目标</span>
+            <div class="status-row"><span class="pill" id="singleFrameInfo">原始画幅 --</span><span class="pill" id="singleTargetText">等待目标</span></div>
           </div>
           <div class="controls" style="padding:0 0 10px">
             <button class="btn" id="landmarkToggle" type="button" aria-pressed="false" onclick="toggleLandmarks()">&#20116;&#28857;&#26174;&#31034;</button>
@@ -247,7 +247,7 @@ button,input,select{font:inherit}
               <button class="btn requires-feature" data-page-lock="single_face_analysis" onclick="restartSinglePage()">重新找人脸</button>
             </div>
             <div class="controls device-actions"><button class="btn" onclick="gStandby()">Standby</button><button class="btn" onclick="gSleep()">Sleep</button><button class="btn" onclick="gStop()">Stop</button><button class="btn danger" onclick="gCalibrate()">Calibrate</button></div>
-            <div class="notice" style="margin-top:12px">切到该页不会自动控制设备。点击“启动功能”后会先停止多人控制，再启用单人追踪和对准分析。</div>
+            <div class="notice" style="margin-top:12px">完整画幅不会进行数字裁剪；系统将人脸稳定放在画面上三分之一以保留上半身。若原始画面仍只有近距离脸部，需要增加相机与人的物理距离。</div>
           </section>
           <section class="card">
             <h2>云台状态</h2>
@@ -307,7 +307,7 @@ button,input,select{font:inherit}
         <section class="card video-card">
           <div class="video-head">
             <strong>声源与人脸融合定位</strong>
-            <span class="pill" id="meetingCurrentSpeaker">等待说话人</span>
+            <div class="status-row"><span class="pill" id="multiFrameInfo">原始画幅 --</span><span class="pill" id="meetingCurrentSpeaker">等待说话人</span></div>
           </div>
           <div class="video-wrap" id="multiVideoWrap">
             <img id="multiVideoMirror" alt="reCamera video mirror">
@@ -325,7 +325,7 @@ button,input,select{font:inherit}
               <span class="pill" id="meetingRecordState">录音未启动</span>
             </div>
             <div class="controls device-actions"><button class="btn" onclick="gStandby()">Standby</button><button class="btn" onclick="gSleep()">Sleep</button><button class="btn" onclick="gStop()">Stop</button><button class="btn danger" onclick="gCalibrate()">Calibrate</button></div>
-            <div class="notice" style="margin-top:12px">启动后持续执行声源找人、人脸锁定、录音分段与说话人标注。点击“终止并生成纪要”后才结束会话，并自动完成转写与 LLM 会议纪要。</div>
+            <div class="notice" style="margin-top:12px">启动后持续执行声源找人、人脸锁定、录音分段与说话人标注；多人画面保持传感器完整宽高比，不裁剪或数字放大。</div>
             <div class="metric-grid" style="margin-top:12px">
               <div class="metric"><div class="label">会议时长</div><div class="value" id="meetingDuration">00:00</div></div>
               <div class="metric"><div class="label">语音片段</div><div class="value" id="meetingTurns">0</div></div>
@@ -721,7 +721,7 @@ async function stopManualPage(){
 async function applyControlConfig(){
   if(!currentSessionId)return;
   const speed=Number($('controlSpeed')?.value||180),doa_offset_deg=Number($('doaOffset')?.value||0),doa_direction=Number($('doaDirection')?.value||1);
-  const r=await apiPost('/api/control/config',{session_id:currentSessionId,speed,doa_offset_deg,doa_direction});
+  const r=await apiPost('/api/control/config',{session_id:currentSessionId,speed,doa_offset_deg,doa_direction,framing_mode:'upper_body',target_x:0.5,target_y:0.32});
   log(r&&r.accepted?`控制参数已应用 speed=${speed}`:'控制参数应用失败');
 }
 async function gMove(pan,tilt){
@@ -834,6 +834,11 @@ function renderState(s){
   if(!s)return;
   const g=s.gimbal||{},pose=s.pose||{},att=s.attention||{},emo=s.emotieff||s.emotion||{},doa=s.doa||{},rs=s.respeaker||{},ctrl=s.control||{},health=s.health||{},conv=s.conversation||{},eye=s.eye_metrics||{},mp=s.mp_face||{},gesture=s.gesture||{},voice=s.voice||{};
   applyDeviceState(s.device);
+  const videoState=s.video||{},vw=Number(videoState.width||1920),vh=Number(videoState.height||1080);
+  const aspect=(vw>0&&vh>0)?`${vw}/${vh}`:'16/9';
+  document.querySelectorAll('.video-wrap').forEach(el=>el.style.setProperty('--video-aspect',aspect));
+  const frameLabel=`完整画幅 ${vw}×${vh}`;
+  $('singleFrameInfo').textContent=frameLabel;$('multiFrameInfo').textContent=frameLabel;
   setConn(ws&&ws.readyState===WebSocket.OPEN?'on':'warn',ws&&ws.readyState===WebSocket.OPEN?'WebSocket 已连接':'HTTP polling');
   $('authorityText').textContent=ctrl.authority||'idle';
   $('fsmText').textContent=ctrl.fsm_state||'IDLE';
@@ -864,7 +869,9 @@ function renderState(s){
   $('fpsVal').textContent=num(health.video_fps,'',1);$('poseCount').textContent=(pose.count||0)+' / '+((s.video&&s.video.detections)||[]).length;$('rttVal').textContent=health.gimbal_latency_ms!=null?num(health.gimbal_latency_ms,'ms',0):'--';$('wsClients').textContent=health.ws_clients!=null?health.ws_clients:'--';
 
   const person0=(pose.persons||[])[0]||{},fConf=person0.face_conf!=null?person0.face_conf:(att.has_face?1:null);
-  $('singleTargetText').textContent=att.has_face?'已对准/分析中':((pose.count||0)>0?'检测到人体':'寻找人脸');
+  const lockState=s.face_lock?.state||ctrl.lock_state||'acquiring';
+  const LOCK_ZH={acquiring:'确认目标中',locked:'已锁定',centered:'已稳定对准',occlusion_hold:'短暂遮挡保持',reacquiring:'重新捕获中'};
+  $('singleTargetText').textContent=LOCK_ZH[lockState]||((pose.count||0)>0?'检测到人体':'寻找人脸');
   $('singleModeText').textContent=(s.single_track&&s.single_track.active)?'运行中':'未激活';
   $('multiModeText').textContent=(s.multi_track&&s.multi_track.active)?'运行中':'未激活';
   const EMO_ZH={Happiness:'快乐',Sadness:'悲伤',Anger:'愤怒',Fear:'恐惧',Surprise:'惊讶',Disgust:'厌恶',Contempt:'轻蔑',Neutral:'平静'};
@@ -992,6 +999,6 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&currentSe
 updateFeatureLocks();
 log('已进入页面，等待点击“启动功能”');
 </script>
-<script src="/static/tracking_overlay.js?v=20260702-3"></script>
+<script src="/static/tracking_overlay.js?v=20260703-1"></script>
 </body>
 </html>

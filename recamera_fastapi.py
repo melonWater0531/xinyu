@@ -611,6 +611,13 @@ def _apply_runtime_result(result: dict) -> None:
         "active_feature": runtime.get("active_feature", "inactive"),
         "session_id": runtime.get("session_id", ""),
         "lease_remaining_ms": runtime.get("lease_remaining_ms", 0),
+        "tracking_phase": runtime.get("tracking_phase", "inactive"),
+        "lock_state": runtime.get("lock_state", "acquiring"),
+        "lock_candidate_id": runtime.get("lock_candidate_id"),
+        "lock_confirm_frames": runtime.get("lock_confirm_frames", 0),
+        "target_point": runtime.get("target_point", {"x": 0.5, "y": 0.32, "framing_mode": "upper_body"}),
+        "tracking_error": runtime.get("tracking_error", {"x": 0.0, "y": 0.0}),
+        "command_suppressed_reason": runtime.get("command_suppressed_reason", ""),
     }
     _decision_trace.clear()
     _decision_trace.extend(runtime.get("trace", []))
@@ -1251,9 +1258,10 @@ def build_state_snapshot() -> dict:
     active_feature = str(control.get("active_feature") or _runtime_cache.get("active_feature") or "inactive")
     doa_status = _doa_status()
     face_lock = {
-        "locked": locked_track_id is not None or str(tracking_phase).endswith("lock") or "centered" in str(tracking_phase),
+        "locked": locked_track_id is not None and (_runtime_cache.get("lock_state") in {None, "locked", "centered", "occlusion_hold"}),
         "track_id": locked_track_id,
         "phase": tracking_phase,
+        "state": _runtime_cache.get("lock_state") or ("locked" if locked_track_id is not None else "acquiring"),
     }
     sound_follow = {
         "active": active_feature in {"multi_sound_yaw", "meeting_sound_yaw"},
@@ -2292,11 +2300,15 @@ async def api_meeting_yaw_stop(payload: dict = Body(default={})):
 
 @app.post("/api/control/config")
 async def api_control_config(payload: dict = Body(default={})):
+    framing_mode = str(payload.get("framing_mode", "upper_body"))
     return await _emit_ui_event("control_config", {
         "session_id": str(payload.get("session_id", "")),
         "speed": payload.get("speed", 180),
         "doa_offset_deg": payload.get("doa_offset_deg", 0),
         "doa_direction": payload.get("doa_direction", 1),
+        "framing_mode": framing_mode,
+        "target_x": payload.get("target_x", 0.5),
+        "target_y": payload.get("target_y", 0.5 if framing_mode == "face_center" else 0.32),
     })
 
 

@@ -32,6 +32,7 @@ class ControlClosureTests(unittest.TestCase):
         event = Event.make("vision", "target_detected", "test", payload={"cx": .25, "cy": .45, "conf": .9, "class_name": "face"})
         self.orch.handle_event(event)
         self.orch.handle_event(event)
+        self.orch.handle_event(event)
         command = self.orch.handle_event(event)
         self.assertIsNotNone(command)
         self.assertIsNotNone(command.pitch)
@@ -107,25 +108,32 @@ class ControlClosureTests(unittest.TestCase):
 
     def test_observation_uses_normalized_dynamic_resolution(self) -> None:
         self.start("single_face_analysis")
-        centered = {"track_id": 7, "cx": 640, "cy": 360, "confidence": .95, "lost_frames": 0}
-        command = self.orch.handle_event(self.observation(1, faces=[centered]))
+        centered = {"track_id": 7, "cx": 640, "cy": 230.4, "confidence": .95, "lost_frames": 0}
+        self.orch.handle_event(self.observation(1, faces=[centered]))
+        self.orch.handle_event(self.observation(2, faces=[centered]))
+        command = self.orch.handle_event(self.observation(3, faces=[centered]))
         self.assertIsNone(command)
         self.assertEqual(self.orch.locked_track_id, 7)
         self.assertEqual(self.orch.tracking_phase, "locked_centered")
+        self.assertEqual(self.orch.lock_state, "centered")
 
     def test_stale_track_is_not_display_or_control_candidate(self) -> None:
         self.start("single_face_analysis")
         stale = {"track_id": 1, "cx": .2, "cy": .4, "confidence": .99, "lost_frames": 2}
-        current = {"track_id": 2, "cx": .7, "cy": .5, "confidence": .9, "lost_frames": 0}
-        command = self.orch.handle_event(self.observation(1, faces=[stale, current]))
+        current = {"track_id": 2, "cx": .7, "cy": .32, "confidence": .9, "lost_frames": 0}
+        for oid in range(1, 4):
+            self.assertIsNone(self.orch.handle_event(self.observation(oid, faces=[stale, current])))
+        command = self.orch.handle_event(self.observation(4, faces=[stale, current]))
         self.assertIsNotNone(command)
         self.assertEqual(self.orch.locked_track_id, 2)
 
     def test_old_session_and_out_of_order_observations_are_ignored(self) -> None:
         self.start("single_face_analysis")
-        face = {"track_id": 3, "cx": .2, "cy": .5, "confidence": .9, "lost_frames": 0}
+        face = {"track_id": 3, "cx": .2, "cy": .32, "confidence": .9, "lost_frames": 0}
         self.assertIsNone(self.orch.handle_event(self.observation(1, faces=[face], session_id="old")))
-        self.assertIsNotNone(self.orch.handle_event(self.observation(2, faces=[face])))
+        for oid in (2, 3, 4):
+            self.assertIsNone(self.orch.handle_event(self.observation(oid, faces=[face])))
+        self.assertIsNotNone(self.orch.handle_event(self.observation(5, faces=[face])))
         self.assertIsNone(self.orch.handle_event(self.observation(1, faces=[face])))
 
     def test_single_search_times_out_to_standby(self) -> None:
@@ -145,12 +153,88 @@ class ControlClosureTests(unittest.TestCase):
         self.orch._doa_candidate_since -= .6
         coarse = self.orch.handle_event(Event.make("audio", "speech_detected", "test", payload=payload))
         self.assertEqual(coarse.reason, "audio_coarse")
-        face = {"track_id": 9, "cx": .55, "cy": .5, "confidence": .9, "lost_frames": 0}
+        face = {"track_id": 9, "cx": .55, "cy": .32, "confidence": .9, "lost_frames": 0}
         self.orch.handle_event(self.observation(1, faces=[face]))
+        self.orch.handle_event(self.observation(2, faces=[face]))
+        self.orch.handle_event(self.observation(3, faces=[face]))
         self.assertEqual(self.orch.locked_track_id, 9)
         self.orch._last_speech_at -= 1.6
-        self.assertIsNone(self.orch.handle_event(self.observation(2, faces=[face])))
+        self.assertIsNone(self.orch.handle_event(self.observation(4, faces=[face])))
         self.assertEqual(self.orch.tracking_phase, "speaker_hold")
+
+    def test_face_requires_three_tracked_frames_and_rejects_untracked_fallback(self) -> None:
+        self.start("single_face_analysis")
+        tracked = {"track_id": 11, "cx": .5, "cy": .32, "confidence": .9, "lost_frames": 0}
+        self.orch.handle_event(self.observation(1, faces=[tracked]))
+        self.orch.handle_event(self.observation(2, faces=[tracked]))
+        self.assertIsNone(self.orch.locked_track_id)
+        untracked = {"track_id": None, "cx": .5, "cy": .32, "confidence": .99, "lost_frames": 0}
+        self.orch.handle_event(self.observation(3, faces=[untracked]))
+        self.assertIsNone(self.orch.locked_track_id)
+        self.assertEqual(self.orch.lock_state, "acquiring")
+
+    def test_locked_face_occlusion_does_not_fall_back_to_body(self) -> None:
+        self.start("single_face_analysis")
+        face = {"track_id": 12, "cx": .5, "cy": .32, "confidence": .9, "lost_frames": 0}
+        for oid in range(1, 4):
+            self.orch.handle_event(self.observation(oid, faces=[face]))
+        person = {"bbox": [200, 100, 900, 700], "cx": .43, "cy": .3, "confidence": .9}
+        self.assertIsNone(self.orch.handle_event(self.observation(4, persons=[person])))
+        self.assertEqual(self.orch.locked_track_id, 12)
+        self.assertEqual(self.orch.lock_state, "occlusion_hold")
+
+    def test_candidate_detection_gap_does_not_trigger_body_correction(self) -> None:
+        self.start("single_face_analysis")
+        face = {"track_id": 16, "cx": .7, "cy": .4, "confidence": .9, "lost_frames": 0}
+        person = {"bbox": [100, 50, 1000, 700], "cx": .2, "cy": .7, "confidence": .95}
+        self.orch.handle_event(self.observation(1, faces=[face], persons=[person]))
+        self.assertIsNone(self.orch.handle_event(self.observation(2, persons=[person])))
+        self.assertEqual(self.orch.tracking_phase, "acquiring")
+        self.assertEqual(self.orch.runtime_state()["command_suppressed_reason"], "candidate_gap_hold")
+
+    def test_centered_face_jitter_stays_inside_deadzone(self) -> None:
+        self.start("single_face_analysis")
+        for oid in range(1, 9):
+            face = {"track_id": 13, "cx": .5 + (.03 if oid % 2 else -.03),
+                    "cy": .32 + (.025 if oid % 2 else -.025), "confidence": .9, "lost_frames": 0}
+            self.assertIsNone(self.orch.handle_event(self.observation(oid, faces=[face])))
+        self.assertEqual(self.orch.locked_track_id, 13)
+        self.assertEqual(self.orch.lock_state, "centered")
+
+    def test_tracking_step_is_bounded_for_upper_body_composition(self) -> None:
+        self.start("single_face_analysis")
+        face = {"track_id": 14, "cx": .9, "cy": .8, "confidence": .95, "lost_frames": 0}
+        for oid in range(1, 4):
+            self.orch.handle_event(self.observation(oid, faces=[face]))
+        command = self.orch.handle_event(self.observation(4, faces=[face]))
+        self.assertIsNotNone(command)
+        self.assertLessEqual(abs(command.yaw - 180), 5)
+        self.assertLessEqual(abs(command.pitch - 90), 3)
+        self.assertLessEqual(command.speed, 180)
+        runtime = self.orch.runtime_state()
+        self.assertEqual(runtime["target_point"]["y"], .32)
+        self.assertEqual(runtime["lock_state"], "locked")
+
+    def test_delayed_readback_suppresses_two_reverse_frames(self) -> None:
+        self.start("single_face_analysis")
+        face = {"track_id": 15, "cx": .9, "cy": .32, "confidence": .95, "lost_frames": 0}
+        for oid in range(1, 4):
+            self.orch.handle_event(self.observation(oid, faces=[face]))
+        first = self.orch.handle_event(self.observation(4, faces=[face]))
+        self.assertIsNotNone(first)
+        self.orch.update_gimbal_readback(180, 90)
+        opposite = {"track_id": 15, "cx": .1, "cy": .32, "confidence": .95, "lost_frames": 0}
+        self.orch._ema_x = .1
+        self.orch._last_motion_at -= .31
+        self.assertIsNone(self.orch.handle_event(self.observation(5, faces=[opposite])))
+        self.orch._ema_x = .1
+        self.orch._last_motion_at -= .31
+        self.assertIsNone(self.orch.handle_event(self.observation(6, faces=[opposite])))
+        self.orch._ema_x = .1
+        self.orch._last_motion_at -= .31
+        reversed_command = self.orch.handle_event(self.observation(7, faces=[opposite]))
+        self.assertIsNotNone(reversed_command)
+        self.assertGreater(reversed_command.yaw, first.yaw)
 
     def test_sscma_center_size_box_conversion(self) -> None:
         class Stream:

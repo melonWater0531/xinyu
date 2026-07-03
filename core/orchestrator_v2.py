@@ -18,6 +18,11 @@ class Orchestrator:
         self.vision_yaw_gain, self.vision_pitch_gain = float(vision_yaw_gain), float(vision_pitch_gain)
         self.frame_width, self.frame_height = int(frame_width), int(frame_height)
         self.default_speed = int(default_speed)
+        self.framing_mode = "upper_body"
+        self.target_x, self.target_y = 0.5, 0.32
+        self.face_confidence_threshold = 0.65
+        self.lock_confirm_required = 3
+        self.occlusion_hold_s = 1.2
         self.doa_offset_deg, self.doa_direction = 0.0, 1.0
         self.session = ControlSession(default_lease_ms=lease_ms)
         self.locked_track_id = None
@@ -36,16 +41,34 @@ class Orchestrator:
         self._doa_candidate_since = self._last_speech_at = 0.0
         self._speaker_seek = False
         self._speaker_confidence = 0.0
+        self.lock_state = "acquiring"
+        self._lock_candidate_id = None
+        self._lock_candidate_frames = 0
+        self._lock_candidate_seen_at = 0.0
+        self._face_lock_established = False
+        self._outside_frames = 0
+        self._last_motion_at = 0.0
+        self._last_yaw_direction = self._last_pitch_direction = 0
+        self._reverse_yaw_frames = self._reverse_pitch_frames = 0
+        self._tracking_error = {"x": 0.0, "y": 0.0}
+        self._command_suppressed_reason = ""
 
     @property
     def state(self):
         return self.fsm.state
 
     def update_gimbal_readback(self, yaw, pitch):
+        now = time.monotonic()
         if yaw is not None:
-            self._gimbal_yaw = self._yaw_target = float(yaw)
+            self._gimbal_yaw = float(yaw)
+            if (not self.session.snapshot().get("active") or not self._last_motion_at
+                    or (now - self._last_motion_at > 1.0 and abs(self._gimbal_yaw - self._yaw_target) <= 2.0)):
+                self._yaw_target = self._gimbal_yaw
         if pitch is not None:
-            self._gimbal_pitch = self._pitch_target = float(pitch)
+            self._gimbal_pitch = float(pitch)
+            if (not self.session.snapshot().get("active") or not self._last_motion_at
+                    or (now - self._last_motion_at > 1.0 and abs(self._gimbal_pitch - self._pitch_target) <= 2.0)):
+                self._pitch_target = self._gimbal_pitch
 
     def handle_event(self, event):
         lifecycle = self._lifecycle(event)
@@ -97,6 +120,11 @@ class Orchestrator:
             self.default_speed = max(1, min(720, int(event.payload.get("speed", self.default_speed))))
             self.doa_offset_deg = max(-180.0, min(180.0, float(event.payload.get("doa_offset_deg", self.doa_offset_deg))))
             self.doa_direction = -1.0 if float(event.payload.get("doa_direction", self.doa_direction)) < 0 else 1.0
+            framing_mode = str(event.payload.get("framing_mode", self.framing_mode))
+            self.framing_mode = framing_mode if framing_mode in {"upper_body", "face_center"} else "upper_body"
+            default_y = 0.32 if self.framing_mode == "upper_body" else 0.5
+            self.target_x = self._clamp(float(event.payload.get("target_x", self.target_x)), 0.2, 0.8)
+            self.target_y = self._clamp(float(event.payload.get("target_y", default_y)), 0.2, 0.7)
             return None
         if event.type == "system" and event.name in {"lease_expired", "shutdown", "emergency_stop"}:
             sid = self.session.session_id
@@ -123,25 +151,41 @@ class Orchestrator:
     def _single(self, faces, persons):
         now = time.monotonic()
         face = self._locked(faces)
-        if face is None and self.locked_track_id is not None and now - self._last_lock_seen <= 0.6:
+        if face is None and self.locked_track_id is not None and now - self._last_lock_seen <= self.occlusion_hold_s:
+            self.lock_state = "occlusion_hold"
             self.tracking_phase = "occlusion_hold"
+            self._command_suppressed_reason = "occlusion_hold"
             return None
         if face is None:
-            self._unlock()
-            face = self._best_face(faces)
-            if face:
-                self._lock(face)
+            if self.locked_track_id is not None:
+                self._unlock(preserve_established=True)
+                self.lock_state = "reacquiring"
+            face = self._confirm_face(faces, reacquiring=self._face_lock_established)
         if face:
             self._vision_lost_frames = 0
             self._reset_search()
             self.tracking_phase = "face_lock"
+            self.lock_state = "locked"
             self.fsm.transition(Event.make("vision", "target_detected", "orchestrator"))
             return self._track(face, "face_lock")
+        if self._lock_candidate_id is not None:
+            self.tracking_phase = "reacquiring" if self._face_lock_established else "acquiring"
+            self._command_suppressed_reason = "lock_confirmation"
+            return None
+        if not self._face_lock_established and now - self._lock_candidate_seen_at <= .6:
+            self.tracking_phase = "acquiring"
+            self._command_suppressed_reason = "candidate_gap_hold"
+            return None
+        if self._face_lock_established:
+            self.lock_state = self.tracking_phase = "reacquiring"
+            self._command_suppressed_reason = "waiting_locked_face"
+            return None
         person = self._best_person(persons)
         if person:
             self._vision_lost_frames = 0
             self._reset_search()
             self.tracking_phase = "body_align"
+            self.lock_state = "acquiring"
             self.fsm.transition(Event.make("vision", "target_detected", "orchestrator"))
             return self._track(person, "body_align")
         self._vision_lost_frames += 1
@@ -155,17 +199,23 @@ class Orchestrator:
             return None
         if face:
             self.tracking_phase = "speaker_face_lock"
+            self.lock_state = "locked"
             return self._track(face, "speaker_face_lock")
-        if self.locked_track_id is not None and time.monotonic() - self._last_lock_seen <= 0.6:
+        if self.locked_track_id is not None and time.monotonic() - self._last_lock_seen <= self.occlusion_hold_s:
+            self.lock_state = "occlusion_hold"
             self.tracking_phase = "speaker_occlusion_hold"
+            self._command_suppressed_reason = "occlusion_hold"
             return None
-        self._unlock()
-        if self._speaker_seek and faces:
-            face = self._best_face(faces, 1.4)
-            self._lock(face)
-            self._speaker_seek = False
-            self.tracking_phase = "speaker_face_lock"
-            return self._track(face, "speaker_face_lock")
+        if self.locked_track_id is not None:
+            self._unlock(preserve_established=True)
+        if self._speaker_seek:
+            face = self._confirm_face(faces, reacquiring=True, weight=1.4)
+            if face:
+                self._speaker_seek = False
+                self.tracking_phase = "speaker_face_lock"
+                self.lock_state = "locked"
+                return self._track(face, "speaker_face_lock")
+            self.lock_state = "reacquiring"
         self.tracking_phase = "speaker_reacquire" if self._speaker_seek else "audio_wait"
         return None
 
@@ -209,23 +259,44 @@ class Orchestrator:
             cy = (y1 + (y2-y1) * (0.28 if reason == "body_align" else 0.5)) / self.frame_height
         if cx is None or cy is None:
             return None
-        alpha = 0.45
+        alpha = 0.20
         self._ema_x = cx if self._ema_x is None else alpha*cx + (1-alpha)*self._ema_x
         self._ema_y = cy if self._ema_y is None else alpha*cy + (1-alpha)*self._ema_y
-        ex, ey = self._ema_x - .5, self._ema_y - .5
-        enter, remain = abs(ex) <= .03 and abs(ey) <= .04, abs(ex) <= .05 and abs(ey) <= .06
+        ex, ey = self._ema_x - self.target_x, self._ema_y - self.target_y
+        self._tracking_error = {"x": round(ex, 4), "y": round(ey, 4)}
+        enter, remain = abs(ex) <= .05 and abs(ey) <= .06, abs(ex) <= .08 and abs(ey) <= .10
         if enter or (self._centered and remain):
             self._centered = True
+            self.lock_state = "centered" if self.locked_track_id is not None else self.lock_state
             self.tracking_phase = "speaker_centered" if "speaker" in reason else "locked_centered"
+            self._outside_frames = 0
+            self._command_suppressed_reason = "inside_deadzone"
             return None
         self._centered = False
-        base_y = self._gimbal_yaw if self._gimbal_yaw is not None else self._yaw_target
-        base_p = self._gimbal_pitch if self._gimbal_pitch is not None else self._pitch_target
-        yaw = self._clamp(base_y + self._clamp(-ex*self.vision_yaw_gain, -12, 12), 1, 345)
-        pitch = self._clamp(base_p + self._clamp(ey*self.vision_pitch_gain, -8, 8), 30, 150)
+        self._outside_frames += 1
+        if self._outside_frames < 2:
+            self._command_suppressed_reason = "error_confirmation"
+            return None
+        now = time.monotonic()
+        if now - self._last_motion_at < .3:
+            self._command_suppressed_reason = "command_interval"
+            return None
+        yaw_step = self._clamp(-ex*45.0, -5, 5)
+        pitch_step = self._clamp(ey*30.0, -3, 3)
+        yaw_pending = self._gimbal_yaw is not None and abs(self._gimbal_yaw-self._yaw_target) > 1.5
+        pitch_pending = self._gimbal_pitch is not None and abs(self._gimbal_pitch-self._pitch_target) > 1.5
+        yaw_step = self._damped_axis(yaw_step, "yaw", yaw_pending)
+        pitch_step = self._damped_axis(pitch_step, "pitch", pitch_pending)
+        if abs(yaw_step) < .01 and abs(pitch_step) < .01:
+            self._command_suppressed_reason = "reverse_suppression"
+            return None
+        yaw = self._clamp(self._yaw_target + yaw_step, 1, 345)
+        pitch = self._clamp(self._pitch_target + pitch_step, 30, 150)
         mag = max(abs(ex), abs(ey))
-        speed = 360 if mag > .25 else 180 if mag > .10 else 90
+        speed = 180 if mag > .25 else 90 if mag > .10 else 60
         self._yaw_target, self._pitch_target = yaw, pitch
+        self._last_motion_at = now
+        self._command_suppressed_reason = ""
         return self._command(yaw=yaw, pitch=pitch, speed=speed, reason=reason)
 
     def _search(self, now):
@@ -269,10 +340,32 @@ class Orchestrator:
 
     def _locked(self, faces):
         for face in faces:
-            if self.locked_track_id is not None and int(face.get("track_id", -1)) == self.locked_track_id:
+            track_id = face.get("track_id")
+            if self.locked_track_id is not None and track_id is not None and int(track_id) == self.locked_track_id:
                 self._last_lock_seen = time.monotonic()
                 return face
         return None
+
+    def _confirm_face(self, faces, *, reacquiring=False, weight=.6):
+        valid = [face for face in faces
+                 if face.get("track_id") is not None
+                 and float(face.get("confidence", face.get("conf", 0.0))) >= self.face_confidence_threshold]
+        face = self._best_face(valid, weight)
+        if face is None:
+            self._lock_candidate_id, self._lock_candidate_frames = None, 0
+            self.lock_state = "reacquiring" if reacquiring else "acquiring"
+            return None
+        candidate_id = int(face["track_id"])
+        self._lock_candidate_seen_at = time.monotonic()
+        if candidate_id == self._lock_candidate_id:
+            self._lock_candidate_frames += 1
+        else:
+            self._lock_candidate_id, self._lock_candidate_frames = candidate_id, 1
+        self.lock_state = "reacquiring" if reacquiring else "acquiring"
+        if self._lock_candidate_frames < self.lock_confirm_required:
+            return None
+        self._lock(face)
+        return face
 
     def _best_face(self, faces, weight=.6):
         if not faces:
@@ -295,14 +388,42 @@ class Orchestrator:
 
     def _lock(self, face):
         self.locked_track_id = int(face["track_id"]) if face.get("track_id") is not None else None
+        if self.locked_track_id is None:
+            return
         self._last_lock_seen = time.monotonic()
+        self._face_lock_established = True
+        self._lock_candidate_id, self._lock_candidate_frames = None, 0
+        self._lock_candidate_seen_at = 0.0
+        self.lock_state = "locked"
         self._ema_x = self._ema_y = None
         self._centered = False
 
-    def _unlock(self):
+    def _unlock(self, preserve_established=False):
         self.locked_track_id = None
+        self._lock_candidate_id, self._lock_candidate_frames = None, 0
+        self._lock_candidate_seen_at = 0.0
+        if not preserve_established:
+            self._face_lock_established = False
+            self.lock_state = "acquiring"
         self._ema_x = self._ema_y = None
         self._centered = False
+
+    def _damped_axis(self, step, axis, pending):
+        direction = 1 if step > 0 else -1 if step < 0 else 0
+        last_name = f"_last_{axis}_direction"
+        reverse_name = f"_reverse_{axis}_frames"
+        previous = int(getattr(self, last_name))
+        reverse_frames = int(getattr(self, reverse_name))
+        if pending and direction and previous and direction != previous:
+            reverse_frames += 1
+            setattr(self, reverse_name, reverse_frames)
+            if reverse_frames < 3:
+                return 0.0
+        else:
+            setattr(self, reverse_name, 0)
+        if direction:
+            setattr(self, last_name, direction)
+        return step
 
     def _reset_search(self):
         self._no_target_since, self._home_sent_at, self._search_exhausted = None, 0.0, False
@@ -315,6 +436,12 @@ class Orchestrator:
         self._doa_candidate = self._active_doa = None
         self._speaker_seek = False
         self._speaker_confidence = 0.0
+        self._outside_frames = 0
+        self._last_motion_at = 0.0
+        self._last_yaw_direction = self._last_pitch_direction = 0
+        self._reverse_yaw_frames = self._reverse_pitch_frames = 0
+        self._tracking_error = {"x": 0.0, "y": 0.0}
+        self._command_suppressed_reason = ""
 
     def _ui_allowed(self, event):
         if not self.session.matches(str(event.payload.get("session_id", ""))):
@@ -356,6 +483,11 @@ class Orchestrator:
         return {**self.session.snapshot(),"fsm_state":self.state.value,"speed":self.default_speed,
                 "doa_offset_deg":self.doa_offset_deg,"doa_direction":int(self.doa_direction),
                 "locked_track_id":self.locked_track_id,"tracking_phase":self.tracking_phase,
+                "lock_state":self.lock_state,"lock_candidate_id":self._lock_candidate_id,
+                "lock_confirm_frames":self._lock_candidate_frames,
+                "target_point":{"x":round(self.target_x,3),"y":round(self.target_y,3),"framing_mode":self.framing_mode},
+                "tracking_error":dict(self._tracking_error),
+                "command_suppressed_reason":self._command_suppressed_reason,
                 "speaker_confidence":round(self._speaker_confidence,3),
                 "stop_state":self.stop_state,"last_observation_id":self._last_observation_id}
 

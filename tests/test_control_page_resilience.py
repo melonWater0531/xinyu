@@ -44,7 +44,7 @@ class ControlPageResilienceTests(unittest.TestCase):
         self.assertIn("setInterval(heartbeat,1000)", page)
         self.assertNotIn("if(document.hidden)deactivatePage", page)
         self.assertIn("State render error", page)
-        self.assertIn("tracking_overlay.js?v=20260702-3", page)
+        self.assertIn("tracking_overlay.js?v=20260703-1", page)
 
     def test_unified_meeting_page_has_complete_dom_contract(self) -> None:
         page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
@@ -70,9 +70,19 @@ class ControlPageResilienceTests(unittest.TestCase):
         self.assertNotIn("drawImage", overlay)
         self.assertIn("drawScene($('multiOverlay')", overlay)
 
+    def test_all_control_videos_preserve_original_frame(self) -> None:
+        page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
+        self.assertIn(".video-wrap img", page)
+        self.assertIn("object-fit:contain", page)
+        self.assertIn("object-position:center", page)
+        self.assertNotIn("object-fit:cover", page)
+        self.assertIn("--video-aspect", page)
+        self.assertIn('id="singleFrameInfo"', page)
+        self.assertIn('id="multiFrameInfo"', page)
+
     def test_service_worker_refreshes_static_assets_before_cache_fallback(self) -> None:
         sw = (ROOT / "dashboard" / "sw.js").read_text(encoding="utf-8")
-        self.assertIn('CACHE_NAME = "xinyu-pwa-v10"', sw)
+        self.assertIn('CACHE_NAME = "xinyu-pwa-v11"', sw)
         static_branch = sw.split('url.pathname.startsWith("/static/")', 1)[1]
         self.assertLess(static_branch.index("fetch(request)"), static_branch.index("caches.match(request)"))
 
