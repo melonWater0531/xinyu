@@ -503,7 +503,7 @@ button,input,select{font:inherit}
 <script>
 let state=null,ws=null,wsRetry=null,lastWsAt=0,lastLog='',lastStopState='',activePage='single_face_analysis',switching=false,currentSessionId='',landmarkMesh=false;
 let heartbeatInFlight=false,heartbeatFailures=0;
-let meetingCompleting=false;
+let meetingStarting=false,meetingCompleting=false;
 const featureActive={
   single_face_analysis:false,
   multi_sound_yaw:false,
@@ -623,6 +623,7 @@ function updateFeatureLocks(){
     const page=btn.dataset.pageLock;
     btn.disabled=!featureActive[page]||(btn.id==='btnMeetingComplete'&&meetingCompleting);
   });
+  const start=$('btnMeetingStart');if(start)start.disabled=meetingStarting||meetingCompleting||!!currentSessionId;
 }
 async function deactivatePage(pageId,keepalive=false){
   const session_id=currentSessionId;
@@ -647,11 +648,17 @@ async function startSinglePage(){
 async function stopSinglePage(){await apiPost('/api/single_track/stop',{session_id:currentSessionId});clearSession();log('单人追踪已暂停')}
 async function restartSinglePage(){await stopSinglePage();await startSinglePage();log('重新找人脸')}
 async function startMeetingWorkflow(){
-  if(currentSessionId||meetingCompleting)return;
-  const r=await apiPost('/api/multi_track/start',{save_audio:true});
-  if(adoptSession(r,'multi_sound_yaw')){
-    await applyControlConfig();
-    log('多人会议已启动：DOA 找人、人脸关联与分段录音同步运行');
+  if(currentSessionId||meetingStarting||meetingCompleting)return;
+  meetingStarting=true;updateFeatureLocks();
+  $('meetingRecordState').textContent='正在启动设备与录音';
+  try{
+    const r=await apiPost('/api/multi_track/start',{save_audio:true});
+    if(adoptSession(r,'multi_sound_yaw')){
+      await applyControlConfig();
+      log(r.reused?'已恢复现有多人会议会话':'多人会议已启动：DOA 找人、人脸关联与分段录音同步运行');
+    }
+  }finally{
+    meetingStarting=false;updateFeatureLocks();
   }
 }
 async function completeMeetingWorkflow(){
@@ -774,7 +781,7 @@ function renderMeetingWorkflow(conv={},context={}){
   const reportStatus=String(report.status||'idle');
   const recorded=timeline.length>0||['recorded','summarizing','ready','error'].includes(reportStatus);
 
-  $('btnMeetingStart').disabled=active||meetingCompleting;
+  $('btnMeetingStart').disabled=active||meetingStarting||meetingCompleting;
   $('meetingRecordState').textContent=active?`录音中 ${fmtTime(duration)}`:(recorded?'录音已封存':'录音未启动');
   $('meetingDuration').textContent=fmtTime(duration);
   $('meetingTurns').textContent=timeline.length;
@@ -961,6 +968,6 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&currentSe
 updateFeatureLocks();
 log('已进入页面，等待点击“启动功能”');
 </script>
-<script src="/static/tracking_overlay.js"></script>
+<script src="/static/tracking_overlay.js?v=20260702-3"></script>
 </body>
 </html>

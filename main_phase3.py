@@ -388,7 +388,8 @@ class Phase3Runner:
                     with self._runtime_lock:
                         self._gimbal_tlm["connected"] = False
                         self._gimbal_tlm["source"] = "stale"
-                time.sleep(0.5)
+                delay = 0.5 if status else min(5.0, 0.5 * (2 ** min(self._hw.consecutive_fails, 4)))
+                time.sleep(delay)
 
         self._telemetry_thread = threading.Thread(target=_poll, daemon=True, name="gimbal-telemetry")
         self._telemetry_thread.start()

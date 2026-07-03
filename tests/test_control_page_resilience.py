@@ -68,6 +68,7 @@ class ControlPageResilienceTests(unittest.TestCase):
         self.assertIn("setInterval(heartbeat,1000)", page)
         self.assertNotIn("if(document.hidden)deactivatePage", page)
         self.assertIn("State render error", page)
+        self.assertIn("tracking_overlay.js?v=20260702-3", page)
 
     def test_unified_meeting_page_has_complete_dom_contract(self) -> None:
         page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
@@ -93,10 +94,22 @@ class ControlPageResilienceTests(unittest.TestCase):
         self.assertNotIn("drawImage", overlay)
         self.assertIn("drawScene($('multiOverlay')", overlay)
 
+    def test_service_worker_refreshes_static_assets_before_cache_fallback(self) -> None:
+        sw = (ROOT / "dashboard" / "sw.js").read_text(encoding="utf-8")
+        self.assertIn('CACHE_NAME = "xinyu-pwa-v9"', sw)
+        static_branch = sw.split('url.pathname.startsWith("/static/")', 1)[1]
+        self.assertLess(static_branch.index("fetch(request)"), static_branch.index("caches.match(request)"))
+
     def test_node_red_watchdog_matches_device_lease(self) -> None:
         flow = json.loads((ROOT / "deploy" / "node_red" / "recamera_control_bridge.json").read_text(encoding="utf-8"))
         status_node = next(node for node in flow if node.get("name") == "Build real readback")
         self.assertIn("watchdog_ms:2000", status_node["func"])
+
+    def test_multi_mode_throttles_nonessential_perception(self) -> None:
+        backend = (ROOT / "recamera_fastapi.py").read_text(encoding="utf-8")
+        self.assertIn("run_companion_detail = not multi_mode", backend)
+        self.assertIn("pose_frame_count % 15", backend)
+        self.assertIn("run_in_executor(None, adapter.predict", backend)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-const CACHE_NAME = "xinyu-pwa-v8";
+const CACHE_NAME = "xinyu-pwa-v9";
 const APP_SHELL = [
   "/home",
   "/manifest.webmanifest",
@@ -53,11 +53,11 @@ self.addEventListener("fetch", event => {
 
   if (url.pathname.startsWith("/static/")) {
     event.respondWith(
-      caches.match(request).then(hit => hit || fetch(request).then(response => {
+      fetch(request).then(response => {
         const copy = response.clone();
         caches.open(CACHE_NAME).then(cache => cache.put(request, copy));
         return response;
-      }))
+      }).catch(() => caches.match(request))
     );
   }
 });

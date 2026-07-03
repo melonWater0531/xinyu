@@ -171,13 +171,13 @@
     "id": "rc-status-tick",
     "type": "inject",
     "z": "rc-tab",
-    "name": "Read motors 2 Hz",
+    "name": "Read motor angles 1 Hz",
     "props": [
       {
         "p": "payload"
       }
     ],
-    "repeat": "0.5",
+    "repeat": "1",
     "crontab": "",
     "once": true,
     "onceDelay": "0.5",
@@ -189,9 +189,7 @@
     "wires": [
       [
         "rc-get-yaw",
-        "rc-get-pitch",
-        "rc-get-yaw-speed",
-        "rc-get-pitch-speed"
+        "rc-get-pitch"
       ]
     ]
   },

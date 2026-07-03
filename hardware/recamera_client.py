@@ -35,6 +35,7 @@ class RecameraClient:
         self._fail_count = 0
         self._consecutive_fails = 0
         self._last_latency_ms = 0.0
+        self._last_failure_log_at = 0.0
         self._session_id = ""
         self._sequence = 0
         self._lease_deadline = 0.0
@@ -207,7 +208,13 @@ class RecameraClient:
                 time.sleep(0.05)
         self._fail_count += 1
         self._consecutive_fails += 1
-        logger.warning("gimbal bridge request failed: %s %s (%s)", method, path, last_error[:120])
+        now = time.monotonic()
+        if self._consecutive_fails == 1 or now - self._last_failure_log_at >= 5.0:
+            logger.warning(
+                "gimbal bridge request failed: %s %s (%s); consecutive=%d",
+                method, path, last_error[:120], self._consecutive_fails,
+            )
+            self._last_failure_log_at = now
         return None
 
     @property

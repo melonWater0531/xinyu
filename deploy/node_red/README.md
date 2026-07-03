@@ -2,6 +2,9 @@
 
 This flow is the hardware-side adapter for the single control plane. It exposes
 dual-axis command, stop, and real motor readback APIs on Node-RED port 1880.
+The bundled flow polls yaw/pitch angles at 1 Hz. Speed reads are intentionally
+excluded from the periodic tick because four concurrent motor queries can stall
+the device-side Node-RED event loop when CAN readback is unhealthy.
 
 ## Install
 

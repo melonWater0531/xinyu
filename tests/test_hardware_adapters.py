@@ -103,6 +103,9 @@ class HardwareAdapterTests(unittest.TestCase):
             "/recamera-control/v1/stop",
             "/recamera-control/v1/status",
         }.issubset(urls))
+        status_tick = next(node for node in flow if node.get("id") == "rc-status-tick")
+        self.assertEqual(status_tick["repeat"], "1")
+        self.assertEqual(status_tick["wires"], [["rc-get-yaw", "rc-get-pitch"]])
 
 
 if __name__ == "__main__":

@@ -1511,6 +1511,10 @@ async def state_push_loop():
     while True:
         try:
             pose_frame_count += 1
+            multi_mode = bool(_multi_track_active and not _single_track_active)
+            run_companion_detail = not multi_mode
+            face_due = pose_frame_count % 2 == 0
+            pose_due = pose_frame_count % (2 if multi_mode else 4) == 0
             # -- Scene gating: daily (single) runs face/emotion/eye; work (multi) runs pose only.
             #    When neither mode is active, both pipelines run (default observation mode). --
             run_face = True
@@ -1520,12 +1524,12 @@ async def state_push_loop():
             elif _multi_track_active and not _single_track_active:
                 run_face = True   # Multi-person fusion still needs face candidates.
             # -- Face detection: FaceTrackerV2 (SCRFD + Kalman/ByteTrack), YOLO fallback --
-            if video_client:
+            if video_client and (face_due or pose_due):
                 jpeg = video_client.jpeg_bytes
                 if jpeg:
                     loop = _current_running_loop()
                     tracked_faces = []
-                    if _face_tracker and _face_tracker.available and run_face:
+                    if _face_tracker and _face_tracker.available and run_face and face_due:
                         try:
                             from vision.pose_estimator import PersonPose, Keypoint
                             arr = np.frombuffer(jpeg, np.uint8)
@@ -1566,7 +1570,7 @@ async def state_push_loop():
                         except Exception as e:
                             if pose_frame_count % 30 == 0:
                                 logger.debug("FaceTrackerV2 error: %s", str(e)[:80])
-                    if not tracked_faces and run_pose:
+                    if not tracked_faces and run_pose and pose_due:
                         if pose_est is None:
                             from vision.pose_estimator import get_pose_estimator
                             pose_est = get_pose_estimator()
@@ -1604,7 +1608,7 @@ async def state_push_loop():
                 _attn_result = {"has_face": False}
 
             # -- MediaPipe face + eye metrics (throttled) --
-            if pose_frame_count % 2 == 0 and run_face:
+            if pose_frame_count % 6 == 0 and run_face and run_companion_detail:
                 jpeg = video_client.jpeg_bytes if video_client else None
                 if jpeg:
                     if _mp_face is None:
@@ -1641,7 +1645,7 @@ async def state_push_loop():
                         _gaze_result = {"available": False, "state": "unknown", "x_offset": 0.0, "y_offset": 0.0, "confidence": 0.0}
 
             # -- Gesture recognition (companionship intents only; no control events) --
-            if pose_frame_count % 3 == 0 and run_face:
+            if pose_frame_count % 15 == 0 and run_face and run_companion_detail:
                 jpeg = video_client.jpeg_bytes if video_client else None
                 if jpeg and _gesture_detector is not None:
                     try:
@@ -1663,7 +1667,7 @@ async def state_push_loop():
                                      face_kps['left_mouth'], face_kps['right_mouth']]
                         break
 
-            if jpeg and landmarks:
+            if jpeg and landmarks and run_companion_detail and pose_frame_count % 6 == 0:
                 arr = np.frombuffer(jpeg, dtype=np.uint8)
                 frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                 if frame is not None:
@@ -1672,7 +1676,9 @@ async def state_push_loop():
                     crop_result = extract_face_crop(frame, landmarks, None)
                     img_for_emo = crop_result.crop if crop_result.crop is not None else None
                     if img_for_emo is not None:
-                        raw_result = get_emotieff_adapter().predict(img_for_emo)
+                        loop = _current_running_loop()
+                        adapter = get_emotieff_adapter()
+                        raw_result = await loop.run_in_executor(None, adapter.predict, img_for_emo)
                         if raw_result and raw_result.get("emotion"):
                             raw_probs = {str(k): float(v) for k, v in raw_result.get("probabilities", {}).items()}
                             top_emo = max(raw_probs, key=raw_probs.get) if raw_probs else str(raw_result["emotion"])
@@ -1707,7 +1713,7 @@ async def state_push_loop():
                     _llm_engine = get_llm()
                 except Exception:
                     pass
-            if _llm_engine and _llm_engine.loaded:
+            if _llm_engine and _llm_engine.loaded and run_companion_detail:
                 loop = _current_running_loop()
                 if emotion_changed:
                     try:
@@ -1744,7 +1750,7 @@ async def state_push_loop():
             logger.error("Push error: %s", str(e)[:120])
             import traceback
             logger.error(traceback.format_exc()[-200:])
-        await asyncio.sleep(0.2)  # ~5 Hz
+        await asyncio.sleep(0.25)  # ~4 Hz state push; heavy models are independently throttled
 
 
 # 鈹€鈹€ WebSocket Endpoint 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -2007,6 +2013,13 @@ async def api_multi_track_start(payload: dict = Body(default={})):
     from services.speaker_mapper import speaker_mapper
 
     save_audio = bool(payload.get("save_audio", False))
+    if _runtime_cache.get("active_feature") == "multi_sound_yaw" and _ui_session_id:
+        return {
+            "ok": True, "accepted": True, "active": True, "reused": True,
+            "session_id": _ui_session_id, "feature": "multi_sound_yaw",
+            "recording_success": bool(_conversation_recorder and _conversation_recorder.active),
+            "state": _conversation_state(),
+        }
     speaker_mapper.reset()
     _meeting_report = {
         "status": "recording" if save_audio else "idle",
