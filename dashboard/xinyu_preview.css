@@ -100,8 +100,11 @@
 .xy-chat-compose button { border: 0; border-radius: 18px; color: var(--xy-surface); background: var(--xy-caramel); }
 
 .xy-meeting-current { padding: 22px; border: 1px solid var(--xy-border); border-radius: 30px; background: var(--xy-surface); box-shadow: 0 12px 30px var(--xy-shadow); }
-.xy-meeting-current h2 { margin-top: 4px; font-size: 20px; font-weight: 600; }
-.xy-meeting-status { padding: 6px 10px; border-radius: 20px; color: var(--xy-caramel); background: var(--xy-surface-warm); font-size: 11px; }
+.xy-meeting-current > .xy-section-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 14px; }
+.xy-meeting-current h2 { max-width: 260px; margin-top: 4px; font-size: 20px; line-height: 27px; font-weight: 600; }
+.xy-meeting-title-break { display: block; }
+.xy-nowrap { white-space: nowrap; }
+.xy-meeting-status { min-width: 58px; padding: 7px 12px; border-radius: 20px; color: var(--xy-caramel); background: var(--xy-surface-warm); font-size: 11px; line-height: 16px; text-align: center; white-space: nowrap; }
 .xy-meeting-summary { margin: 16px 0; padding: 14px; border: 1px solid var(--xy-border); border-radius: 18px; color: var(--xy-text-secondary); background: rgba(255,253,248,.64); font-size: 13px; line-height: 21px; }
 .xy-wave { height: 86px; margin: 18px 0; display: flex; align-items: center; justify-content: center; gap: 4px; border-radius: 20px; background: linear-gradient(180deg, #FFF7EC, #FFFDF8); }
 .xy-wave i { width: 3px; height: var(--h); border-radius: 5px; background: var(--xy-clay); opacity: .74; transition: height .25s ease; }

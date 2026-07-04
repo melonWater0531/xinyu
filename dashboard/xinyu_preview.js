@@ -198,6 +198,21 @@
     return boundary >= 40 ? head.slice(0, boundary + 1) : `${head.slice(0, 89)}。`;
   }
 
+  function shouldUseLLMReply(reply, fallback) {
+    const value = String(reply || "").trim();
+    const local = String(fallback || "").trim();
+    if (!value || value === local) return false;
+    const genericReplies = [
+      "谢谢你愿意说出来。我在这里听着，也陪你一起整理。",
+      "心屿收到了你的话。",
+      "小屿收到了你的话。",
+      "我在这里听着，也陪你一起整理。",
+    ];
+    if (genericReplies.some((item) => value.includes(item))) return false;
+    const hasContext = ["今天", "喝水", "步数", "冥想", "会议", "预算", "活动", "压力", "放松", "平和", "累", "疲惫"].some((token) => value.includes(token));
+    return hasContext || value.length >= Math.min(local.length, 42);
+  }
+
   async function requestLLMReply(message, fallback) {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10000);
@@ -210,7 +225,8 @@
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok || !body.reply) throw new Error("chat unavailable");
-      return normalizeLLMReply(body.reply, fallback);
+      const reply = normalizeLLMReply(body.reply, fallback);
+      return shouldUseLLMReply(reply, fallback) ? reply : fallback;
     } finally {
       window.clearTimeout(timeout);
     }
@@ -282,6 +298,13 @@
     return html;
   }
 
+  function formatMeetingTitle(title) {
+    const safe = escapeHTML(title || "会议纪要");
+    return safe
+      .replace("下半年活动规划与预算申报周会", '下半年活动规划与<span class="xy-meeting-title-break">预算申报<span class="xy-nowrap">周会</span></span>')
+      .replace(/([^>])周会/g, '$1<span class="xy-nowrap">周会</span>');
+  }
+
   async function loadMeetingMarkdown() {
     const path = seedData.meetings?.currentMeeting?.minutesMarkdownPath;
     if (!path || location.protocol === "file:") return;
@@ -293,7 +316,7 @@
 
   function renderMeeting() {
     const meeting = seedData.meetings?.currentMeeting || {};
-    $("#xy-current-meeting-title").textContent = meeting.title || "会议纪要";
+    $("#xy-current-meeting-title").innerHTML = formatMeetingTitle(meeting.title);
     $("#xy-meeting-status").textContent = meeting.status || "已整理";
     $("#xy-meeting-summary").textContent = meeting.summary || "";
     $("#xy-meeting-date").textContent = `${meeting.date || ""} ${meeting.time || ""}`.trim();

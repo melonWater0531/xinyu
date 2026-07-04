@@ -70,6 +70,18 @@ class XinyuPreviewTests(unittest.TestCase):
             self.assertNotIn(network_marker, self.js)
         self.assertIn("/static/page2_preview/data/xinyu_seed_data.js", self.html)
 
+    def test_current_meeting_title_wraps_without_splitting_status(self) -> None:
+        for phrase in (
+            "xy-meeting-title-break",
+            "xy-nowrap",
+            "formatMeetingTitle",
+            "预算申报<span class=\"xy-nowrap\">周会</span>",
+        ):
+            self.assertIn(phrase, self.html + self.css + self.js)
+        self.assertIn("white-space: nowrap", self.css)
+        self.assertIn("min-width: 58px", self.css)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) auto", self.css)
+
     def test_local_memory_chat_and_records_are_available(self) -> None:
         for phrase in (
             "assistantMemory", "quickReplies", "loadMeetingMarkdown",
@@ -80,6 +92,15 @@ class XinyuPreviewTests(unittest.TestCase):
         seed = (DASHBOARD / "page2_preview" / "data" / "xinyu_seed_data.js").read_text(encoding="utf-8")
         self.assertIn("meeting_summary_2026-07-04.md", seed)
         self.assertIn("2026-07", self.html + self.js)
+
+    def test_companion_chat_does_not_replace_local_reply_with_generic_llm_fallback(self) -> None:
+        for phrase in (
+            "shouldUseLLMReply",
+            "谢谢你愿意说出来。我在这里听着，也陪你一起整理。",
+            "return shouldUseLLMReply(reply, fallback) ? reply : fallback",
+        ):
+            self.assertIn(phrase, self.js)
+        self.assertIn('quick["给我一些放松建议"]', self.js)
 
     def test_evening_copy_user_name_and_trend_label(self) -> None:
         seed = (DASHBOARD / "page2_preview" / "data" / "xinyu_seed_data.js").read_text(encoding="utf-8")
