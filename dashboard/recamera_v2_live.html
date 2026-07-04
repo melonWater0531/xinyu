@@ -325,7 +325,7 @@ button,input,select{font:inherit}
               <span class="pill" id="meetingRecordState">录音未启动</span>
             </div>
             <div class="controls device-actions"><button class="btn" onclick="gStandby()">Standby</button><button class="btn" onclick="gSleep()">Sleep</button><button class="btn" onclick="gStop()">Stop</button><button class="btn danger" onclick="gCalibrate()">Calibrate</button></div>
-            <div class="notice" style="margin-top:12px">启动后持续执行声源找人、人脸锁定、录音分段与说话人标注；多人画面保持传感器完整宽高比，不裁剪或数字放大。</div>
+            <div class="notice" style="margin-top:12px">默认运行会议流程演示与声源定位，不启用真实录音；多人画面保持传感器完整宽高比，不裁剪或数字放大。</div>
             <div class="metric-grid" style="margin-top:12px">
               <div class="metric"><div class="label">会议时长</div><div class="value" id="meetingDuration">00:00</div></div>
               <div class="metric"><div class="label">语音片段</div><div class="value" id="meetingTurns">0</div></div>
@@ -676,12 +676,12 @@ async function startMeetingWorkflow(){
   if(currentSessionId||meetingStarting||meetingCompleting)return;
   if(remoteControlOwner){log('另一个页面正在控制云台，本页保持只读');return}
   meetingStarting=true;updateFeatureLocks();
-  $('meetingRecordState').textContent='正在启动设备与录音';
+  $('meetingRecordState').textContent='正在启动会议流程（录音未启用）';
   try{
-    const r=await apiPost('/api/multi_track/start',{save_audio:true});
+    const r=await apiPost('/api/multi_track/start',{save_audio:false});
     if(adoptSession(r,'multi_sound_yaw')){
       await applyControlConfig();
-      log(r.reused?'已恢复现有多人会议会话':'多人会议已启动：DOA 找人、人脸关联与分段录音同步运行');
+      log(r.reused?'已恢复现有多人会议会话':'多人会议演示已启动：声源定位与人脸关联运行中，真实录音未启用');
     }
   }finally{
     meetingStarting=false;updateFeatureLocks();
@@ -852,13 +852,13 @@ function renderMeetingWorkflow(conv={},context={}){
   setWorkflowStep('meetingStepReport',['stopping','summarizing'].includes(reportStatus)?'active':(reportStatus==='ready'?'done':''),reportStatus==='ready'?'纪要已生成':reportStatus==='stopping'?'正在封存录音':reportStatus==='summarizing'?`ASR/LLM 处理中 · 待转写 ${asrPending} · 运行 ${asrRunning}`:reportStatus==='error'?'生成失败，可查看原因':'等待会议结束');
 
   $('meetingSpeakers').innerHTML=speakers.length?speakers.map(s=>`<span class="speaker-chip">${escapeHtml(s.label||'未知说话人')} · ${s.doa==null?'--':Math.round(Number(s.doa))+'°'}${s.track_id==null?'':` · Track ${escapeHtml(s.track_id)}`}</span>`).join(''):'<span class="speaker-chip">尚未识别说话人</span>';
-  $('transcriptState').textContent=reportStatus==='summarizing'?'正在转写':timeline.length?`${timeline.length} 个语音片段`:'等待录音';
+  $('transcriptState').textContent=!audioEnabled?'录音未启用':reportStatus==='summarizing'?'正在转写':timeline.length?`${timeline.length} 个语音片段`:'等待录音';
   $('meetingTranscript').innerHTML=timeline.length?timeline.map(turn=>{
     const statusText={audio_saved:'录音已保存',asr_pending:'排队转写',transcribing:'转写中',transcribed:'已转写',asr_empty:'未获得有效转写',asr_failed:`转写失败${turn.error?'：'+turn.error:''}`}[turn.status]||'等待转写';
     const text=turn.text||statusText;
     const meta=[turn.doa_mean==null?'':`${Math.round(Number(turn.doa_mean))}°`,turn.track_id==null?'':`Track ${turn.track_id}`,turn.association_confidence?`置信 ${Math.round(Number(turn.association_confidence)*100)}%`:'' ].filter(Boolean).join(' · ');
     return `<div class="turn"><span class="turn-speaker">${escapeHtml(turn.speaker_label||'未知说话人')}</span><span class="turn-text${turn.text?'':' empty'}">${escapeHtml(text)}${meta?` · ${escapeHtml(meta)}`:''}</span><span class="turn-time">${fmtTime(turn.start||0)}</span></div>`;
-  }).join(''):'<div class="empty-state">启动会议后，完成的语音片段会按说话人和时间显示在这里。</div>';
+  }).join(''):`<div class="empty-state">${audioEnabled?'启动会议后，完成的语音片段会按说话人和时间显示在这里。':'当前为声源定位演示模式，未启用真实录音与转写。'}</div>`;
 
   const ready=reportStatus==='ready';
   $('meetingReportState').textContent=ready?'已生成':reportStatus==='stopping'?'停止中':reportStatus==='summarizing'?`生成中 ${Number(report.progress||0)}%`:reportStatus==='recording_degraded'?'录音降级':reportStatus==='error'?'生成失败':'尚未生成';
@@ -873,7 +873,7 @@ function renderMeetingWorkflow(conv={},context={}){
   $('meetingFaceHealth').textContent=context.faceLocked?`已关联 Track ${context.trackId??'--'}`:(active?'持续搜索':'未运行');
   const seekMs=context.seekToLockMs;
   $('meetingSeekLatency').textContent=seekMs!=null?`${Math.round(Number(seekMs))} ms${Number(seekMs)<1500?' ✓':''}`:(context.speakerSeek?'寻人中…':'--');
-  $('meetingStorageHealth').textContent=conv.error?`异常：${conv.error}`:(active?'增量保存中':recorded?'已封存':'待启动');
+  $('meetingStorageHealth').textContent=!audioEnabled?'录音未启用':conv.error?`异常：${conv.error}`:(active?'增量保存中':recorded?'已封存':'待启动');
   $('meetingAiHealth').textContent=reportStatus==='ready'?'转写与纪要完成':(['stopping','summarizing'].includes(reportStatus)?`处理中 · 成功 ${asrDone} / 失败 ${asrFailed}`:reportStatus==='error'?'需要检查':'等待终止会议');
 }
 

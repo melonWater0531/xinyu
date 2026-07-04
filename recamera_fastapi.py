@@ -328,7 +328,9 @@ _emotieff_result = None  # EmotiEffLib parallel inference result
 _doa_reader = None
 _conversation_recorder = None
 _conversation_recording_requested = False
+_meeting_save_audio = False
 _last_conversation_start_attempt = 0.0
+_recording_start_requested_at = 0.0
 _meeting_report = {
     "status": "idle", "summary": "", "minutes": "", "transcript": "",
     "turns": 0, "duration_min": 0.0, "error": "",
@@ -364,15 +366,13 @@ _ui_session_id: str = ""
 CONTROL_LEASE_MS = 5000
 EVENTBUS_TIMEOUT_S = float(os.environ.get("RECAMERA_EVENTBUS_TIMEOUT", "2.0"))
 HEARTBEAT_EVENTBUS_TIMEOUT_S = float(os.environ.get("RECAMERA_HEARTBEAT_EVENTBUS_TIMEOUT", "0.75"))
-RECORDING_START_TIMEOUT_S = float(os.environ.get("RECAMERA_RECORDING_START_TIMEOUT", "4.0"))
+RECORDING_START_TIMEOUT_S = float(os.environ.get("RECAMERA_RECORDING_START_TIMEOUT", "3.0"))
 RECORDING_STOP_TIMEOUT_S = float(os.environ.get("RECAMERA_RECORDING_STOP_TIMEOUT", "3.0"))
 ASR_IDLE_WAIT_S = float(os.environ.get("RECAMERA_ASR_IDLE_WAIT", "45.0"))
 _heartbeat_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="eventbus-heartbeat")
-# Recorder start/stop can block indefinitely inside PortAudio when the audio
-# device is absent/busy. A dedicated single-worker pool caps the damage to one
-# stranded thread; a stuck start is detected via _recorder_start_future below.
-_recorder_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recorder-ctl")
 _recorder_start_future = None
+_recorder_start_thread = None
+_recorder_start_token = 0
 # EventBus emits get their own small pool so a wedged recorder thread can
 # never starve the control plane (which previously shared the default pool).
 _bus_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="eventbus-emit")
@@ -708,7 +708,7 @@ def _apply_runtime_result(result: dict) -> None:
     _multi_track_active = feature in {"multi_sound_yaw", "meeting_sound_yaw", "meeting_recording"}
     if feature == "inactive" and previous_feature in {"multi_sound_yaw", "meeting_recording", "meeting_sound_yaw"}:
         _conversation_recording_requested = False
-        _stop_conversation_recording(finalize=True)
+        _request_conversation_stop_background(finalize=True)
     _gimbal_tlm = dict(runtime.get("gimbal") or _gimbal_tlm)
     _control_obs = {
         "observe_only": False,
@@ -1059,13 +1059,18 @@ def _asr_state() -> dict:
             queue_size = int(_asr_queue.qsize())
         except Exception:
             queue_size = 0
+    worker_active = any(not task.done() for task in _asr_worker_tasks)
+    last_error = str(_asr_stats.get("last_error", "") or "")
     return {
+        "status": "degraded" if last_error else "ready" if worker_active else "disabled",
+        "worker_active": worker_active,
+        "queue_size": queue_size,
         "queue": queue_size,
         "pending": int(_asr_stats.get("pending", 0) or 0),
         "running": int(_asr_stats.get("running", 0) or 0),
         "done": int(_asr_stats.get("done", 0) or 0),
         "failed": int(_asr_stats.get("failed", 0) or 0),
-        "last_error": str(_asr_stats.get("last_error", "") or ""),
+        "last_error": last_error,
         "last_error_at": float(_asr_stats.get("last_error_at", 0.0) or 0.0),
     }
 
@@ -1144,7 +1149,14 @@ def _on_conversation_segment(turn: dict) -> None:
 
 async def _asr_worker_loop():
     from pathlib import Path as _Path
-    from services.cloud_asr import cloud_asr as _cloud_asr
+    try:
+        import importlib
+        loop = asyncio.get_running_loop()
+        module = await loop.run_in_executor(_slow_pool, importlib.import_module, "services.cloud_asr")
+        _cloud_asr = module.cloud_asr
+    except Exception as exc:
+        _mark_asr_error(f"ASR initialization failed: {exc}")
+        return
 
     while True:
         turn = await _asr_queue.get()
@@ -1202,24 +1214,63 @@ class RecorderBusyError(RuntimeError):
 
 
 async def _start_conversation_recording_async() -> bool:
-    global _recorder_start_future
-    loop = _current_running_loop()
-    if loop is None:
-        return _start_conversation_recording()
-    # A stranded start (PortAudio blocked in C) keeps the single recorder
-    # worker busy; report degraded immediately instead of queueing behind it.
-    if _recorder_start_future is not None and not _recorder_start_future.done():
+    global _recorder_start_future, _recorder_start_thread, _recorder_start_token
+    loop = asyncio.get_running_loop()
+    # A stranded daemon start is abandoned rather than joined or reused.
+    if _recorder_start_thread is not None and _recorder_start_thread.is_alive():
         raise RecorderBusyError("录音设备无响应（上一次启动仍未返回），请检查麦克风连接")
-    _recorder_start_future = loop.run_in_executor(_recorder_pool, _start_conversation_recording)
-    return bool(await asyncio.wait_for(
-        asyncio.shield(_recorder_start_future),
-        timeout=RECORDING_START_TIMEOUT_S,
-    ))
+    _recorder_start_token += 1
+    token = _recorder_start_token
+    _recorder_start_future = loop.create_future()
+
+    def _run_start() -> None:
+        try:
+            result, error = bool(_start_conversation_recording()), None
+        except BaseException as exc:  # PortAudio wrappers may raise non-Exception errors.
+            result, error = False, exc
+        if token != _recorder_start_token:
+            if result:
+                try:
+                    _stop_conversation_recording(finalize=False)
+                except BaseException:
+                    pass
+            return
+
+        def _finish() -> None:
+            future = _recorder_start_future
+            if future is None or future.done():
+                return
+            if error is not None:
+                future.set_exception(error)
+            else:
+                future.set_result(result)
+        try:
+            loop.call_soon_threadsafe(_finish)
+        except RuntimeError:
+            pass
+
+    _recorder_start_thread = threading.Thread(
+        target=_run_start, daemon=True, name="recorder-start-daemon",
+    )
+    _recorder_start_thread.start()
+    try:
+        return bool(await asyncio.wait_for(
+            asyncio.shield(_recorder_start_future), timeout=RECORDING_START_TIMEOUT_S,
+        ))
+    except asyncio.TimeoutError:
+        _recorder_start_token += 1
+        if _recorder_start_future is not None and not _recorder_start_future.done():
+            _recorder_start_future.cancel()
+        raise
 
 
 async def _start_meeting_recording_background() -> None:
-    global _conversation_recording_requested, _meeting_report
-    _ensure_asr_worker()
+    global _conversation_recording_requested, _meeting_report, _recording_start_requested_at
+    try:
+        _ensure_asr_worker()
+    except Exception as exc:
+        _mark_asr_error(f"ASR initialization failed: {exc}")
+    _recording_start_requested_at = time.time()
     _meeting_report = {
         **_meeting_report,
         "status": "recording_starting",
@@ -1252,7 +1303,7 @@ async def _start_meeting_recording_background() -> None:
         _meeting_report = {
             **_meeting_report,
             "status": "recording_degraded",
-            "error": f"录音设备启动超过 {RECORDING_START_TIMEOUT_S:.1f}s，已降级为仅定位",
+            "error": "recording_start_timeout",
             "progress": 0,
         }
     except RecorderBusyError as exc:
@@ -1273,43 +1324,123 @@ async def _start_meeting_recording_background() -> None:
         }
 
 
+async def recorder_watchdog_loop() -> None:
+    """Cached-state watchdog; never calls or joins the audio device."""
+    global _conversation_recording_requested, _meeting_report, _recorder_start_token
+    while True:
+        if (_meeting_report.get("status") == "recording_starting"
+                and _recording_start_requested_at
+                and time.time() - _recording_start_requested_at > 5.0):
+            _conversation_recording_requested = False
+            _recorder_start_token += 1
+            _meeting_report = {
+                **_meeting_report,
+                "status": "recording_degraded",
+                "error": "recording_start_timeout",
+                "progress": 0,
+            }
+        await asyncio.sleep(0.5)
+
+
 def _stop_conversation_recording(finalize: bool = True) -> None:
     if _conversation_recorder is not None:
         _conversation_recorder.stop(finalize=finalize)
 
 
 async def _stop_conversation_recording_async(finalize: bool = True) -> bool:
-    loop = _current_running_loop()
-    if loop is None:
-        _stop_conversation_recording(finalize=finalize)
-        return True
+    global _recorder_start_token
+    loop = asyncio.get_running_loop()
+    _recorder_start_token += 1
+    future = loop.create_future()
+
+    def _run_stop() -> None:
+        try:
+            _stop_conversation_recording(finalize=finalize)
+            result, error = True, None
+        except BaseException as exc:
+            result, error = False, exc
+
+        def _finish() -> None:
+            if future.done():
+                return
+            if error is not None:
+                future.set_exception(error)
+            else:
+                future.set_result(result)
+        try:
+            loop.call_soon_threadsafe(_finish)
+        except RuntimeError:
+            pass
+
+    threading.Thread(target=_run_stop, daemon=True, name="recorder-stop-daemon").start()
     try:
-        await asyncio.wait_for(
-            loop.run_in_executor(_recorder_pool, lambda: _stop_conversation_recording(finalize=finalize)),
-            timeout=RECORDING_STOP_TIMEOUT_S,
-        )
-        return True
+        return bool(await asyncio.wait_for(asyncio.shield(future), timeout=RECORDING_STOP_TIMEOUT_S))
     except asyncio.TimeoutError:
+        future.cancel()
         logger.warning("Conversation recorder stop timed out after %.1fs", RECORDING_STOP_TIMEOUT_S)
         return False
+    except BaseException as exc:
+        logger.warning("Conversation recorder stop failed: %s", str(exc)[:160])
+        return False
+
+
+def _request_conversation_stop_background(finalize: bool = True) -> None:
+    """Schedule stop without ever blocking a state-sync or request thread."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        threading.Thread(
+            target=lambda: _stop_conversation_recording(finalize=finalize),
+            daemon=True,
+            name="recorder-stop-request",
+        ).start()
+        return
+    loop.create_task(_stop_conversation_recording_async(finalize=finalize))
 
 
 def _conversation_state() -> dict:
     from services.speaker_mapper import speaker_mapper
     asr = _asr_state()
     meeting_elapsed = max(0.0, (_meeting_ended_at or time.monotonic()) - _meeting_started_at) if _meeting_started_at else 0.0
-    if _conversation_recorder is None:
+    report_status = str(_meeting_report.get("status", "idle"))
+    starting = bool(
+        report_status == "recording_starting"
+        and _meeting_recording_task is not None
+        and not _meeting_recording_task.done()
+    )
+    if starting:
+        recording_status = "starting"
+    elif report_status == "recording_degraded":
+        recording_status = "degraded"
+    elif report_status == "error":
+        recording_status = "error"
+    else:
+        recording_status = "disabled"
+    start_age = max(0.0, time.time() - _recording_start_requested_at) if starting and _recording_start_requested_at else 0.0
+    audio_device = os.environ.get("RECAMERA_AUDIO_DEVICE", "").strip() or "system_default"
+    if not _meeting_save_audio or _conversation_recorder is None:
         return {
             "active": False,
             "meeting_active": bool(_multi_track_active),
             "available": True,
             "error": "",
-            "mode": "doa_only",
+            "mode": "tracking_only",
+            "status": "tracking_only" if not _meeting_save_audio else recording_status,
             "requested": bool(_conversation_recording_requested),
-            "recording_state": "starting" if (_meeting_recording_task is not None and not _meeting_recording_task.done()) else "idle",
+            "save_audio": bool(_meeting_save_audio),
+            "recording_requested": bool(_conversation_recording_requested),
+            "recorder_active": False,
+            "recording_status": recording_status,
+            "recording_state": "starting" if starting else "disabled" if not _meeting_save_audio else recording_status,
+            "recording_started_at": None,
+            "recording_start_age_sec": round(start_age, 2),
+            "audio_device": audio_device,
             "meeting_state": _meeting_report.get("status", "idle"),
             "last_recording_error": str(_meeting_report.get("error", "") or ""),
             "last_asr_error": asr["last_error"],
+            "asr_status": asr["status"],
+            "asr_worker_active": asr["worker_active"],
+            "asr_queue_size": asr["queue_size"],
             "asr_queue": asr["queue"],
             "asr_pending": asr["pending"],
             "asr_running": asr["running"],
@@ -1342,9 +1473,17 @@ def _conversation_state() -> dict:
         recording_state = "idle"
         mode = "recording_complete"
     state["mode"] = mode
+    state["status"] = recording_state
     state["meeting_active"] = bool(_multi_track_active)
     state["requested"] = bool(_conversation_recording_requested)
+    state["save_audio"] = bool(_meeting_save_audio)
+    state["recording_requested"] = bool(_conversation_recording_requested)
+    state["recorder_active"] = bool(state.get("active"))
+    state["recording_status"] = "degraded" if report_status == "recording_degraded" else "error" if report_status == "error" else recording_state
     state["recording_state"] = recording_state
+    state["recording_started_at"] = state.get("started_at")
+    state["recording_start_age_sec"] = round(start_age, 2)
+    state["audio_device"] = audio_device
     state["meeting_state"] = _meeting_report.get("status", "idle")
     state["last_recording_error"] = str(state.get("error") or _meeting_report.get("error", "") or "")
     state["last_asr_error"] = asr["last_error"]
@@ -1354,6 +1493,9 @@ def _conversation_state() -> dict:
     state["asr_done"] = asr["done"]
     state["asr_failed"] = asr["failed"]
     state["asr"] = asr
+    state["asr_status"] = asr["status"]
+    state["asr_worker_active"] = asr["worker_active"]
+    state["asr_queue_size"] = asr["queue_size"]
     state["speakers"] = speaker_mapper.get_registered_speakers()
     state["report"] = dict(_meeting_report)
     return state
@@ -1946,7 +2088,6 @@ async def lifespan(app: FastAPI):
     _doa_reader = None
     _conversation_recording_requested = False
     _ensure_doa_reader()
-    _ensure_asr_worker()
 
     audio_device = os.environ.get("RECAMERA_AUDIO_DEVICE", "").strip()
     if audio_device:
@@ -1980,6 +2121,7 @@ async def lifespan(app: FastAPI):
     push_task = asyncio.create_task(state_push_loop())
     runtime_task = asyncio.create_task(runtime_sync_loop())
     doa_task = asyncio.create_task(doa_event_loop())
+    recorder_watchdog_task = asyncio.create_task(recorder_watchdog_loop())
 
     logger.info("=" * 55)
     logger.info("reCamera Demo Dashboard (FastAPI) - display only")
@@ -1998,18 +2140,19 @@ async def lifespan(app: FastAPI):
     push_task.cancel()
     runtime_task.cancel()
     doa_task.cancel()
+    recorder_watchdog_task.cancel()
     for t in _asr_worker_tasks:
         if not t.done():
             t.cancel()
     try: await push_task
     except asyncio.CancelledError: pass
-    for task in (runtime_task, doa_task, *_asr_worker_tasks):
+    for task in (runtime_task, doa_task, recorder_watchdog_task, *_asr_worker_tasks):
         if task is None:
             continue
         try: await task
         except asyncio.CancelledError: pass
 
-    _stop_conversation_recording(finalize=True)
+    await _stop_conversation_recording_async(finalize=True)
     if _wake_word_service:
         _wake_word_service.stop()
     if video_client: video_client.stop()
@@ -2637,7 +2780,10 @@ async def api_system_health():
         "node_red": {"status": "ready" if gimbal.get("connected") else "degraded", "reason": gimbal.get("last_error") or "检查设备 1880 bridge 与电机读回"},
         "gimbal": {"status": "ready" if gimbal.get("verified") or gimbal.get("connected") else "degraded", "reason": "尚未验证电机动作" if not gimbal.get("verified") else ""},
         "respeaker": {"status": "ready" if doa.get("available") or doa.get("connected") else "offline", "reason": str(doa.get("error", "检查 USB/DOA 输入"))},
-        "recorder": {"status": "ready" if conversation.get("available", True) else "offline", "reason": conversation.get("error", "")},
+        "recorder": {
+            "status": "degraded" if conversation.get("recording_status") in {"degraded", "error"} else "ready",
+            "reason": conversation.get("last_recording_error", ""),
+        },
         "llm": {"status": "ready" if os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("ZHIPU_API_KEY") else "degraded", "reason": "未配置云端模型，将使用本地回退"},
         **zhipu_components,
     }
@@ -2708,12 +2854,16 @@ async def api_conversation_debug():
 
 @app.post("/api/conversation/start")
 async def api_conversation_start(payload: dict = None):
-    global _conversation_recording_requested, _ui_session_id, _meeting_report, _meeting_recording_task
+    global _conversation_recording_requested, _meeting_save_audio, _ui_session_id
+    global _meeting_report, _meeting_recording_task, _recording_start_requested_at
     payload = payload or {}
     from services.speaker_mapper import speaker_mapper
     speaker_mapper.reset()
+    save_audio = bool(payload.get("save_audio", False))
+    _meeting_save_audio = save_audio
+    _recording_start_requested_at = 0.0
     _meeting_report = {
-        "status": "recording_starting", "summary": "", "minutes": "", "transcript": "",
+        "status": "recording_starting" if save_audio else "recording_disabled", "summary": "", "minutes": "", "transcript": "",
         "turns": 0, "duration_min": 0.0, "error": "", "progress": 0,
     }
     _pause_wake_word()
@@ -2723,8 +2873,7 @@ async def api_conversation_start(payload: dict = None):
         if not session_result.get("accepted"):
             _resume_wake_word()
             return {"success": False, "recording_success": False, **session_result}
-    _conversation_recording_requested = bool(payload.get("save_audio", False))
-    _ensure_asr_worker()
+    _conversation_recording_requested = save_audio
     if _conversation_recording_requested:
         if _meeting_recording_task is None or _meeting_recording_task.done():
             _meeting_recording_task = asyncio.create_task(
@@ -2732,7 +2881,7 @@ async def api_conversation_start(payload: dict = None):
                 name="conversation-recording-start",
             )
     else:
-        _meeting_report["status"] = "idle"
+        _meeting_report["status"] = "recording_disabled"
     return {
         "success": True,
         "recording_success": bool(_conversation_recorder and _conversation_recorder.active),
@@ -2871,7 +3020,8 @@ async def api_single_track_stop(payload: dict = Body(default={})):
 @app.post("/api/multi_track/start")
 async def api_multi_track_start(payload: dict = Body(default={})):
     global _multi_track_active, _single_track_active, _tracking_mode
-    global _conversation_recording_requested, _meeting_report, _meeting_recording_task
+    global _conversation_recording_requested, _meeting_save_audio, _meeting_report, _meeting_recording_task
+    global _recording_start_requested_at
     global _meeting_started_at, _meeting_ended_at
     from services.speaker_mapper import speaker_mapper
 
@@ -2888,9 +3038,11 @@ async def api_multi_track_start(payload: dict = Body(default={})):
             "recording_success": bool(_conversation_recorder and _conversation_recorder.active),
             "state": _conversation_state(),
         }
+    _meeting_save_audio = save_audio
+    _recording_start_requested_at = 0.0
     speaker_mapper.reset()
     _meeting_report = {
-        "status": "recording_starting" if save_audio else "idle",
+        "status": "recording_starting" if save_audio else "recording_disabled",
         "summary": "", "minutes": "", "transcript": "",
         "turns": 0, "duration_min": 0.0, "error": "",
         "progress": 0,
@@ -2906,7 +3058,6 @@ async def api_multi_track_start(payload: dict = Body(default={})):
     _meeting_started_at = time.monotonic()
     _meeting_ended_at = 0.0
     _conversation_recording_requested = save_audio
-    _ensure_asr_worker()
     if save_audio:
         if _meeting_recording_task is None or _meeting_recording_task.done():
             _meeting_recording_task = asyncio.create_task(

@@ -116,15 +116,18 @@ def build_chat_system_prompt(state: dict | None, user_name: str = "") -> str:
     name = user_name.strip() or "用户"
     return f"""你是心屿（XINYU），一个温柔陪伴型 AI，正在和{name}对话。
 
-你可以参考以下实时状态，但不要主动报数字，也不要说“根据传感器数据”。请把这些线索自然地融入关心里。
+以下实时状态只能作为低置信度的背景线索，不能用来否定、覆盖或纠正用户的文字自述。
 {context}
 
 对话原则：
+- 信息优先级严格为：用户本轮自述 > 用户日记和近期聊天 > 摄像头视觉线索。
+- 用户文字和视觉线索冲突时，只跟随用户文字；不要提及冲突，也不要按视觉标签追问。
+- 不直接复述视觉情绪标签、置信度、概率或任何模型字段，不说“我看出你很……”或“根据传感器……”。
 - 像关心朋友一样回应，不做心理咨询师或医生式诊断。
-- 如果疲劳线索明显，温柔建议休息、喝水或放慢节奏。
-- 如果积极线索明显，给予肯定；如果线索矛盾，承认“看起来有点复杂”。
+- 先回应用户明确说出的感受，再给一个轻而具体的陪伴选择或开放问题。
+- 只有用户没有表达感受时，才可以谨慎参考视觉线索，并使用“也许”“似乎”等不确定措辞。
 - 不编造没有被用户或状态提到的事件。
-- 回复不超过 80 字，中文，自然段落，不使用列表或标题。"""
+- 回复 40-90 个中文字符，自然、克制，不使用列表或标题。"""
 
 
 _ZH_EMOTION = {
@@ -157,10 +160,22 @@ def describe_day_summary(day_summary: dict | None) -> str:
     return "，".join(parts)
 
 
-def build_weekly_report_prompt(entries: list, day_summaries: list, user_name: str = "",
+def build_weekly_report_prompt(weekly_data, options=None, user_name: str = "",
                                week_start: str = "", week_end: str = "") -> list[dict[str, str]]:
-    """Weekly letter prompt: self-reported diary entries + machine-observed
-    day summaries, including agreement/divergence between the two."""
+    """Build a short weekly reflection while preserving the legacy call shape."""
+    if isinstance(weekly_data, dict):
+        entries = weekly_data.get("entries") or []
+        day_summaries = weekly_data.get("day_summaries") or []
+        selfcare = weekly_data.get("selfcare") or []
+        opts = options if isinstance(options, dict) else {}
+        user_name = str(opts.get("user_name") or user_name)
+        week_start = str(opts.get("week_start") or week_start)
+        week_end = str(opts.get("week_end") or week_end)
+    else:
+        entries = weekly_data or []
+        day_summaries = options if isinstance(options, list) else []
+        opts = {}
+        selfcare = next((e.get("selfcare_week") for e in entries if isinstance(e, dict) and e.get("selfcare_week")), [])
     name = (user_name or "").strip() or "用户"
     diary_lines = []
     for e in entries[:14]:
@@ -170,7 +185,7 @@ def build_weekly_report_prompt(entries: list, day_summaries: list, user_name: st
         obs = _ZH_EMOTION.get(str(e.get("observed_emotion") or ""), str(e.get("observed_emotion") or ""))
         line = f"{e.get('date','')}: 自评{emo or '未填'}"
         if obs:
-            line += f"，心屿观察到{obs}" + ("（一致）" if e.get("observed_emotion") == e.get("emotion") else "（有差异）")
+            line += f"，视觉弱线索为{obs}"
         excerpt = str(e.get("content") or e.get("excerpt") or "")[:60]
         if excerpt:
             line += f"，摘录：{excerpt}"
@@ -181,19 +196,36 @@ def build_weekly_report_prompt(entries: list, day_summaries: list, user_name: st
             desc = describe_day_summary(d)
             if desc:
                 observed_lines.append(f"{d.get('date','')}: {desc}")
-    system = (
-        f"你是心屿，请给 {name} 写一封温暖的周报信（书信体，300-500字，中文）。\n"
-        "要求：\n"
-        "- 总结这一周的情绪趋势和专注情况（专注均值低于60时温柔提醒）。\n"
-        "- 如果自评情绪和心屿观察有差异，用温和好奇的语气提到，不评判、不诊断。\n"
-        "- 引用 1-2 个日记片段（如果有）。\n"
-        "- 结尾给下周一个具体的小建议。\n"
-        "- 不编造记录里没有的事件。"
-    )
+    record_days = len({str(e.get("date")) for e in entries if isinstance(e, dict) and e.get("date")})
+    data_sufficiency = str(opts.get("data_sufficiency") or ("low" if record_days < 3 else "medium" if record_days <= 5 else "high"))
+    demo_mode = bool(opts.get("demo_mode")) or bool(selfcare) and all(str(d.get("source")) == "demo" for d in selfcare if isinstance(d, dict))
+    bounds = (80, 120) if data_sufficiency == "low" else (120, 180) if data_sufficiency == "medium" else (160, 220)
+    if demo_mode:
+        bounds = (120, 180)
+    max_chars = max(bounds[0], min(int(opts.get("max_chars") or bounds[1]), bounds[1]))
+
+    care_lines = []
+    for day in selfcare[:7]:
+        if not isinstance(day, dict):
+            continue
+        care_lines.append(
+            f"{day.get('date','')}: 步数{(day.get('steps') or {}).get('value','无')}，"
+            f"喝水{(day.get('water') or {}).get('cups','无')}杯，"
+            f"运动{len((day.get('exercise') or {}).get('sessions') or [])}次，"
+            f"呼吸{len((day.get('breathing') or {}).get('sessions') or [])}次，来源{day.get('source','未知')}"
+        )
+    system = f"""你是心屿，请给{name}写一段自然、温和、克制的本周简报。
+信息优先级：用户日记、自述和聊天 > self-care 主动记录 > 摄像头视觉弱线索；冲突时必须跟随用户自述。
+正文控制在 {bounds[0]}-{max_chars} 个中文字符。最终只输出一个自然短文，不要标题，不要列表。
+内容顺序自然包含：一句趋势、一句肯定、一句需要照顾的地方、一个具体的下周建议。
+禁止医学或心理诊断、说教、夸大趋势、编造数据、逐项罗列数字、暴露字段名或 JSON。
+不要复述视觉模型标签或概率。演示数据必须明确称为演示预览，不能伪装成用户真实数据。"""
     user = (
         f"周期：{week_start} 至 {week_end}\n"
-        f"日记记录（{len(diary_lines)} 条）：\n" + ("\n".join(diary_lines) or "本周没有日记记录。") +
-        "\n\n心屿每日观察：\n" + ("\n".join(observed_lines) or "本周没有观察数据。")
+        f"数据充分度：{data_sufficiency}；演示模式：{'是' if demo_mode else '否'}\n"
+        f"用户日记（{len(diary_lines)} 条）：\n" + ("\n".join(diary_lines) or "本周没有日记记录。") +
+        "\n\n视觉弱线索：\n" + ("\n".join(observed_lines) or "本周没有观察数据。") +
+        "\n\n自我照顾记录：\n" + ("\n".join(care_lines) or "本周没有自我照顾记录。")
     )
     return [{"role": "system", "content": system},
             {"role": "user", "content": user}]

@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&family=Noto+Sans+SC:wght@400;500&family=Inter:wght@400;500&family=DM+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/home_selfcare.css?v=20260703-1">
   <style>
     :root {
       --bg: #FAF7F2; --bg-deep: #F5F0E8;
@@ -478,7 +479,7 @@
             <div>
               <p class="eyebrow">TODAY</p>
               <h1 class="home-greeting">下午好，<span id="home-name">心屿用户</span></h1>
-              <p id="home-copy" class="home-hero__copy">心屿会在看见你时轻轻记录情绪与专注。</p>
+              <p id="home-copy" class="home-hero__copy">今天的感受由你来定义，心屿只轻轻陪你记录。</p>
             </div>
             <span class="badge badge--off" id="home-device-badge">同步中</span>
           </div>
@@ -504,6 +505,52 @@
           </div>
           <blockquote class="home-quote" id="home-quote">"允许今天只是今天，也是一种温柔。"</blockquote>
         </article>
+
+        <article class="card selfcare-overview" id="selfcare-overview">
+          <div class="card__head compact">
+            <div><p class="eyebrow">SELF CARE</p><h2>今天，也照顾一下自己</h2></div>
+            <span class="badge badge--ok">本地可用</span>
+          </div>
+          <div class="selfcare-overview__grid">
+            <div class="selfcare-today">
+              <small>今日心情</small>
+              <strong id="selfcare-mood">等你记录</strong>
+              <small id="selfcare-mood-note">你的感受，由你来定义</small>
+            </div>
+            <div class="selfcare-progress">
+              <div class="selfcare-progress__top"><span>今日照顾进度</span><strong id="selfcare-progress-value">0%</strong></div>
+              <div class="selfcare-progress__track" role="progressbar" aria-label="今日自我照顾进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="selfcare-progress__fill" id="selfcare-progress-fill"></div></div>
+            </div>
+          </div>
+          <p class="selfcare-reminder" id="selfcare-reminder">今天可以从一杯水开始。</p>
+        </article>
+
+        <div class="selfcare-grid" aria-label="今日自我照顾">
+          <article class="card selfcare-card">
+            <div class="selfcare-card__head"><span class="selfcare-card__icon" aria-hidden="true">◌</span><span class="selfcare-source" id="selfcare-steps-source">演示数据</span></div>
+            <strong class="selfcare-value"><span id="selfcare-steps">—</span> <span>步</span></strong>
+            <p class="selfcare-note" id="selfcare-steps-average">本周平均 — 步</p>
+          </article>
+          <article class="card selfcare-card">
+            <div class="selfcare-card__head"><span class="selfcare-card__icon" aria-hidden="true">滴</span><span class="selfcare-source" id="selfcare-water-source">演示数据</span></div>
+            <strong class="selfcare-value" id="selfcare-water">— / 8</strong>
+            <p class="selfcare-note">杯水 · 今日目标</p>
+            <button class="btn-soft btn-wide selfcare-action" type="button" id="selfcare-water-add">＋ 记一杯水</button>
+          </article>
+          <article class="card selfcare-card">
+            <div class="selfcare-card__head"><span class="selfcare-card__icon" aria-hidden="true">步</span><span class="selfcare-source">手动记录</span></div>
+            <strong class="selfcare-value" id="selfcare-exercise">还没有记录</strong>
+            <p class="selfcare-note" id="selfcare-exercise-note">走一小段也算数</p>
+            <button class="btn-soft btn-wide selfcare-action" type="button" id="selfcare-walk-add">记录一次散步</button>
+          </article>
+          <article class="card selfcare-card">
+            <div class="selfcare-card__head"><span class="selfcare-card__icon" aria-hidden="true">息</span><span class="selfcare-source">手动记录</span></div>
+            <strong class="selfcare-value" id="selfcare-breathing">0 次</strong>
+            <p class="selfcare-note" id="selfcare-breathing-note">今天共 0 分钟</p>
+            <button class="btn-soft btn-wide selfcare-action" type="button" id="selfcare-breathing-add">记录 3 分钟呼吸</button>
+          </article>
+        </div>
+        <p class="selfcare-status" id="selfcare-status" role="status" aria-live="polite"></p>
 
         <article class="card">
           <div class="card__head">
@@ -538,7 +585,7 @@
       <section class="page" id="page-companion" aria-label="陪伴">
         <article class="card card--hero comp-emotion-card" id="comp-emotion-card">
           <div class="card__head compact">
-            <div><p class="eyebrow">EMOTION</p><h2>此刻的情绪</h2></div>
+            <div><p class="eyebrow">WELLBEING</p><h2>此刻的状态线索</h2></div>
             <span class="badge badge--off" id="comp-emotion-quality">正在观察</span>
           </div>
           <div class="comp-signal">
@@ -593,7 +640,7 @@
             </span>
           </div>
           <div class="chat-thread" id="comp-chat-thread">
-            <div class="chat-bubble">你可以把此刻想说的话放在这里，小屿会结合今天的状态回应你。</div>
+            <div class="chat-bubble">你可以按自己的感受慢慢说。小屿会先听你的话，再轻轻回应。</div>
           </div>
           <div class="chat-compose">
             <input id="comp-chat-input" maxlength="180" aria-label="想和小屿说的话" placeholder="说说现在的感受……" autocomplete="off">
@@ -711,13 +758,13 @@
         <article class="card">
           <div class="card__head">
             <div><p class="eyebrow">WEEKLY LETTER</p><h2>写给这一周的你</h2></div>
-            <span class="letter-stamp" aria-hidden="true">屿</span>
+            <span class="badge badge--off" id="rec-week-source">等待生成</span>
           </div>
           <div class="week-bars" id="rec-week-bars"></div>
           <div class="week-summary">
             <div class="metric"><span class="metric__label">主要情绪</span><span class="metric__value text" style="font-size:15px" id="rec-week-top-emotion">—</span></div>
             <div class="metric"><span class="metric__label">记录天数</span><span class="metric__value" id="rec-week-days">—</span></div>
-            <div class="metric"><span class="metric__label">自评 vs 观察一致</span><span class="metric__value" id="rec-week-agreement">—</span></div>
+            <div class="metric"><span class="metric__label">本周记录完整度</span><span class="metric__value" id="rec-week-agreement">—</span></div>
           </div>
           <p class="week-letter-text" id="rec-week-letter">这一周还没有留下记录。可以从今天的一句话开始。</p>
           <button class="btn-soft" type="button" id="rec-week-generate">让小屿写周报</button>
@@ -868,6 +915,9 @@
     </div>
   </dialog>
 
+  <script src="/static/home_selfcare.js?v=20260703-1"></script>
+  <script src="/static/home_emotion_chat.js?v=20260703-1"></script>
+  <script src="/static/home_weekly_report.js?v=20260703-1"></script>
   <script>
   (() => {
     "use strict";
@@ -1172,24 +1222,15 @@
       App.meetingSid=""; localStorage.removeItem(LS.RECORDING_SID);
     }
     async function apiChat(message){
-      const s=App.state||{};
       const recent=getLatestDiaryExcerpt();
       const todayEntry=getEntryByDate(dateKey(new Date()));
-      return apiChatWithTimeout({
+      return apiChatWithTimeout(XinyuEmotionChat.buildPayload({
         message,
-        emotion:currentEmotionInfo().zh,
-        context:[
-          `情绪：${currentEmotionInfo().zh}（${Math.round(Number(s.emotieff?.confidence||0)*100)}%）`,
-          `专注：${currentAttentionScore()}`,
-          `视线：${GAZE_LABELS[s.gaze?.state]||"未知"}`,
-          `PERCLOS：${s.eye_metrics?.perclos??'N/A'}`,
-          `眨眼率：${s.eye_metrics?.blink_rate??'N/A'}次/分`,
-          `人数：${Number(s.pose?.stable_count||0)}`,
-          recent?`最近日记：${recent}`:"",
-        ].filter(Boolean).join("；").substring(0,300),
-        diary_text:(todayEntry?.content||"").substring(0,200),
-        user_name:getUserName(),
-      });
+        diaryText:(todayEntry?.content||recent||"").substring(0,200),
+        recentChat:loadTodayChat(),
+        visualHint:hasSinglePerson()?`${currentEmotionInfo().zh}，仅供参考`:"",
+        userName:getUserName(),
+      }));
     }
     async function apiReflect(text){
       if(!text)throw new Error("no text");
@@ -1297,7 +1338,7 @@
       const msgs=loadTodayChat().slice(-20);
       if(!msgs.length){
         const d=document.createElement("div");d.className="chat-bubble";
-        d.textContent="你可以把此刻想说的话放在这里，小屿会结合今天的状态回应你。";
+        d.textContent="你可以按自己的感受慢慢说。小屿会先听你的话，再轻轻回应。";
         thread.append(d);
       }else{
         msgs.forEach(m=>_appendBubble(thread,m.role,m.content));
@@ -1346,7 +1387,7 @@
       const quote=$("home-quote");
       if(quote)quote.textContent=`"${App.state?.llm_quote||todayEntry?.reply||"允许今天只是今天，也是一种温柔。"}"`;
       const copy=$("home-copy");
-      if(copy)copy.textContent=meeting?"多人场景中，小屿不评判个人情绪。":(single?emo.note:"心屿会在看见你时轻轻记录情绪与专注。");
+      if(copy)copy.textContent=meeting?"多人场景中，小屿不评判个人情绪。":(single?"画面只提供轻轻的状态线索，你的感受仍由你来定义。":"今天的感受由你来定义，心屿只轻轻陪你记录。");
     }
 
     function renderCompanion(){
@@ -1540,13 +1581,7 @@
       const topInfo=topEmo?EMOTION_MAP[topEmo]:null;
       setText("rec-week-top-emotion",topInfo?`${topInfo.icon} ${topInfo.zh}`:"—");
       setText("rec-week-days",totalDays?`${totalDays} 天`:"—");
-      // Agreement between the user's picked emotion and what the camera observed
-      let obsN=0,agreeN=0;
-      days.forEach(d=>{
-        const e=getEntryByDate(dateKey(d));
-        if(e?.observed_emotion){obsN++;if(e.observed_emotion===e.emotion)agreeN++;}
-      });
-      setText("rec-week-agreement",obsN?`${Math.round(agreeN/obsN*100)}%`:"—");
+      setText("rec-week-agreement",totalDays?`${Math.round(totalDays/7*100)}%`:"—");
       // Render last saved weekly report if available, otherwise default text
       const reports=loadWeeklyReports();
       const latestReport=reports[0];
@@ -2124,13 +2159,14 @@
       const thread=$("comp-chat-thread");
       const pend=document.createElement("div");pend.className="chat-bubble";pend.textContent="小屿正在读你的这句话……";
       if(thread){thread.append(pend);thread.scrollTop=thread.scrollHeight;}
-      const s=App.state||{};
-      const body={
+      const todayEntry=getEntryByDate(dateKey(new Date()));
+      const body=XinyuEmotionChat.buildPayload({
         message:msg,
-        emotion:currentEmotionInfo().zh,
-        context:`情绪：${currentEmotionInfo().zh}；专注：${currentAttentionScore()}`,
-        user_name:getUserName(),
-      };
+        diaryText:todayEntry?.content||"",
+        recentChat:loadTodayChat(),
+        visualHint:hasSinglePerson()?`${currentEmotionInfo().zh}，仅供参考`:"",
+        userName:getUserName(),
+      });
       try{
         // Streaming first; tokens render as they arrive
         const data=await apiChatStream(body,partial=>{
@@ -2147,7 +2183,7 @@
           const reply=data?.reply||"心屿收到了你的话。";
           pend.textContent=reply;saveChatMsg("assistant",reply);
         }catch{
-          const fb=currentEmotionInfo().note+" 可以先把最想被理解的一件事写下来。";
+          const fb=XinyuEmotionChat.fallbackReply(msg);
           pend.textContent=fb;saveChatMsg("assistant",fb);
         }
       }
@@ -2166,6 +2202,7 @@
         (e.tags||[]).forEach(t=>{tagCounts[t]=(tagCounts[t]||0)+1;});
       });
       const observed=week.filter(e=>e.observed_emotion);
+      const selfcare=XinyuWeeklyReport.collectSelfCare();
       return{
         total:week.length,emotions:emotionCounts,
         avg_attention:week.length?Math.round(week.reduce((s,e)=>s+(e.attention_avg||0),0)/week.length):null,
@@ -2174,6 +2211,7 @@
         excerpts:week.map(e=>({date:e.date,emotion:e.emotion,excerpt:(e.content||"").substring(0,50)})),
         observed_agreement:observed.length?Math.round(observed.filter(e=>e.observed_emotion===e.emotion).length/observed.length*100):null,
         observed_divergences:observed.filter(e=>e.observed_emotion!==e.emotion).map(e=>({date:e.date,self:e.emotion,observed:e.observed_emotion})),
+        selfcare,
         week_start:weekAgoKey,
         week_end:dateKey(now),
       };
@@ -2189,7 +2227,8 @@
       if(letter){letter.textContent="小屿正在回顾这一周…";letter.dataset.custom="1";}
       try{
         // Dedicated weekly-report endpoint: real entries + server-side day observations
-        const weekEntries=loadEntries().filter(e=>e.date>=data.week_start&&e.date<=data.week_end);
+        const weekEntries=loadEntries().filter(e=>e.date>=data.week_start&&e.date<=data.week_end)
+          .map((entry,index)=>index===0?{...entry,selfcare_week:data.selfcare}:entry);
         const ctrl=new AbortController();const tid=setTimeout(()=>ctrl.abort(),20000);
         let d;
         try{
@@ -2201,13 +2240,17 @@
           });
           d=await res.json();
         }finally{clearTimeout(tid);}
-        const content=d?.content||"";
+        const localFallback=XinyuWeeklyReport.buildFallback(weekEntries,data.selfcare);
+        const content=d?.source==="template"?localFallback.content:XinyuWeeklyReport.normalizeContent(d?.content,localFallback.content);
+        setText("rec-week-source",d?.source&&d.source!=="template"?(localFallback.summary.hasDemo?"AI 整理 · 含演示数据":"AI 整理"):localFallback.sourceLabel);
         if(letter){letter.textContent=content||"小屿这会有点忙，稍后再试";letter.dataset.custom="1";}
         if(content){saveWeeklyReport({id:`weekly_${data.week_end.replace(/-/g,"")}`,week_start:data.week_start,week_end:data.week_end,generated_at:new Date().toISOString(),content,data_snapshot:data});}
         showToast("小屿写好这一周的回信了");
       }catch{
-        showToast("小屿这会有点忙，稍后再试");
-        if(letter&&letter.textContent==="小屿正在回顾这一周…"){letter.textContent=`这一周有 ${data.total} 天留下了记录。继续保持这份觉察。`;letter.dataset.custom="1";}
+        const fallback=XinyuWeeklyReport.buildFallback(loadEntries().filter(e=>e.date>=data.week_start),data.selfcare);
+        showToast("已用本地记录生成本周简报");
+        setText("rec-week-source",fallback.sourceLabel);
+        if(letter){letter.textContent=fallback.content;letter.dataset.custom="1";}
       }
     }
 
@@ -2284,6 +2327,7 @@
         if(!confirm("确定重置本地所有记录吗？此操作不可撤销。"))return;
         [LS.DIARY,LS.OLD_DIARY,LS.MEETING_NOTES,LS.ENTRIES,LS.WEEKLY_REPORTS,
          LS.NOTIFY_ENABLED,LS.NOTIFY_LAST,LS.CONTROL_SID,LS.RECORDING_SID,
+         XinyuSelfCare.KEYS.data,XinyuSelfCare.KEYS.provider,XinyuSelfCare.KEYS.demoMode,
          "xinyu_emotion_monitoring","xinyu_focus_monitoring","xinyu_multi_scene_running","xinyu_tracking_mode",
         ].forEach(k=>localStorage.removeItem(k));
         // Clear daily chat logs for past 90 days
@@ -2338,5 +2382,6 @@
     });
   })();
   </script>
+  <script src="/static/home_selfcare_ui.js?v=20260703-1"></script>
 </body>
 </html>
