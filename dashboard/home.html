@@ -453,7 +453,7 @@
     <!-- Header -->
     <header class="app-header">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">屿</span>
+        <span class="xinyu-icon-slot xinyu-icon-slot--brand" aria-hidden="true"></span>
         <span>
           <span class="brand-name">心屿</span>
           <span class="brand-sub" id="hdr-greeting">下午好</span>
@@ -506,48 +506,29 @@
           <blockquote class="home-quote" id="home-quote">"允许今天只是今天，也是一种温柔。"</blockquote>
         </article>
 
-        <article class="card selfcare-overview" id="selfcare-overview">
-          <div class="card__head compact">
-            <div><p class="eyebrow">SELF CARE</p><h2>今天，也照顾一下自己</h2></div>
-            <span class="badge badge--ok">本地可用</span>
-          </div>
-          <div class="selfcare-overview__grid">
-            <div class="selfcare-today">
-              <small>今日心情</small>
-              <strong id="selfcare-mood">等你记录</strong>
-              <small id="selfcare-mood-note">你的感受，由你来定义</small>
-            </div>
-            <div class="selfcare-progress">
-              <div class="selfcare-progress__top"><span>今日照顾进度</span><strong id="selfcare-progress-value">0%</strong></div>
-              <div class="selfcare-progress__track" role="progressbar" aria-label="今日自我照顾进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="selfcare-progress__fill" id="selfcare-progress-fill"></div></div>
-            </div>
-          </div>
-          <p class="selfcare-reminder" id="selfcare-reminder">今天可以从一杯水开始。</p>
-        </article>
-
         <div class="selfcare-grid" aria-label="今日自我照顾">
           <article class="card selfcare-card">
-            <div class="selfcare-card__head"><span class="selfcare-card__icon" aria-hidden="true">◌</span><span class="selfcare-source" id="selfcare-steps-source">演示数据</span></div>
+            <div class="selfcare-card__head"><span class="xinyu-icon-slot xinyu-icon-slot--steps" aria-hidden="true"></span><span class="selfcare-source" id="selfcare-steps-source">演示数据</span></div>
             <strong class="selfcare-value"><span id="selfcare-steps">—</span> <span>步</span></strong>
             <p class="selfcare-note" id="selfcare-steps-average">本周平均 — 步</p>
           </article>
           <article class="card selfcare-card">
-            <div class="selfcare-card__head"><span class="selfcare-card__icon" aria-hidden="true">滴</span><span class="selfcare-source" id="selfcare-water-source">演示数据</span></div>
+            <div class="selfcare-card__head"><span class="xinyu-icon-slot xinyu-icon-slot--water" aria-hidden="true"></span><span class="selfcare-source" id="selfcare-water-source">演示数据</span></div>
             <strong class="selfcare-value" id="selfcare-water">— / 8</strong>
             <p class="selfcare-note">杯水 · 今日目标</p>
-            <button class="btn-soft btn-wide selfcare-action" type="button" id="selfcare-water-add">＋ 记一杯水</button>
+            <button class="btn-soft btn-wide selfcare-action" type="button" id="selfcare-water-add">记一杯水</button>
           </article>
           <article class="card selfcare-card">
-            <div class="selfcare-card__head"><span class="selfcare-card__icon" aria-hidden="true">步</span><span class="selfcare-source">手动记录</span></div>
+            <div class="selfcare-card__head"><span class="xinyu-icon-slot xinyu-icon-slot--walk" aria-hidden="true"></span><span class="selfcare-source">手动记录</span></div>
             <strong class="selfcare-value" id="selfcare-exercise">还没有记录</strong>
             <p class="selfcare-note" id="selfcare-exercise-note">走一小段也算数</p>
             <button class="btn-soft btn-wide selfcare-action" type="button" id="selfcare-walk-add">记录一次散步</button>
           </article>
-          <article class="card selfcare-card">
-            <div class="selfcare-card__head"><span class="selfcare-card__icon" aria-hidden="true">息</span><span class="selfcare-source">手动记录</span></div>
-            <strong class="selfcare-value" id="selfcare-breathing">0 次</strong>
-            <p class="selfcare-note" id="selfcare-breathing-note">今天共 0 分钟</p>
-            <button class="btn-soft btn-wide selfcare-action" type="button" id="selfcare-breathing-add">记录 3 分钟呼吸</button>
+          <article class="card selfcare-card selfcare-card--meditation">
+            <div class="selfcare-card__head"><span class="xinyu-icon-slot xinyu-icon-slot--meditation" aria-hidden="true"></span><span class="selfcare-source">本机记录</span></div>
+            <strong class="selfcare-value" id="selfcare-meditation">0 / 1 次</strong>
+            <p class="selfcare-note" id="selfcare-meditation-note">给自己 5 分钟安静一下</p>
+            <button class="btn-soft btn-wide selfcare-action" type="button" id="selfcare-meditation-open">开始一次冥想</button>
           </article>
         </div>
         <p class="selfcare-status" id="selfcare-status" role="status" aria-live="polite"></p>
@@ -558,24 +539,24 @@
           </div>
           <div class="shortcut-list">
             <button class="shortcut-row" type="button" data-goto="companion">
-              <span class="shortcut-icon shortcut-icon--amber" aria-hidden="true">☻</span>
+              <span class="xinyu-icon-slot xinyu-icon-slot--companion shortcut-icon" aria-hidden="true"></span>
               <span class="shortcut-label"><strong>单人陪伴</strong><small>情绪与专注自动呈现</small></span>
-              <span class="shortcut-arrow" aria-hidden="true">›</span>
+              <span class="shortcut-arrow" aria-hidden="true"></span>
             </button>
             <button class="shortcut-row" type="button" data-goto="meeting">
-              <span class="shortcut-icon shortcut-icon--green" aria-hidden="true">◌</span>
+              <span class="xinyu-icon-slot xinyu-icon-slot--meeting shortcut-icon" aria-hidden="true"></span>
               <span class="shortcut-label"><strong>会议记录</strong><small>录音、整理和会议日记</small></span>
-              <span class="shortcut-arrow" aria-hidden="true">›</span>
+              <span class="shortcut-arrow" aria-hidden="true"></span>
             </button>
             <button class="shortcut-row" type="button" data-goto="records">
-              <span class="shortcut-icon shortcut-icon--rose" aria-hidden="true">✎</span>
+              <span class="xinyu-icon-slot xinyu-icon-slot--diary shortcut-icon" aria-hidden="true"></span>
               <span class="shortcut-label"><strong>日记与周报</strong><small>把一天慢慢放下来</small></span>
-              <span class="shortcut-arrow" aria-hidden="true">›</span>
+              <span class="shortcut-arrow" aria-hidden="true"></span>
             </button>
             <button class="shortcut-row" type="button" data-goto="mine">
-              <span class="shortcut-icon shortcut-icon--gray" aria-hidden="true">◎</span>
+              <span class="xinyu-icon-slot xinyu-icon-slot--device shortcut-icon" aria-hidden="true"></span>
               <span class="shortcut-label"><strong>提醒与设备</strong><small>通知、昵称和设备动作</small></span>
-              <span class="shortcut-arrow" aria-hidden="true">›</span>
+              <span class="shortcut-arrow" aria-hidden="true"></span>
             </button>
           </div>
         </article>
@@ -589,47 +570,29 @@
             <span class="badge badge--off" id="comp-emotion-quality">正在观察</span>
           </div>
           <div class="comp-signal">
-            <div class="comp-emotion-icon" id="comp-emotion-icon" aria-hidden="true">😌</div>
+            <div class="xinyu-icon-slot xinyu-icon-slot--mood xinyu-icon-slot--lg" id="comp-emotion-icon" aria-hidden="true"></div>
             <div>
               <strong class="comp-emotion-name" id="comp-emotion-name">暂未看到你</strong>
               <p class="comp-emotion-copy" id="comp-emotion-copy">当你出现在画面里，心屿会自动更新这里。</p>
             </div>
           </div>
           <div class="comp-care-inline" id="comp-care-inline">
-            <span aria-hidden="true">💛</span>
-            <p id="comp-care-text"></p>
+            <span class="xinyu-icon-slot xinyu-icon-slot--companion xinyu-icon-slot--sm" aria-hidden="true"></span>
+            <div><small>小屿留意到</small><p id="comp-care-text">今天可以从一杯水开始，慢慢来就好。</p></div>
           </div>
           <div class="comp-focus-bar">
             <span class="metric__label">陪伴时长</span>
             <span id="comp-focus-duration" style="font-family:'DM Mono',monospace;font-size:18px">00:00</span>
           </div>
-          <button class="btn-soft btn-wide" type="button" id="comp-ask-advice" style="margin-top:10px">让小屿给一句建议</button>
         </article>
 
-        <div class="grid-2">
-          <article class="card">
-            <p class="eyebrow">FOCUS</p>
-            <h2>专注陪伴</h2>
-            <p style="margin-top:8px;font-size:20px;font-weight:600;font-family:'Noto Serif SC',serif" id="comp-focus-label">—</p>
-            <p style="color:var(--muted);font-size:12px;margin-top:4px;line-height:1.5" id="comp-focus-note">等待画面中的单人状态。</p>
-            <div class="comp-eye-row">
-              <div class="comp-eye-cell"><small>EAR</small><strong id="comp-ear">—</strong></div>
-              <div class="comp-eye-cell"><small>闪烁率</small><strong id="comp-blink">—</strong></div>
-              <div class="comp-eye-cell"><small>疲劳</small><strong id="comp-fatigue">—</strong></div>
-              <div class="comp-eye-cell"><small>校准</small><strong id="comp-ear-calib" style="font-size:12px">—</strong></div>
-            </div>
-          </article>
-          <article class="card">
-            <p class="eyebrow">GESTURE</p>
-            <h2>手势</h2>
-            <p style="margin-top:8px;font-size:12px;color:var(--muted);line-height:1.5" id="comp-gesture-copy">张手、点赞等会触发陪伴动作。</p>
-            <strong id="comp-gesture-state" style="display:block;margin-top:8px;font-size:13px">暂未识别</strong>
-            <div class="comp-gaze-row">
-              <div class="comp-gaze-cell"><small>视线</small><span id="comp-gaze" style="font-size:12px">—</span></div>
-              <div class="comp-gaze-cell"><small>主动关心</small><span id="comp-intervention" style="font-size:12px">待观察</span></div>
-            </div>
-          </article>
-        </div>
+        <article class="card comp-focus-card">
+          <span class="xinyu-icon-slot xinyu-icon-slot--focus xinyu-icon-slot--lg" aria-hidden="true"></span>
+          <div><p class="eyebrow">FOCUS</p><h2>专注陪伴</h2>
+            <p class="comp-focus-label" id="comp-focus-label">等待观察</p>
+            <p class="comp-focus-note" id="comp-focus-note">有画面后，我会只做轻量提醒。</p>
+          </div>
+        </article>
 
         <article class="card">
           <div class="card__head compact">
@@ -727,9 +690,17 @@
           <div class="cal-grid" id="cal-grid" role="grid" aria-label="情绪日历"></div>
         </article>
 
+        <article class="card mood-trend-card" aria-labelledby="mood-trend-title">
+          <div class="mood-trend-card__head">
+            <div><p class="eyebrow">MOOD RHYTHM</p><h2 id="mood-trend-title">今日情绪趋势</h2><p>只记录明显转折点</p></div>
+            <span class="mood-trend-demo" id="mood-trend-source" hidden>演示数据</span>
+          </div>
+          <div class="mood-trend-chart" id="mood-trend-chart" role="img" aria-label="所选日期的情绪转折趋势"></div>
+        </article>
+
         <article class="card" id="rec-entry-card">
           <div id="entry-empty" class="entry-empty-state">
-            <span class="empty-face" aria-hidden="true">˙ᵕ˙</span>
+            <span class="xinyu-icon-slot xinyu-icon-slot--mood xinyu-icon-slot--lg" aria-hidden="true"></span>
             <h2>选一天，看看那时的自己</h2>
             <p style="color:var(--muted);font-size:13px">也可以从今天开始，留下一颗小小的心情种子。</p>
             <button class="btn-soft" type="button" id="entry-new-today">记录今天</button>
@@ -737,7 +708,7 @@
           <div id="entry-content" hidden>
             <div class="entry-topline"><span id="entry-date"></span><span id="entry-weather"></span></div>
             <div class="entry-mood-line">
-              <div class="entry-emotion-icon" id="entry-emotion-icon" aria-hidden="true">😌</div>
+              <div class="xinyu-icon-slot xinyu-icon-slot--mood xinyu-icon-slot--lg" id="entry-emotion-icon" aria-hidden="true"></div>
               <div><small style="color:var(--muted)">那天的心情</small><h2 id="entry-mood-name" style="margin-top:2px"></h2></div>
             </div>
             <div class="entry-tags" id="entry-tags"></div>
@@ -849,17 +820,17 @@
 
     <!-- Bottom nav -->
     <nav class="bottom-nav" aria-label="主要导航">
-      <button type="button" class="nav-item active" data-nav="home"><span aria-hidden="true">⌂</span><span>首页</span></button>
-      <button type="button" class="nav-item" data-nav="companion"><span aria-hidden="true">♡</span><span>陪伴</span></button>
-      <button type="button" class="nav-item" data-nav="meeting"><span aria-hidden="true">◌</span><span>会议</span></button>
-      <button type="button" class="nav-item" data-nav="records"><span aria-hidden="true">☷</span><span>记录</span></button>
-      <button type="button" class="nav-item" data-nav="mine"><span aria-hidden="true">◉</span><span>我的</span></button>
+      <button type="button" class="nav-item active" data-nav="home"><span class="xinyu-icon-slot xinyu-icon-slot--brand" aria-hidden="true"></span><span>首页</span></button>
+      <button type="button" class="nav-item" data-nav="companion"><span class="xinyu-icon-slot xinyu-icon-slot--companion" aria-hidden="true"></span><span>陪伴</span></button>
+      <button type="button" class="nav-item" data-nav="meeting"><span class="xinyu-icon-slot xinyu-icon-slot--meeting" aria-hidden="true"></span><span>会议</span></button>
+      <button type="button" class="nav-item" data-nav="records"><span class="xinyu-icon-slot xinyu-icon-slot--diary" aria-hidden="true"></span><span>记录</span></button>
+      <button type="button" class="nav-item" data-nav="mine"><span class="xinyu-icon-slot xinyu-icon-slot--device" aria-hidden="true"></span><span>我的</span></button>
     </nav>
   </div>
 
   <!-- Care bubble overlay -->
   <div class="care-bubble" id="care-bubble" role="status" aria-live="polite">
-    <span aria-hidden="true" style="font-size:20px;flex-shrink:0">💛</span>
+    <span class="xinyu-icon-slot xinyu-icon-slot--companion xinyu-icon-slot--sm" aria-hidden="true"></span>
     <p class="care-bubble__text" id="care-bubble-text"></p>
     <button class="btn-icon btn-soft" type="button" id="care-bubble-close" aria-label="关闭" style="flex-shrink:0;width:30px;height:30px;font-size:16px">×</button>
   </div>
@@ -890,7 +861,7 @@
       <!-- Step 2: Text + tags -->
       <div id="diary-step-2" hidden>
         <div class="selected-emo-card" id="selected-emo-card">
-          <div class="selected-emo-icon" id="selected-emo-icon" aria-hidden="true">😌</div>
+          <div class="xinyu-icon-slot xinyu-icon-slot--mood xinyu-icon-slot--lg" id="selected-emo-icon" aria-hidden="true"></div>
           <div>
             <small style="color:var(--muted)" id="diary-step2-date"></small>
             <h2 id="selected-emo-name" style="margin-top:2px"></h2>
@@ -915,43 +886,75 @@
     </div>
   </dialog>
 
+  <dialog class="meditation-dialog" id="meditation-dialog" aria-labelledby="meditation-title">
+    <div class="meditation-dialog__shell">
+      <header class="meditation-dialog__head">
+        <div><p class="eyebrow">QUIET MOMENT</p><h2 id="meditation-title">开始一次冥想</h2><p>选一个舒服的长度，音乐当前仅作展示。</p></div>
+        <button class="meditation-dialog__close" type="button" id="meditation-close" aria-label="关闭">×</button>
+      </header>
+      <fieldset>
+        <legend>冥想时间</legend>
+        <div class="meditation-options">
+          <label><input type="radio" name="meditation-duration" value="3"><span>3 分钟</span></label>
+          <label><input type="radio" name="meditation-duration" value="5" checked><span>5 分钟</span></label>
+          <label><input type="radio" name="meditation-duration" value="10"><span>10 分钟</span></label>
+          <label><input type="radio" name="meditation-duration" value="15"><span>15 分钟</span></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>背景声音</legend>
+        <div class="meditation-options">
+          <label><input type="radio" name="meditation-music" value="rain" checked><span>雨声</span></label>
+          <label><input type="radio" name="meditation-music" value="forest"><span>森林</span></label>
+          <label><input type="radio" name="meditation-music" value="white_noise"><span>白噪音</span></label>
+          <label><input type="radio" name="meditation-music" value="none"><span>无音乐</span></label>
+        </div>
+      </fieldset>
+      <div class="meditation-dialog__actions">
+        <button class="btn-soft" type="button" id="meditation-later">稍后</button>
+        <button class="btn-primary" type="button" id="meditation-start">开始冥想</button>
+      </div>
+    </div>
+  </dialog>
+
   <script src="/static/home_selfcare.js?v=20260703-1"></script>
   <script src="/static/home_emotion_chat.js?v=20260703-1"></script>
   <script src="/static/home_weekly_report.js?v=20260703-1"></script>
+  <script src="/static/home_mood_trend.js?v=20260704-1"></script>
   <script>
   (() => {
     "use strict";
 
     // ── Constants ────────────────────────────────────────────────────────────
     const EMOTION_MAP = {
-      Happiness: { zh:"快乐",  note:"把这份轻盈好好收下。",           icon:"😊", color:"#F5E6C8" },
-      Happy:     { zh:"快乐",  note:"把这份轻盈好好收下。",           icon:"😊", color:"#F5E6C8" },
-      Neutral:   { zh:"平静",  note:"像岛上刚刚停下来的风。",         icon:"😌", color:"#E8E4DC" },
-      Calm:      { zh:"平静",  note:"像岛上刚刚停下来的风。",         icon:"😌", color:"#E8E4DC" },
-      Sadness:   { zh:"低落",  note:"不用一个人扛，我在这里。",       icon:"😢", color:"#C8D8E8" },
-      Sad:       { zh:"低落",  note:"不用一个人扛，我在这里。",       icon:"😢", color:"#C8D8E8" },
-      Anger:     { zh:"愤怒",  note:"先别急着压住它，慢慢看清楚。",   icon:"😠", color:"#E8C8C8" },
-      Angry:     { zh:"愤怒",  note:"先别急着压住它，慢慢看清楚。",   icon:"😠", color:"#E8C8C8" },
-      Fear:      { zh:"不安",  note:"我陪你一步一步来。",             icon:"😟", color:"#D8D0E8" },
-      Surprise:  { zh:"惊讶",  note:"生活突然眨了一下眼。",           icon:"😮", color:"#F5E0C0" },
-      Disgust:   { zh:"不适",  note:"不舒服的感觉值得被认真听见。",   icon:"🤢", color:"#C8D8C8" },
-      Contempt:  { zh:"轻蔑",  note:"保持距离，有时候也是边界。",     icon:"😏", color:"#D8D4CC" },
+      Happiness: { zh:"快乐",  note:"把这份轻盈好好收下。",           color:"#F5E6C8" },
+      Happy:     { zh:"快乐",  note:"把这份轻盈好好收下。",           color:"#F5E6C8" },
+      Neutral:   { zh:"平静",  note:"像岛上刚刚停下来的风。",         color:"#E8E4DC" },
+      Calm:      { zh:"平静",  note:"像岛上刚刚停下来的风。",         color:"#E8E4DC" },
+      Sadness:   { zh:"低落",  note:"不用一个人扛，我在这里。",       color:"#C8D8E8" },
+      Sad:       { zh:"低落",  note:"不用一个人扛，我在这里。",       color:"#C8D8E8" },
+      Anger:     { zh:"愤怒",  note:"先别急着压住它，慢慢看清楚。",   color:"#E8C8C8" },
+      Angry:     { zh:"愤怒",  note:"先别急着压住它，慢慢看清楚。",   color:"#E8C8C8" },
+      Fear:      { zh:"不安",  note:"我陪你一步一步来。",             color:"#D8D0E8" },
+      Surprise:  { zh:"惊讶",  note:"生活突然眨了一下眼。",           color:"#F5E0C0" },
+      Disgust:   { zh:"不适",  note:"不舒服的感觉值得被认真听见。",   color:"#C8D8C8" },
+      Contempt:  { zh:"疏离",  note:"保持距离，有时候也是边界。",     color:"#D8D4CC" },
     };
 
     const WHEEL_EMOTIONS = [
-      ["Happiness","😊","快乐"], ["Neutral","😌","平静"], ["Sadness","😢","低落"],
-      ["Anger","😠","愤怒"],     ["Fear","😟","不安"],   ["Surprise","😮","惊讶"],
-      ["Disgust","🤢","不适"],   ["Contempt","😏","轻蔑"],
+      ["Happiness","快乐"], ["Neutral","平静"], ["Sadness","低落"],
+      ["Anger","愤怒"], ["Fear","不安"], ["Surprise","惊讶"],
+      ["Disgust","不适"], ["Contempt","疏离"],
     ];
 
     const DIARY_TAGS = ["工作","学习","家人","朋友","独处","睡眠","运动","会议"];
 
     const GESTURE_LABELS = {
-      summon_xinyu:            "小屿来啦 👋",
-      pause_or_mute:           "收到，安静一会 ✊",
-      feedback_positive:       "谢谢你的肯定 👍",
+      summon_xinyu:            "小屿来啦",
+      pause_or_mute:           "收到，安静一会",
+      feedback_positive:       "谢谢你的肯定",
       feedback_negative:       "我会做得更好",
-      capture_positive_moment: "记录美好瞬间 ✌️",
+      capture_positive_moment: "记录美好瞬间",
     };
 
     const GAZE_LABELS = { center:"居中", left:"偏左", right:"偏右", down:"向下", away:"偏离", unknown:"未知" };
@@ -1133,22 +1136,48 @@
       return String(s.emotieff?.emotion||s.emotion?.emotion||s.emotion?.label||"Neutral").trim();
     }
     function currentEmotionInfo(){return EMOTION_MAP[currentEmotionKey()]||EMOTION_MAP.Neutral;}
+    function moodVariant(key){
+      if(["Happiness","Happy","Surprise"].includes(key))return"bright";
+      if(["Sadness","Sad"].includes(key))return"low";
+      if(["Anger","Angry","Disgust"].includes(key))return"anger";
+      if(["Fear","Contempt"].includes(key))return"uneasy";
+      return"neutral";
+    }
+    function setMoodSlot(id,key){
+      const el=$(id);if(!el)return;
+      [...el.classList].filter(c=>c.startsWith("xinyu-icon-slot--")&&!['xinyu-icon-slot--mood','xinyu-icon-slot--lg'].includes(c)).forEach(c=>el.classList.remove(c));
+      el.classList.add("xinyu-icon-slot",`xinyu-icon-slot--${moodVariant(key)}`);
+      el.textContent="";
+    }
     function currentAttentionScore(){return Math.round(Number(App.state?.attention?.score||0));}
     function isMeetingLike(){
       const s=App.state||{},feat=String(s.control?.active_feature||"");
       return App.meetingActive||feat.includes("multi")||feat.includes("meeting")||Boolean(s.conversation?.active);
     }
+    window.XinyuHomeScene={isMulti:isMeetingLike};
     function hasSinglePerson(){
       if(isMeetingLike())return false;
       const s=App.state||{};
       return Boolean(s.attention?.has_face||s.face_lock?.locked||Number(s.pose?.count||0)===1);
     }
     function focusInfo(score,hasFace){
-      if(!hasFace)return{label:"等待画面",note:"当你在画面中，心屿会自动观察专注状态。"};
+      if(!hasFace)return{label:"等待观察",note:"有画面后，我会只做轻量提醒。"};
       const v=Number(score||0);
-      if(v>=78)return{label:"专注中",note:"你现在比较稳定，适合继续完成眼前这一件事。"};
-      if(v>=55)return{label:"轻专注",note:"状态还在，可以用短一点的节奏推进。"};
-      return{label:"有些分散",note:"可以先休息一小会儿，再重新开始。"};
+      if(v>=55)return{label:"状态平稳",note:"现在的节奏比较稳定，可以继续眼前这一件事。"};
+      return{label:"略微走神",note:"可以先停一小会儿，再慢慢回到眼前。"};
+    }
+    function focusPresentation(single,meeting){
+      if(meeting)return{label:"暂不判断个人专注",note:"多人场景中不展示个人专注状态。"};
+      if(!single)return{label:"等待观察",note:"有画面后，我会根据眨眼和停顿，只做轻量提醒。"};
+      const fatigue=String(App.state?.eye_metrics?.fatigue_level||"");
+      if(["drowsy","severe","high"].includes(fatigue))return{label:"有些疲劳",note:"可以让眼睛休息一下，喝口水再继续。"};
+      return focusInfo(currentAttentionScore(),true);
+    }
+    function proactiveSuggestion(single,meeting,focus){
+      const repo=window.XinyuSelfCareHome?.repository||(window.XinyuSelfCare?new XinyuSelfCare.SelfCareRepository():null);
+      const today=repo?.getToday?.()||{};
+      const lastUser=[...loadTodayChat()].reverse().find(item=>item.role==="user")?.content||getEntryByDate(dateKey(new Date()))?.content||"";
+      return XinyuSelfCare?.buildProactiveCareSuggestion(today,{selfReport:lastUser},focus,{multiScene:meeting,hasSinglePerson:single})||"今天可以从一杯水开始，慢慢来就好。";
     }
     function speakerDirection(){
       const s=App.state||{};
@@ -1394,31 +1423,27 @@
       const single=hasSinglePerson(),meeting=isMeetingLike();
       const emo=currentEmotionInfo(),emoKey=currentEmotionKey();
       const conf=Number(App.state?.emotieff?.confidence||0);
-      const fi=focusInfo(currentAttentionScore(),single);
+      const fi=focusPresentation(single,meeting);
       const card=$("comp-emotion-card");
       if(card)card.style.setProperty("--emotion-tint",single&&!meeting?(emo.color+"aa"):"transparent");
       if(meeting){
-        setText("comp-emotion-icon","👥");setText("comp-emotion-name","多人场景中");
+        setMoodSlot("comp-emotion-icon","Neutral");setText("comp-emotion-name","多人场景中");
         setText("comp-emotion-copy","心屿不会在多人场景里判断个人情绪。");
-        setText("comp-focus-label","—");setText("comp-focus-note","多人场景中不展示个人专注状态。");
+        setText("comp-focus-label",fi.label);setText("comp-focus-note",fi.note);
         const q=$("comp-emotion-quality");if(q){q.className="badge badge--warn";q.textContent="已暂停";}
       }else if(single){
-        setText("comp-emotion-icon",emo.icon);setText("comp-emotion-name",emo.zh);
+        setMoodSlot("comp-emotion-icon",emoKey);setText("comp-emotion-name",emo.zh);
         setText("comp-emotion-copy",emo.note);
         setText("comp-focus-label",fi.label);setText("comp-focus-note",fi.note);
         const q=$("comp-emotion-quality");if(q){q.className=`badge ${conf>=0.65?"badge--ok":"badge--off"}`;q.textContent=conf>=0.65?"较稳定":"还在观察";}
       }else{
-        setText("comp-emotion-icon","😌");setText("comp-emotion-name","暂未看到你");
+        setMoodSlot("comp-emotion-icon","Neutral");setText("comp-emotion-name","暂未看到你");
         setText("comp-emotion-copy","当你出现在画面里，心屿会自动更新这里。");
-        setText("comp-focus-label","—");setText("comp-focus-note","等待画面中的单人状态。");
+        setText("comp-focus-label",fi.label);setText("comp-focus-note",fi.note);
         const q=$("comp-emotion-quality");if(q){q.className="badge badge--off";q.textContent="正在观察";}
       }
-      const em=App.state?.eye_metrics||{};
-      setText("comp-ear",em.ear_avg!=null?Number(em.ear_avg).toFixed(2):"—");
-      setText("comp-blink",em.blink_rate!=null?`${Number(em.blink_rate).toFixed(1)}/min`:"—");
-      const FATIGUE_ZH={alert:"清醒",mild:"轻度",drowsy:"困倦",severe:"很疲惫"};
-      setText("comp-fatigue",FATIGUE_ZH[em.fatigue_level]||"—");
-      setText("comp-ear-calib",em.calibrated?"已校准":"校准中");
+      setText("comp-care-text",proactiveSuggestion(single,meeting,fi));
+      $("comp-care-inline")?.classList.add("visible");
       const gest=App.state?.gesture||{};
       if(gest.pending_confirm&&GESTURE_LABELS[gest.pending_confirm]){
         setText("comp-gesture-state",`再做一次确认（${Math.ceil(gest.confirm_remaining||0)}s）`);
@@ -1515,7 +1540,20 @@
       setText("mtg-elapsed",formatMMSS(Date.now()-App.meetingStartedAt));
     }
 
-    function renderRecords(){renderCalendar();renderEntryDetail(App.selectedDayKey);renderWeekBars();renderMeetingHistory();}
+    function renderRecords(){
+      if(!App.selectedDayKey)App.selectedDayKey=dateKey(new Date());
+      renderCalendar();renderMoodTrend();renderEntryDetail(App.selectedDayKey);renderWeekBars();renderMeetingHistory();
+    }
+
+    function renderMoodTrend(){
+      if(!window.XinyuMoodTrend)return;
+      const events=safeJSON(localStorage.getItem("xinyu.moodEvents.v1"),[]);
+      const demoMode=localStorage.getItem("xinyu.selfcare.demoMode")==="true";
+      const points=XinyuMoodTrend.buildMoodTrendPointsForDate(App.selectedDayKey||dateKey(new Date()),loadEntries(),events,demoMode);
+      const isDemo=points.length>0&&points.every(point=>point.source==="demo");
+      XinyuMoodTrend.renderMoodTrend($("mood-trend-chart"),points,{demoMode:isDemo});
+      const source=$("mood-trend-source");if(source)source.hidden=!isDemo;
+    }
 
     function renderCalendar(){
       const yr=App.calCursor.getFullYear(),mo=App.calCursor.getMonth();
@@ -1533,9 +1571,9 @@
         btn.setAttribute("role","gridcell");
         const obsDiffers=entry?.observed_emotion&&entry.observed_emotion!==entry.emotion&&EMOTION_MAP[entry.observed_emotion];
         btn.setAttribute("aria-label",`${mo+1}月${d}日${emo?`，${emo.zh}`:"，没有记录"}${obsDiffers?`，心屿观察到${EMOTION_MAP[entry.observed_emotion].zh}`:""}`);
-        btn.innerHTML=`<span class="day-num">${d}</span>${emo?`<span class="day-emo">${emo.icon}</span>`:""}${obsDiffers?`<span class="day-observed" style="background:${EMOTION_MAP[entry.observed_emotion].color}"></span>`:""}`;
+        btn.innerHTML=`<span class="day-num">${d}</span>${emo?`<span class="day-emo mood-dot mood-dot--${moodVariant(entry.emotion)}" aria-hidden="true"></span>`:""}${obsDiffers?`<span class="day-observed" style="background:${EMOTION_MAP[entry.observed_emotion].color}"></span>`:""}`;
         if(emo&&key!==App.selectedDayKey)btn.style.backgroundColor=`${emo.color}88`;
-        btn.addEventListener("click",()=>{App.selectedDayKey=key;renderCalendar();renderEntryDetail(key);});
+        btn.addEventListener("click",()=>{App.selectedDayKey=key;renderCalendar();renderMoodTrend();renderEntryDetail(key);});
         grid.append(btn);
       }
     }
@@ -1548,7 +1586,7 @@
       if(!entry){if(compose)compose.style.display="none";return;}
       const emo=EMOTION_MAP[entry.emotion]||EMOTION_MAP.Neutral;
       setText("entry-date",formatDate(parseDate(key),true));
-      setText("entry-emotion-icon",emo.icon);
+      setMoodSlot("entry-emotion-icon",entry.emotion);
       setText("entry-mood-name",emo.zh);
       $("entry-note").textContent=entry.content||emo.note;
       const first=entry.conversation?.[0];
@@ -1574,12 +1612,12 @@
         if(entry){totalDays++;emoCount[entry.emotion]=(emoCount[entry.emotion]||0)+1;}
         const height=score?Math.max(8,Math.round(score*0.82)):8;
         const col=document.createElement("div");col.className="week-day-col";
-        col.innerHTML=`<span class="week-day-emo">${emo?emo.icon:"·"}</span><div class="week-day-bar" style="height:${height}px;opacity:${entry?1:.25}"></div><span class="week-day-label">${dayNames[d.getDay()]}</span>`;
+        col.innerHTML=`<span class="week-day-emo">${emo?`<span class="mood-dot mood-dot--${moodVariant(entry.emotion)}" aria-hidden="true"></span>`:""}</span><div class="week-day-bar" style="height:${height}px;opacity:${entry?1:.25}"></div><span class="week-day-label">${dayNames[d.getDay()]}</span>`;
         bars.append(col);
       });
       for(const[k,v]of Object.entries(emoCount)){if(v>topCount){topCount=v;topEmo=k;}}
       const topInfo=topEmo?EMOTION_MAP[topEmo]:null;
-      setText("rec-week-top-emotion",topInfo?`${topInfo.icon} ${topInfo.zh}`:"—");
+      setText("rec-week-top-emotion",topInfo?topInfo.zh:"—");
       setText("rec-week-days",totalDays?`${totalDays} 天`:"—");
       setText("rec-week-agreement",totalDays?`${Math.round(totalDays/7*100)}%`:"—");
       // Render last saved weekly report if available, otherwise default text
@@ -1717,13 +1755,13 @@
 
     function renderEmotionWheel(){
       const wheel=$("emotion-wheel");if(!wheel)return;wheel.innerHTML="";
-      WHEEL_EMOTIONS.forEach(([key,icon,zh])=>{
+      WHEEL_EMOTIONS.forEach(([key,zh])=>{
         const btn=document.createElement("button");
         btn.type="button";btn.className="emotion-btn";
         btn.setAttribute("role","radio");
         btn.setAttribute("aria-checked",String(App.diaryChosenEmotion===key));
         btn.dataset.emotion=key;
-        btn.innerHTML=`<span class="emo-icon">${icon}</span><span>${zh}</span>`;
+        btn.innerHTML=`<span class="xinyu-icon-slot xinyu-icon-slot--${moodVariant(key)}" aria-hidden="true"></span><span>${zh}</span>`;
         btn.addEventListener("click",()=>{
           App.diaryChosenEmotion=key;
           $$(".emotion-btn").forEach(b=>b.setAttribute("aria-checked",String(b.dataset.emotion===key)));
@@ -1739,7 +1777,7 @@
       $("diary-step-1").hidden=true;$("diary-step-2").hidden=false;
       setText("diary-step-label","STEP 2 OF 2");
       setText("diary-dialog-title","给这份心情留一点线索");
-      setText("selected-emo-icon",info.icon);setText("selected-emo-name",info.zh);
+      setMoodSlot("selected-emo-icon",App.diaryChosenEmotion);setText("selected-emo-name",info.zh);
       setText("diary-step2-date",formatDate(parseDate(App.diaryEditKey),true));
       const existing=getEntryByDate(App.diaryEditKey);
       const selTags=existing?.tags||[];
@@ -1854,7 +1892,7 @@
               fresh.conversation=[{role:"assistant",content:reply,ts:new Date().toISOString()},...rest];
               saveEntry(fresh);
             }
-          }catch{pend.textContent="小屿暂时无法回复，但你的日记已安全保存 🌿";}
+          }catch{pend.textContent="小屿暂时无法回复，但你的日记已安全保存。";}
           if($("diary-reply-compose"))$("diary-reply-compose").style.display="grid";
         }
       }
@@ -1893,7 +1931,7 @@
         const fresh=getEntryByDate(entry.date)||entry;
         (fresh.conversation=fresh.conversation||[]).push({role:"assistant",content:reply,ts:new Date().toISOString()});
         saveEntry(fresh);
-      }catch{pend.textContent="小屿暂时无法回复 🌿";}
+      }catch{pend.textContent="小屿暂时无法回复。";}
       if(el)el.scrollTop=el.scrollHeight;
     }
 
@@ -1926,7 +1964,7 @@
       App.lastGestureAt=at;
       // Two-stage intent: stage 1 (intent_ready) only prompts for confirmation
       if(g.intent==="pause_or_mute"&&!g.intent_confirmed){
-        showToast("再握拳一次，确认暂停 ✊");
+        showToast("再握拳一次，确认暂停");
         return;
       }
       if(g.intent==="summon_xinyu"){
@@ -2156,6 +2194,7 @@
       const inp=$("comp-chat-input");if(!inp)return;
       const msg=inp.value.trim();if(!msg)return;
       appendCompanionBubble("user",msg);inp.value="";
+      renderCompanion();
       const thread=$("comp-chat-thread");
       const pend=document.createElement("div");pend.className="chat-bubble";pend.textContent="小屿正在读你的这句话……";
       if(thread){thread.append(pend);thread.scrollTop=thread.scrollHeight;}
@@ -2260,12 +2299,6 @@
       $$("[data-goto]").forEach(b=>b.addEventListener("click",()=>goTo(b.dataset.goto)));
       setInterval(()=>{if(App.currentPage==="home")renderHome();},15000);
 
-      $("comp-ask-advice")?.addEventListener("click",async()=>{
-        const btn=$("comp-ask-advice");btn.disabled=true;btn.textContent="小屿思考中…";
-        try{const d=await apiChat("请基于我现在的情绪和专注状态，给一句温和具体的建议。");setText("comp-emotion-copy",d?.reply||"");}
-        catch{setText("comp-emotion-copy",currentEmotionInfo().note);}
-        btn.disabled=false;btn.textContent="让小屿给一句建议";
-      });
       $("comp-chat-send")?.addEventListener("click",sendCompanionChat);
       $("comp-chat-input")?.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendCompanionChat();}});
 

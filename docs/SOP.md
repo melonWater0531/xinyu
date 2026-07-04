@@ -1,8 +1,8 @@
-# reCamera Multimodal SOP 6.1
+# reCamera Multimodal SOP 6.0
 
 > 架构、部署、操作、验收与排障手册
-> 版本：6.1
-> 更新日期：2026-07-03
+> 版本：6.0
+> 更新日期：2026-07-02
 > 本文档以当前仓库代码为准；架构原理见 `docs/ARCHITECTURE.md`。
 
 ---
@@ -33,8 +33,6 @@ ip addr show wlan0
 
 ```bash
 export RECAMERA_DEVICE_IP=<RECAMERA_IP>
-export no_proxy="${no_proxy:+$no_proxy,}$RECAMERA_DEVICE_IP"
-export NO_PROXY="${NO_PROXY:+$NO_PROXY,}$RECAMERA_DEVICE_IP"
 
 ping -c 3 "$RECAMERA_DEVICE_IP"
 nc -zv "$RECAMERA_DEVICE_IP" 8090   # SSCMA 视频流（WebSocket）
@@ -129,32 +127,20 @@ usbipd.exe detach --busid <BUSID>
 **状态验证（双轴电机就绪后才返回 200，否则 503）：**
 
 ```bash
-curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
-  "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/status"
+curl "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/status"
 ```
 
 期望响应包含 `connected=true`、真实 `yaw/pitch`、双轴 speed 和 `source=motor_readback`。
 
-**可选冒烟测试（周围无障碍物，先申请租约，动作后立即 stop）：**
+**可选冒烟测试（确认电机响应后立即 stop）：**
 
 ```bash
-SID="sop-$(date +%s)"
-
-curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
-  -X POST "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/session/start" \
+curl -X POST "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/command" \
   -H 'Content-Type: application/json' \
-  -d "{\"session_id\":\"$SID\",\"lease_ms\":5000}"
+  -d '{"mode":"absolute","yaw":180,"pitch":90,"yaw_speed":180,"pitch_speed":180}'
 
-NOW=$(date +%s)
-curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
-  -X POST "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/command" \
-  -H 'Content-Type: application/json' \
-  -d "{\"mode\":\"absolute\",\"yaw\":180,\"pitch\":90,\"yaw_speed\":180,\"pitch_speed\":180,\"session_id\":\"$SID\",\"sequence\":1,\"issued_at\":$NOW,\"expires_at\":$((NOW+5))}"
-
-curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
-  -X POST "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/stop" \
-  -H 'Content-Type: application/json' \
-  -d "{\"stop\":true,\"session_id\":\"$SID\"}"
+curl -X POST "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/stop" \
+  -H 'Content-Type: application/json' -d '{"stop":true}'
 ```
 
 Bridge 不可达时真实控制 fail closed，不会静默降级为 dry-run。
@@ -817,24 +803,6 @@ printf '%s\n' "$RECAMERA_DEVICE_IP"
 为空时重新 export。日志若显示尝试连接名为 `RECAMERA_DEVICE_IP` 的主机，说明命令漏写了 `$` 和引号。
 
 正确写法：`--gimbal-ip "$RECAMERA_DEVICE_IP"`
-
-#### 9.1.1 请求错误进入桌面代理
-
-若设备网页可以打开，但 WSL 中的请求超时，执行：
-
-```bash
-curl -q -v --noproxy "$RECAMERA_DEVICE_IP" --max-time 3 \
-  "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/status"
-```
-
-- 输出 `Trying 127.0.0.1:7897`：请求仍进入桌面代理，没有直连设备。
-- 输出 `HTTP 200`：bridge 与电机读回正常。
-- 输出 `HTTP 503`：bridge 在线，但电机/CAN 读回尚未就绪或已经过期。
-- 输出 `HTTP 404`：当前部署的 flow 不包含该路径，或存在旧 flow 路由冲突。
-- `Connection refused`：设备可达，但 Node-RED 没有监听 1880。
-- 绕过代理后仍 `timed out`：检查 `ip route get "$RECAMERA_DEVICE_IP"`，属于 WSL 路由、设备地址或网络隔离问题。
-
-不要全局 `unset http_proxy/https_proxy`；这会影响依赖下载和云端 LLM。项目代码只对 reCamera 的设备请求强制直连。
 
 ### 9.2 设备可达但视频断开
 
