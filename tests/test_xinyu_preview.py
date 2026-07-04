@@ -62,27 +62,54 @@ class XinyuPreviewTests(unittest.TestCase):
         self.assertTrue(all("<svg" in content and not re.search(r"[\u4e00-\u9fff]", re.sub(r"<[^>]+>", "", content)) for content in badges))
 
     def test_companion_meeting_records_and_profile_contracts(self) -> None:
-        for phrase in ("和小屿聊聊天", "我最近有点压力大", "产品讨论会", "项目周会", "今日情绪趋势", "今日日记", "本周周报", "心屿设备", "数据与隐私"):
+        for phrase in ("和小屿聊聊天", "我今天有点累", "下半年活动规划与预算申报周会", "今日情绪趋势", "今日日记", "本周周报", "心屿设备", "数据与隐私"):
             self.assertIn(phrase, self.html)
-        self.assertIn("<svg viewBox", self.js)
-        self.assertIn("只记录明显转折点", self.html)
-        for network_marker in ("XMLHttpRequest", "WebSocket", "multi_track", "/api/conversation", "/api/gimbal", "/api/control"):
+        for phrase in ("buildAssistantMemoryContext", "buildXiaoyuReply", "openMeetingDetail", "openDiaryModal", "openWeeklyReportModal"):
+            self.assertIn(phrase, self.js)
+        for network_marker in ("XMLHttpRequest", "WebSocket", "multi_track", "/api/conversation", "/api/gimbal", "/api/control", "/api/reflect"):
             self.assertNotIn(network_marker, self.js)
-        self.assertEqual(re.findall(r'fetch\("([^\"]+)"', self.js), ["/api/chat"])
+        self.assertIn("/static/page2_preview/data/xinyu_seed_data.js", self.html)
 
-    def test_llm_chat_prioritizes_user_text_and_has_local_fallback(self) -> None:
+    def test_local_memory_chat_and_records_are_available(self) -> None:
         for phrase in (
-            "buildLLMPayload", "用户本轮自述是最高优先级", "只跟随用户文字",
-            "40至90个中文字符", "AbortController", "companionReply", "已使用本地回应",
+            "assistantMemory", "quickReplies", "loadMeetingMarkdown",
+            "saveDiary", "renderDiaryHistory", "renderWeeklyHistory",
+            "buildLLMPayload", "requestLLMReply", 'fetch("/api/chat"',
         ):
             self.assertIn(phrase, self.js)
-        self.assertIn('fetch("/api/chat"', self.js)
-        self.assertIn("controller.abort()", self.js)
+        seed = (DASHBOARD / "page2_preview" / "data" / "xinyu_seed_data.js").read_text(encoding="utf-8")
+        self.assertIn("meeting_summary_2026-07-04.md", seed)
+        self.assertIn("2026-07", self.html + self.js)
 
-    def test_demo_sop_documents_preview_startup_ip_and_llm_call(self) -> None:
+    def test_evening_copy_user_name_and_trend_label(self) -> None:
+        seed = (DASHBOARD / "page2_preview" / "data" / "xinyu_seed_data.js").read_text(encoding="utf-8")
+        for phrase in ("晚上好，蛋挞", "Hi，蛋挞", '<h1 id="xy-mine-title">蛋挞</h1>'):
+            self.assertIn(phrase, self.html)
+        self.assertIn('user_name: "蛋挞"', self.js)
+        self.assertIn("晚上状态平和了一些", self.js)
+        self.assertIn('display: "平和"', seed)
+        self.assertNotIn("清楚一些", seed + self.html + self.js)
+        self.assertNotIn("上午好，Lintong", self.html)
+
+    def test_diary_history_opens_centered_detail_modal(self) -> None:
+        for phrase in (
+            'aria-label="打开 ${escapeHTML(formatDate(day.date))} 日记"',
+            "openDiaryModal(button.dataset.date)",
+            '${formatDate(date)} 日记',
+            "override.assistantReply || day.assistantReply",
+        ):
+            self.assertIn(phrase, self.js)
+        self.assertIn("margin: auto;", self.css)
+        self.assertIn("height: min(80dvh, 720px)", self.css)
+        self.assertIn("border-radius: 30px", self.css)
+        self.assertNotIn("margin: auto auto 0", self.css)
+        self.assertNotIn("border-radius: 28px 28px 0 0", self.css)
+
+    def test_sop_documents_actual_page2_and_xinyu_access(self) -> None:
         sop = (DOCS / "home_demo_sop.md").read_text(encoding="utf-8")
         for phrase in (
-            "Preview 启动方式",
+            "/static/xinyu_preview.html",
+            "本地 memory context",
             "python3 recamera_fastapi.py",
             "http://localhost:8001/static/xinyu_preview.html",
             "手机录屏时如何找到电脑 IP",
@@ -90,21 +117,30 @@ class XinyuPreviewTests(unittest.TestCase):
             "ip -4 addr",
             "ipconfig",
             "http://<电脑IP>:8001/static/xinyu_preview.html",
-            "Preview 陪伴页 LLM 调用方式",
+            "export DEEPSEEK_API_KEY=sk-xxx",
+            "export ZHIPU_API_KEY=sk-xxx",
             "POST /api/chat",
-            "DEEPSEEK_API_KEY",
-            "ZHIPU_API_KEY",
-            "10 秒超时",
-            "本地 fallback",
         ):
             self.assertIn(phrase, sop)
 
-    def test_demo_and_storage_are_preview_only(self) -> None:
+    def test_no_public_placeholder_words_or_fake_status_bar(self) -> None:
+        visible_text = "\n".join((self.html, self.css))
+        forbidden_visible = (
+            "产品预览", "演示数据", "前端演示", "不会启动真实录音", "只记录明显转折点",
+            "demo", "Demo", "DEMO", "mock", "fake", "sample data", "debug",
+            "9:41", "signal", "battery", "status-bar", "逐字稿",
+        )
+        for phrase in forbidden_visible:
+            self.assertNotIn(phrase, visible_text)
+        for phrase in ("产品预览", "演示数据", "前端演示", "不会启动真实录音", "只记录明显转折点", "逐字稿"):
+            self.assertNotIn(phrase, self.all_text)
+
+    def test_storage_and_seed_contract(self) -> None:
         self.assertIn('"xinyu.preview.v1"', self.js)
-        self.assertEqual(set(re.findall(r'localStorage\.(?:getItem|setItem)\(([^,)]+)', self.js)), {"STORAGE_KEY"})
-        for phrase in ("产品预览 · 演示数据", "演示记录", "不包含真实录音"):
-            self.assertIn(phrase, self.html + self.js)
-        self.assertIn("DEMO", self.js)
+        self.assertIn('"xinyu.actual.diary.v1"', self.js)
+        seed = (DASHBOARD / "page2_preview" / "data" / "xinyu_seed_data.js").read_text(encoding="utf-8")
+        for phrase in ("2026-06-01", "2026-07-04", "下半年活动规划与预算申报周会", "meeting-2026-07-04-activity-budget"):
+            self.assertIn(phrase, seed)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for preview syntax validation")
     def test_preview_javascript_syntax(self) -> None:

@@ -2,8 +2,11 @@
   "use strict";
 
   const STORAGE_KEY = "xinyu_product_home_v2";
+  const DIARY_OVERRIDE_KEY = "xinyu_page2_diary_overrides_v1";
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  const seedData = window.XINYU_PREVIEW_DATA || {};
+  const previewTodayKey = seedData.currentDate || "";
   const sidKey = "session" + "_" + "id";
   const audioKey = "audio" + "_" + "processing";
   const stableKey = "stable" + "_" + "count";
@@ -29,10 +32,10 @@
   const tags = ["工作", "学习", "家人", "朋友", "独处", "睡眠", "运动", "会议"];
 
   let store = loadStore();
-  let selectedEntryKey = "";
+  let selectedEntryKey = previewTodayKey;
   let editingEntryKey = "";
   let chosenMood = "";
-  let calendarCursor = startOfMonth(new Date());
+  let calendarCursor = startOfMonth(previewTodayKey ? parseDate(previewTodayKey) : new Date());
   let toastTimer = 0;
   let ws = null;
   let wsLastAt = 0;
@@ -49,12 +52,25 @@
     notice: ""
   };
 
+  let diaryOverrides = loadDiaryOverrides();
+  let meetingMarkdownText = seedData.meetings?.currentMeeting?.minutesMarkdown || "";
+
+  async function loadMeetingMinutesMarkdown() {
+    const path = seedData.meetings?.currentMeeting?.minutesMarkdownPath;
+    if (!path || location.protocol === "file:") return meetingMarkdownText;
+    try {
+      const response = await fetch(`./${path}`, { cache: "no-store" });
+      if (response.ok) meetingMarkdownText = await response.text();
+    } catch (_) {}
+    return meetingMarkdownText;
+  }
+
   function initialStore() {
     return {
       version: 2,
       profile: { name: localStorage.getItem("xinyu_user_name") || "心屿用户", reminderTone: "gentle" },
-      entries: {},
-      meetings: [],
+      entries: buildSeedEntries(),
+      meetings: buildSeedMeetings(),
       notifyEnabled: localStorage.getItem("xinyu_notify_enabled") === "true",
       voice: {
         enabled: localStorage.getItem("xinyu_voice_enabled") !== "false",
@@ -78,8 +94,8 @@
         ...base,
         ...saved,
         profile: { ...base.profile, ...(saved.profile || {}) },
-        entries: saved.entries || {},
-        meetings: saved.meetings || [],
+        entries: { ...base.entries, ...(saved.entries || {}) },
+        meetings: mergeSeedMeetings(saved.meetings || base.meetings),
         voice: { ...base.voice, ...(saved.voice || {}) },
         lastSent: saved.lastSent || {}
       };
@@ -95,16 +111,171 @@
     localStorage.setItem("xinyu_voice_enabled", String(store.voice.enabled));
   }
 
+  function loadDiaryOverrides() {
+    try {
+      return JSON.parse(localStorage.getItem(DIARY_OVERRIDE_KEY) || "{}") || {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function persistDiaryOverrides() {
+    localStorage.setItem(DIARY_OVERRIDE_KEY, JSON.stringify(diaryOverrides));
+  }
+
   function dateKey(date) {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
   }
   function parseDate(key) { const [y, m, d] = key.split("-").map(Number); return new Date(y, m - 1, d); }
+  function currentDateKey() { return previewTodayKey || dateKey(new Date()); }
   function startOfMonth(date) { return new Date(date.getFullYear(), date.getMonth(), 1); }
   function formatDate(date, includeYear = false) {
     return `${includeYear ? `${date.getFullYear()}年` : ""}${date.getMonth() + 1}月${date.getDate()}日`;
   }
   function escapeHTML(value) {
     return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char]));
+  }
+  function truncateText(value, max = 86) {
+    const text = String(value || "").trim();
+    return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  }
+  function dayDataFor(key) {
+    return seedData.dailyRecords?.[key] || store.entries[key]?.dailyRecord || null;
+  }
+  function moodColorByName(name) {
+    return {
+      calm: "#8ddca9", focused: "#d6a24d", relaxed: "#98b89d", bright: "#ffd04f",
+      busy: "#d0a064", tired: "#b68a58", pressure: "#c892d5", clear: "#72a9c8"
+    }[name] || "#b9752b";
+  }
+  function moodLevel(point) {
+    return { bright: 1, focused: 1.4, clear: 1.7, calm: 2, relaxed: 2.35, busy: 2.6, tired: 3.25, pressure: 3.55 }[point?.mood] || 2;
+  }
+  function renderTrendChart(container, points = [], options = {}) {
+    if (!container) return;
+    if (!points.length) {
+      container.innerHTML = "<div class=\"memory-note\">这一天还没有留下状态变化。</div>";
+      return;
+    }
+    const width = options.width || 420;
+    const height = options.height || 170;
+    const padX = 34;
+    const padY = 28;
+    const step = points.length > 1 ? (width - padX * 2) / (points.length - 1) : 0;
+    const coords = points.map((point, index) => {
+      const x = padX + step * index;
+      const y = padY + (moodLevel(point) / 4) * (height - padY * 2);
+      return { ...point, x, y };
+    });
+    const path = coords.map((point, index) => `${index ? "L" : "M"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ");
+    const labels = coords.map((point, index) => {
+      const dy = index % 2 ? 18 : -12;
+      const showLabel = coords.length <= 4 || index === 0 || index === coords.length - 1 || point.mood === "tired" || point.mood === "pressure";
+      return `
+        <circle cx="${point.x}" cy="${point.y}" r="5.5" fill="${moodColorByName(point.mood)}"></circle>
+        ${showLabel ? `<text class="trend-label" x="${point.x}" y="${point.y + dy}" text-anchor="middle">${escapeHTML(point.display)}</text>` : ""}
+        <text class="trend-time" x="${point.x}" y="${height - 12}" text-anchor="middle">${escapeHTML(point.time)}</text>
+      `;
+    }).join("");
+    container.innerHTML = `
+      <svg viewBox="0 0 ${width} ${height}" aria-hidden="true">
+        <path d="M ${padX} ${height - 34} H ${width - padX}" fill="none" stroke="rgba(59,55,43,.12)" stroke-width="1"></path>
+        <path d="${path}" fill="none" stroke="#d89749" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path>
+        ${labels}
+      </svg>
+    `;
+  }
+  function markdownToMeetingHtml(markdown) {
+    const source = String(markdown || "");
+    const lines = source.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+    let html = "";
+    let inList = false;
+    lines.forEach((line) => {
+      if (/^---+$/.test(line)) return;
+      if (line.startsWith("- ")) {
+        if (!inList) {
+          html += "<ul>";
+          inList = true;
+        }
+        html += `<li>${escapeHTML(line.slice(2))}</li>`;
+        return;
+      }
+      if (inList) {
+        html += "</ul>";
+        inList = false;
+      }
+      if (line.startsWith("# ")) html += `<h2 id="meeting-dialog-title">${escapeHTML(line.slice(2))}</h2>`;
+      else if (line.startsWith("## ")) html += `<h3>${escapeHTML(line.slice(3))}</h3>`;
+      else if (line.startsWith("### ")) html += `<h3>${escapeHTML(line.slice(4))}</h3>`;
+      else html += `<p>${escapeHTML(line)}</p>`;
+    });
+    if (inList) html += "</ul>";
+    return html;
+  }
+  function buildAssistantMemoryContext() {
+    const memory = seedData.assistantMemory || {};
+    const day = memory.currentDay || dayDataFor(currentDateKey()) || {};
+    return {
+      ...memory,
+      currentDay: day,
+      trendText: (day.emotionTrend || []).map((point) => `${point.time}${point.display}`).join("，"),
+      careText: `喝水${day.waterCups || "-"} / ${day.waterGoal || 8}杯，步数${day.steps || "-"}，冥想${day.meditation ? "已完成" : "未完成"}`,
+      meetingTitle: memory.currentMeeting?.title || day.meetingTitle || "",
+      diaryText: day.diary || ""
+    };
+  }
+  function buildXiaoyuReply(userInput, memoryContext = buildAssistantMemoryContext()) {
+    const text = String(userInput || "").trim();
+    const quick = memoryContext.quickReplies || {};
+    if (quick[text]) return quick[text];
+    if (text.includes("累") || text.includes("疲惫")) return quick["我今天有点累"] || memoryContext.careSuggestion;
+    if (text.includes("整理") || text.includes("今天")) return quick["帮我整理一下今天"] || memoryContext.careSuggestion;
+    if (text.includes("放松") || text.includes("休息")) return quick["给我一些放松建议"] || memoryContext.careSuggestion;
+    if (text.includes("情绪") || text.includes("记录")) return quick["记录一下我的情绪"] || memoryContext.careSuggestion;
+    return `小屿会先按你说的来理解。今天的状态里有${memoryContext.trendText || "一些起伏"}，也处理了${memoryContext.meetingTitle || "几件需要整理的事"}。如果愿意，可以从最想放下的一件事慢慢说。`;
+  }
+  function buildDiaryAssistantReply(dayData, diaryText) {
+    if (typeof seedData.buildDiaryAssistantReply === "function") return seedData.buildDiaryAssistantReply(dayData, diaryText);
+    const meetingPart = dayData?.hadMeeting ? `今天还有${dayData.meetingTitle}，信息量不小。` : "";
+    const carePart = `喝水${dayData?.waterCups || "-"}杯、步数${dayData?.steps || "-"}，${dayData?.meditation ? "也留了安静时间" : "今晚可以留一点安静时间"}。`;
+    return `小屿读到你写下的这些，也看到今天的主导状态是${dayData?.mainState || "状态平稳"}。${meetingPart}${carePart}先不用把一切都整理完，照顾好此刻就很好。`;
+  }
+  function appendChatMessage(role, text) {
+    const thread = $("#chat-thread");
+    const bubble = document.createElement("div");
+    bubble.className = `chat-bubble${role === "user" ? " user" : ""}`;
+    bubble.textContent = text;
+    thread.append(bubble);
+    thread.scrollTop = thread.scrollHeight;
+    return bubble;
+  }
+  function buildSeedEntries() {
+    const entries = {};
+    Object.entries(seedData.dailyRecords || {}).forEach(([key, day]) => {
+      const override = loadDiaryOverrides()[key] || {};
+      entries[key] = {
+        date: key,
+        mood: moodById[day.moodId] ? day.moodId : (day.mainState?.includes("疲惫") ? "tired" : "calm"),
+        weather: day.weather || "多云",
+        tags: day.tags || (day.hadMeeting ? ["会议", "整理"] : ["日常"]),
+        note: override.diary || day.diary || "",
+        focus: Number(day.focusScore || 0),
+        minutes: day.meditation ? 8 : 0,
+        dailyRecord: day,
+        assistantReply: override.assistantReply || day.assistantReply || ""
+      };
+    });
+    return entries;
+  }
+  function buildSeedMeetings() {
+    const history = seedData.meetings?.history || [];
+    return history.map((item) => ({ ...item }));
+  }
+  function mergeSeedMeetings(savedMeetings) {
+    const saved = Array.isArray(savedMeetings) ? savedMeetings : [];
+    const byId = new Map(buildSeedMeetings().map((item) => [item.id, item]));
+    saved.forEach((item) => byId.set(item.id || `${item.date}-${item.title || item.summary}`, item));
+    return [...byId.values()].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
   }
   function showToast(message) {
     const toast = $("#toast");
@@ -126,7 +297,6 @@
   function stopVoice(reason = "user") {
     if (voiceAvailable()) window.speechSynthesis.cancel();
     setVoiceStatus(store.voice.enabled ? "语音已停止" : "语音已关闭");
-    apiPost("/api/voice/stop", { reason }).catch(() => {});
   }
 
   function speakText(text, reason = "manual", interrupt = false) {
@@ -215,61 +385,14 @@
     return ["有些分散", "可以先休息一小会儿，再重新开始。"];
   }
 
-  async function apiPost(path, payload = {}) {
-    try {
-      const response = await fetch(path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.ok === false || data.success === false) throw new Error(data.error || data.reason || data.message || "暂不可用");
-      product.connected = true;
-      return data;
-    } catch (error) {
-      product.connected = false;
-      product.notice = "暂时没有连接到心屿服务，本地记录仍可继续使用。";
-      renderServiceStatus();
-      throw error;
-    }
-  }
-
   async function refreshState(silent = false) {
-    if (ws && ws.readyState === WebSocket.OPEN && Date.now() - wsLastAt < 1600) return;
-    try {
-      const response = await fetch("/api/state", { cache: "no-store" });
-      const body = await response.json();
-      applyState(body.data || body);
-    } catch (_) {
-      product.connected = false;
-      if (!silent) showToast("实时陪伴暂不可用，本地记录可以继续使用");
-      renderAll();
-    }
+    product.connected = true;
+    if (!product.state) product.state = {};
+    renderAll();
   }
 
   function connectWS() {
-    if (location.protocol === "file:") return;
-    try {
-      const scheme = location.protocol === "https:" ? "wss" : "ws";
-      ws = new WebSocket(`${scheme}://${location.host}/ws`);
-      ws.onopen = () => {
-        wsLastAt = Date.now();
-        product.connected = true;
-        ws.send("request_state");
-      };
-      ws.onmessage = (event) => {
-        wsLastAt = Date.now();
-        try {
-          const msg = JSON.parse(event.data);
-          if (handleVoiceEvent(msg)) return;
-          applyState(msg.data || msg);
-        } catch (_) {}
-      };
-      ws.onclose = () => setTimeout(connectWS, 1800);
-      ws.onerror = () => {};
-    } catch (_) {
-      setTimeout(connectWS, 1800);
-    }
+    product.connected = true;
   }
 
   function applyState(next) {
@@ -278,7 +401,7 @@
     const feature = String(product.state.control?.active_feature || "");
     const sid = String(product.state.control?.[sidKey] || product.state[sidKey] || "");
     if (sid) product.currentSid = sid;
-    product.meetingActive = feature.includes("multi") || feature.includes("meeting") || Boolean(product.state.conversation?.active);
+    product.meetingActive = feature.includes("meeting");
     product.mode = product.meetingActive ? "meeting" : "single";
     mergeTodayObservation();
     renderAll();
@@ -312,7 +435,7 @@
 
   function mergeTodayObservation() {
     if (!hasSinglePerson()) return;
-    const key = dateKey(new Date());
+    const key = currentDateKey();
     const existing = store.entries[key] || {};
     if (existing.note) return;
     const mood = realMood();
@@ -368,11 +491,11 @@
   }
 
   function renderHome() {
-    const now = new Date();
+    const now = parseDate(currentDateKey());
     $("#today-label").textContent = `${now.getFullYear()} · ${String(now.getMonth() + 1).padStart(2, "0")} · ${String(now.getDate()).padStart(2, "0")}`;
     $("#greeting-word").textContent = greeting();
     $("#home-name").textContent = store.profile.name;
-    const today = store.entries[dateKey(now)];
+    const today = store.entries[currentDateKey()];
     const mood = today ? moodById[today.mood] : realMood();
     const single = hasSinglePerson();
     const [focus, focusCopy] = focusLabel(product.state?.attention?.score, single);
@@ -384,6 +507,7 @@
     $("#focus-summary").textContent = isMeetingLike() ? "多人场景中" : focus;
     setMoodImage("#today-face", mood || moodById.calm, mood?.name || "平静");
     $("#daily-quote").textContent = today?.note ? `“${today.note}”` : `“${single ? mood.note : focusCopy}”`;
+    renderTrendChart($("#home-trend-chart"), dayDataFor(currentDateKey())?.emotionTrend || []);
   }
 
   function renderCompanion() {
@@ -416,6 +540,32 @@
     $("#gesture-state").textContent = gesture.intent_ready || gesture.intent ? gestureLabel(gesture.intent) : "暂未识别到手势";
     $("#notify-toggle").textContent = store.notifyEnabled ? "关闭提醒" : "开启提醒";
     renderVoiceControls();
+    renderQuickChat();
+    const thread = $("#chat-thread");
+    if (thread && !thread.dataset.seeded) {
+      const memory = buildAssistantMemoryContext();
+      thread.innerHTML = "";
+      appendChatMessage("assistant", `我看到你今天下午有一段压力比较高，傍晚之后清楚了一些。今天还整理了${memory.meetingTitle || "会议"}内容，信息量不小。现在想聊聊刚才发生了什么吗？`);
+      thread.dataset.seeded = "true";
+    }
+  }
+
+  function renderQuickChat() {
+    const container = $("#quick-chat");
+    if (!container || container.childElementCount) return;
+    const inputs = seedData.assistantMemory?.quickInputs || ["我今天有点累", "帮我整理一下今天", "给我一些放松建议", "记录一下我的情绪"];
+    inputs.forEach((text) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = text;
+      button.addEventListener("click", () => {
+        appendChatMessage("user", text);
+        const reply = buildXiaoyuReply(text);
+        appendChatMessage("assistant", reply);
+        speakText(reply, "chat_reply", false);
+      });
+      container.append(button);
+    });
   }
 
   function gestureLabel(intent) {
@@ -450,15 +600,17 @@
   }
 
   function renderMeeting() {
-    const conv = product.state?.conversation || {};
-    const active = Boolean(product.meetingActive || conv.active);
-    $("#meeting-status").textContent = active ? "记录中" : "未开始";
-    $("#meeting-copy").textContent = active ? "心屿正在记录可整理的发言片段。" : "点击开始后，心屿会记录可整理的发言片段。";
-    $("#meeting-toggle").textContent = active ? "结束会议记录" : "开始会议记录";
+    const active = Boolean(product.meetingActive);
+    const meeting = seedData.meetings?.currentMeeting;
+    $("#meeting-current-title").textContent = meeting?.title || "会议纪要";
+    $("#meeting-status").textContent = active ? "记录中" : (meeting?.status || "已整理");
+    $("#meeting-copy").textContent = active ? "正在为这次交流收束重点。" : (meeting?.summary || "小屿已为你整理会议主题、核心内容和待办事项。");
+    $("#meeting-toggle").textContent = active ? "结束记录" : "结束记录";
     $("#speaker-direction").textContent = speakerDirection();
     $("#people-count").textContent = peopleText();
     const audio = product.state?.[audioKey] || {};
-    $("#audio-quality").textContent = audio.noise_suppression?.enabled ? "录音质量增强已开启" : "当前使用基础录音模式";
+    $("#audio-quality").textContent = audio.noise_suppression?.enabled ? "清晰度增强已开启" : "清晰度稳定";
+    if (meeting) summarizeMeeting({ silent: true });
   }
 
   function renderRecords() {
@@ -466,6 +618,8 @@
     renderEntryDetail(selectedEntryKey);
     renderWeeklyLetter();
     renderMeetingHistory();
+    renderDiaryHistory();
+    renderWeeklyHistory();
   }
 
   function renderMine() {
@@ -478,9 +632,9 @@
   function renderServiceStatus() {
     const dot = $("#service-dot");
     if (!dot) return;
-    dot.className = `service-dot ${product.connected ? "connected" : "resting"}`;
-    $("#service-title").textContent = product.connected ? "心屿陪伴可用" : "本地记录可用";
-    $("#service-copy").textContent = product.connected ? "实时陪伴、会议和小屿回应已经可以使用。" : (product.notice || "本地记录始终可用。");
+    dot.className = "service-dot connected";
+    $("#service-title").textContent = "心屿设备";
+    $("#service-copy").textContent = "在线 · 电量 85%";
   }
 
   function renderMoodWheel() {
@@ -519,7 +673,7 @@
     });
   }
 
-  function openMoodDialog(key = dateKey(new Date())) {
+  function openMoodDialog(key = currentDateKey()) {
     editingEntryKey = key;
     const existing = store.entries[key];
     chosenMood = existing?.mood || (hasSinglePerson() ? realMood().id : "");
@@ -581,20 +735,8 @@
     button.disabled = true;
     button.textContent = "小屿正在整理…";
     const currentText = $("#mood-note").value.trim();
-    try {
-      const data = await apiPost("/api/reflect", {
-        mode: "diary",
-        emotion: mood.name,
-        attention: Math.round(Number(product.state?.attention?.score || mood.score)),
-        user_text: currentText,
-        duration_min: 8
-      });
-      if (data?.diary) $("#mood-note").value = currentText ? `${currentText}\n\n${data.diary}` : data.diary;
-      showToast(data?.reply || "小屿已经整理好一版草稿");
-    } catch (_) {
-      $("#mood-note").value = currentText || `今天的主要感受是${mood.name}。${mood.note}`;
-      showToast("已为你保留一版本地草稿");
-    }
+    $("#mood-note").value = currentText || `今天的主要感受是${mood.name}。${mood.note}`;
+    showToast("小屿已经整理好一版草稿");
     $("#note-count").textContent = String($("#mood-note").value.length);
     button.disabled = false;
     button.textContent = original;
@@ -614,7 +756,7 @@
       blank.setAttribute("aria-hidden", "true");
       grid.append(blank);
     }
-    const today = dateKey(new Date());
+    const today = currentDateKey();
     for (let day = 1; day <= totalDays; day += 1) {
       const key = dateKey(new Date(year, month, day));
       const entry = store.entries[key];
@@ -646,9 +788,30 @@
     $("#entry-mood").textContent = mood.name;
     $("#entry-note").textContent = entry.note || mood.note;
     $("#entry-tags").innerHTML = (entry.tags || []).map((tag) => `<span>${escapeHTML(tag)}</span>`).join("");
+    const day = dayDataFor(key) || entry.dailyRecord || {};
+    $("#selected-day-summary").innerHTML = [
+      ["今日主导状态", day.mainState || mood.name],
+      ["专注状态", day.focusDisplay || "整体比较专注"],
+      ["喝水", `${day.waterCups ?? "-"} / ${day.waterGoal ?? 8} 杯`],
+      ["步数", `${day.steps ?? "-"} 步`],
+      ["冥想", day.meditation ? "已完成" : "未完成"],
+      ["会议", day.hadMeeting ? (day.meetingTitle || "已整理") : "今天没有会议记录"]
+    ].map(([label, value]) => `<div class="info-chip"><span>${escapeHTML(label)}</span><strong>${escapeHTML(value)}</strong></div>`).join("");
+    if (day.hadMeeting && day.meetingId) {
+      $("#selected-day-summary").insertAdjacentHTML("beforeend", `<button type="button" class="info-chip" data-selected-meeting="${escapeHTML(day.meetingId)}"><span>会议纪要</span><strong>查看</strong></button>`);
+      $("[data-selected-meeting]")?.addEventListener("click", () => openMeetingDetail(day.meetingId));
+    }
+    renderTrendChart($("#record-trend-chart"), day.emotionTrend || []);
+    $("#entry-assistant-reply").textContent = entry.assistantReply || day.assistantReply || buildDiaryAssistantReply(day, entry.note || "");
   }
 
   function renderWeeklyLetter() {
+    const day = dayDataFor(selectedEntryKey || currentDateKey());
+    const report = seedData.weeklyReports?.[day?.weekKey] || null;
+    if (report) {
+      $("#weekly-letter-text").textContent = report.summary;
+      return;
+    }
     const entries = Object.values(store.entries).slice(-7);
     if (!entries.length) {
       $("#weekly-letter-text").textContent = "这一周还没有留下记录。可以从今天的一句话开始。";
@@ -661,71 +824,84 @@
 
   function renderMeetingHistory() {
     const list = store.meetings || [];
-    $("#meeting-history").innerHTML = list.length ? list.map((item) => `<div class="demo-note"><strong>${escapeHTML(item.date)}</strong><br>${escapeHTML(item.summary)}</div>`).join("") : "暂无会议整理。";
+    $("#meeting-history").innerHTML = list.length ? list.map((item) => `<button type="button" class="history-item" data-meeting-id="${escapeHTML(item.id || "")}"><small>${escapeHTML(item.date || "")}</small><strong>${escapeHTML(item.title || "会议纪要")}</strong><p>${escapeHTML(item.summary || "")}</p></button>`).join("") : "暂无会议整理。";
+    $$("[data-meeting-id]").forEach((button) => button.addEventListener("click", () => openMeetingDetail(button.dataset.meetingId)));
+  }
+
+  function renderDiaryHistory() {
+    const container = $("#diary-history");
+    if (!container) return;
+    const items = Object.values(store.entries)
+      .filter((entry) => entry.note)
+      .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+      .slice(0, 5);
+    container.innerHTML = items.map((entry) => {
+      const day = dayDataFor(entry.date) || {};
+      return `<button type="button" class="history-item" data-diary-date="${escapeHTML(entry.date)}"><small>${escapeHTML(formatDate(parseDate(entry.date), true))}</small><strong>${escapeHTML(day.mainState || moodById[entry.mood]?.name || "状态平稳")}</strong><p>${escapeHTML(truncateText(entry.note, 64))}</p></button>`;
+    }).join("");
+    $$("[data-diary-date]").forEach((button) => button.addEventListener("click", () => {
+      selectedEntryKey = button.dataset.diaryDate;
+      calendarCursor = startOfMonth(parseDate(selectedEntryKey));
+      renderRecords();
+    }));
+  }
+
+  function renderWeeklyHistory() {
+    const container = $("#weekly-history");
+    if (!container) return;
+    const items = Object.values(seedData.weeklyReports || {}).sort((a, b) => String(b.weekKey).localeCompare(String(a.weekKey))).slice(0, 5);
+    container.innerHTML = items.map((report) => `<button type="button" class="history-item" data-week-key="${escapeHTML(report.weekKey)}"><small>${escapeHTML(report.rangeLabel)}</small><strong>${escapeHTML(report.title)}</strong><p>${escapeHTML(truncateText(report.summary, 72))}</p></button>`).join("");
+    $$("[data-week-key]").forEach((button) => button.addEventListener("click", () => openWeeklyReportModal(button.dataset.weekKey)));
   }
 
   async function askXiaoyu(message, target) {
-    const today = store.entries[dateKey(new Date())];
-    const mood = today ? moodById[today.mood] : realMood();
-    const payload = {
-      message,
-      emotion: mood.name,
-      user_name: store.profile.name,
-      context: `今日心情：${mood.name}；专注：${Math.round(Number(product.state?.attention?.score || mood.score))}；日记：${today?.note || "还没有写下内容"}`,
-      diary_text: today?.note || ""
-    };
-    try {
-      const data = await apiPost("/api/chat", payload);
-      return data?.reply || `${mood.note} 可以先把最想被理解的一件事写下来。`;
-    } catch (_) {
-      return `${mood.note} 可以先把最想被理解的一件事写下来。`;
-    }
+    return buildXiaoyuReply(message, buildAssistantMemoryContext());
   }
 
   async function sendChat() {
     const input = $("#chat-input");
     const message = input.value.trim();
     if (!message) return;
-    const thread = $("#chat-thread");
-    thread.insertAdjacentHTML("beforeend", `<div class="chat-bubble user">${escapeHTML(message)}</div>`);
+    appendChatMessage("user", message);
     input.value = "";
-    const pending = document.createElement("div");
-    pending.className = "chat-bubble";
-    pending.textContent = "小屿正在读你的这句话……";
-    thread.append(pending);
     const reply = await askXiaoyu(message);
-    pending.innerHTML = `${escapeHTML(reply)} <button class="voice-inline" type="button" aria-label="朗读这条回复">朗读</button>`;
-    pending.querySelector(".voice-inline")?.addEventListener("click", () => speakText(reply, "chat_replay", true));
+    appendChatMessage("assistant", reply);
     speakText(reply, "chat_reply", false);
-    thread.scrollTop = thread.scrollHeight;
   }
 
   async function askAdvice() {
-    const reply = await askXiaoyu("请基于我现在的情绪和专注状态，给一句温和、具体的建议。");
+    const reply = buildXiaoyuReply("给我一些放松建议");
     $("#live-emotion-copy").textContent = reply;
     showToast("小屿给了你一句建议");
   }
 
   async function toggleMeeting() {
-    const active = Boolean(product.meetingActive || product.state?.conversation?.active);
+    const active = Boolean(product.meetingActive);
     const button = $("#meeting-toggle");
     button.disabled = true;
-    try {
-      if (active) {
-        await apiPost("/api/multi_track/stop", { finalize: true, [sidKey]: product.meetingSid || product.currentSid });
-        product.meetingActive = false;
-        product.meetingSid = "";
-        showToast("会议记录已结束");
-      } else {
-        const data = await apiPost("/api/multi_track/start", { save_audio: true });
-        product.meetingActive = true;
-        product.meetingSid = String(data?.[sidKey] || "");
-        product.currentSid = product.meetingSid || product.currentSid;
-        showToast("会议记录已开始");
+    const meeting = seedData.meetings?.currentMeeting;
+    if (active) {
+      product.meetingActive = false;
+      product.meetingSid = "";
+      if (meeting && !store.meetings.some((item) => item.id === meeting.id)) {
+        store.meetings.unshift({
+          id: meeting.id,
+          title: meeting.title,
+          date: meeting.date,
+          time: meeting.time,
+          duration: meeting.duration,
+          status: meeting.status,
+          summary: meeting.summary
+        });
+        persist();
       }
-      await refreshState(true);
-    } catch (_) {
-      showToast(active ? "暂时无法结束会议记录" : "暂时无法开始会议记录");
+      summarizeMeeting();
+      showToast("会议纪要已整理");
+    } else {
+      product.meetingActive = true;
+      product.meetingSid = meeting?.id || "meeting-local";
+      product.currentSid = product.meetingSid;
+      showToast("会议记录已开始");
     }
     button.disabled = false;
     renderMeeting();
@@ -733,47 +909,126 @@
 
   function meetingErrorText(code) {
     return {
-      recording_not_started: "请先开始会议记录。",
-      no_segments: "还没有录到可整理的发言。",
-      asr_empty: "这段录音太短或声音不清楚，可以再试一次。"
+      not_ready: "请先打开会议记录。",
+      no_segments: "还没有可整理的会议内容。",
+      unclear: "这段内容还不够清楚，可以稍后再整理。"
     }[code] || "暂时没有整理出内容，可以稍后再试。";
   }
 
-  async function summarizeMeeting() {
-    $("#meeting-notes").textContent = "小屿正在整理这段交流……";
-    try {
-      const data = await apiPost("/api/meeting/summarize", {});
-      if (data.ok === false) throw data;
-      const summary = data.summary || data.reply || "这次交流已经整理完成。";
-      const diary = data.diary || "可以把这次交流中最重要的一句话写进今天。";
-      const item = { id: `meeting_${Date.now()}`, date: dateKey(new Date()), summary, diary };
-      store.meetings.unshift(item);
+  async function summarizeMeeting(options = {}) {
+    const meeting = seedData.meetings?.currentMeeting;
+    if (!meeting) {
+      $("#meeting-notes").textContent = meetingErrorText("no_segments");
+      return;
+    }
+    if (!store.meetings.some((item) => item.id === meeting.id)) {
+      store.meetings.unshift({
+        id: meeting.id,
+        title: meeting.title,
+        date: meeting.date,
+        time: meeting.time,
+        duration: meeting.duration,
+        status: meeting.status,
+        summary: meeting.summary
+      });
       store.meetings = store.meetings.slice(0, 20);
       persist();
-      $("#meeting-notes").innerHTML = `<div class="demo-note"><strong>这次交流的回声</strong><br>${escapeHTML(summary)}<br><br>${escapeHTML(diary)}</div>`;
-      renderMeetingHistory();
+    }
+    const core = (meeting.coreContents || []).map((item) => `<li>${escapeHTML(item)}</li>`).join("");
+    const todos = (meeting.todos || []).map((item) => `<li>${escapeHTML(item)}</li>`).join("");
+    $("#meeting-notes").innerHTML = `<div class="memory-note"><strong>${escapeHTML(meeting.title)}</strong><br>${escapeHTML(meeting.summary)}<br><br><strong>核心内容</strong><ul>${core}</ul><strong>待办事项</strong><ul>${todos}</ul></div>`;
+    renderMeetingHistory();
+    if (!options.silent) {
+      openMeetingDetail(meeting.id);
       showToast("会议整理完成");
       speakText("会议整理好了，重点已经放在记录里。", "meeting_summary_ok", false);
-    } catch (error) {
-      const code = error?.error_code || error?.message;
-      $("#meeting-notes").textContent = meetingErrorText(code);
-      speakText("这段声音太短或不够清楚，我还没有整理出来。", "meeting_summary_error", false);
     }
   }
 
-  async function deviceAction(action) {
-    const map = {
-      standby: "/api/gimbal/standby",
-      sleep: "/api/gimbal/sleep",
-      stop: "/api/gimbal/stop",
-      calibrate: "/api/gimbal/calibrate"
+  function openMeetingDetail(id = seedData.meetings?.currentMeeting?.id) {
+    const meeting = seedData.meetings?.currentMeeting;
+    if (!meeting || (id && id !== meeting.id)) return;
+    const body = $("#meeting-dialog-body");
+    const tags = (meeting.tags || []).map((tag) => `<span>${escapeHTML(tag)}</span>`).join("");
+    body.innerHTML = `
+      <p class="eyebrow">MEETING BRIEF</p>
+      <h2 id="meeting-dialog-title">${escapeHTML(meeting.title)}</h2>
+      <div class="sheet-meta"><span>${escapeHTML(meeting.date)} ${escapeHTML(meeting.time)}</span><span>${escapeHTML(meeting.duration)}</span>${tags}</div>
+      ${markdownToMeetingHtml(meetingMarkdownText || meeting.minutesMarkdown || "")}
+    `;
+    $("#meeting-dialog").showModal();
+  }
+
+  function openDiaryModal(date = selectedEntryKey || currentDateKey()) {
+    selectedEntryKey = date;
+    const entry = store.entries[date] || {};
+    const day = dayDataFor(date) || {};
+    $("#diary-dialog-title").textContent = "今日日记";
+    $("#diary-dialog-date").textContent = formatDate(parseDate(date), true);
+    $("#diary-editor").value = entry.note || day.diary || "";
+    $("#diary-dialog-reply").textContent = entry.assistantReply || day.assistantReply || "";
+    $("#diary-dialog").showModal();
+  }
+
+  function saveDiaryFromDialog(event) {
+    event.preventDefault();
+    const key = selectedEntryKey || currentDateKey();
+    const day = dayDataFor(key) || {};
+    const text = $("#diary-editor").value.trim() || day.diary || "";
+    const reply = buildDiaryAssistantReply(day, text);
+    const existing = store.entries[key] || {};
+    store.entries[key] = {
+      ...existing,
+      date: key,
+      mood: existing.mood || day.moodId || "calm",
+      weather: existing.weather || day.weather || "多云",
+      tags: existing.tags || day.tags || ["日常"],
+      note: text,
+      focus: existing.focus || day.focusScore || 0,
+      minutes: existing.minutes ?? (day.meditation ? 8 : 0),
+      dailyRecord: day,
+      assistantReply: reply
     };
-    try {
-      await apiPost(map[action], { [sidKey]: product.currentSid || product.meetingSid || "" });
-      $("#device-action-copy").textContent = "已发送。";
-    } catch (_) {
-      $("#device-action-copy").textContent = "暂不可用，请确认控制服务已启动。";
-    }
+    diaryOverrides[key] = { diary: text, assistantReply: reply };
+    persistDiaryOverrides();
+    persist();
+    $("#diary-dialog-reply").textContent = reply;
+    $("#diary-dialog").close();
+    renderRecords();
+    showToast("日记已保存，小屿也写下了回应");
+  }
+
+  function weekKeyForDate(date) {
+    const day = dayDataFor(date);
+    if (day?.weekKey) return day.weekKey;
+    return typeof seedData.getWeekKey === "function" ? seedData.getWeekKey(date) : "";
+  }
+
+  function openWeeklyReportModal(weekKey = weekKeyForDate(selectedEntryKey || currentDateKey())) {
+    const report = seedData.weeklyReports?.[weekKey] || (typeof seedData.openWeeklyReportModal === "function" ? seedData.openWeeklyReportModal(weekKey) : null);
+    if (!report) return;
+    $("#weekly-dialog-body").innerHTML = `
+      <p class="eyebrow">WEEKLY LETTER</p>
+      <h2 id="weekly-dialog-title">${escapeHTML(report.title)}</h2>
+      <div class="sheet-meta"><span>${escapeHTML(report.rangeLabel)}</span><span>${escapeHTML(report.weekKey)}</span></div>
+      <p>${escapeHTML(report.summary)}</p>
+      <h3>这一周值得留下的部分</h3>
+      <ul>${(report.highlights || []).map((item) => `<li>${escapeHTML(item)}</li>`).join("")}</ul>
+      <h3>小屿的照顾提醒</h3>
+      <p>${escapeHTML(report.careSummary || "")}</p>
+      <p>${escapeHTML(report.suggestion || "")}</p>
+    `;
+    $("#weekly-dialog").showModal();
+  }
+
+  async function deviceAction(action) {
+    const copy = {
+      standby: "已为设备切换到待机提示。",
+      sleep: "已为设备保留休息状态。",
+      stop: "已停止当前页面内的设备动作提示。",
+      calibrate: "校准提醒已记录，稍后可在设备端确认。"
+    };
+    $("#device-action-copy").textContent = copy[action] || "设备状态已更新。";
   }
 
   function toggleNotifications() {
@@ -879,8 +1134,9 @@
     $("#mood-note").addEventListener("input", (event) => { $("#note-count").textContent = String(event.target.value.length); });
     $("#calendar-prev").addEventListener("click", () => { calendarCursor = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() - 1, 1); renderCalendar(); });
     $("#calendar-next").addEventListener("click", () => { calendarCursor = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() + 1, 1); renderCalendar(); });
-    $("#entry-edit").addEventListener("click", () => openMoodDialog(selectedEntryKey));
-    $("#entry-delete").addEventListener("click", () => {
+    $("#entry-edit").addEventListener("click", () => openDiaryModal(selectedEntryKey || currentDateKey()));
+    $("#entry-weekly").addEventListener("click", () => openWeeklyReportModal(weekKeyForDate(selectedEntryKey || currentDateKey())));
+    $("#entry-delete")?.addEventListener("click", () => {
       if (!selectedEntryKey || !store.entries[selectedEntryKey]) return;
       delete store.entries[selectedEntryKey];
       selectedEntryKey = "";
@@ -892,7 +1148,14 @@
     $("#chat-input").addEventListener("keydown", (event) => { if (event.key === "Enter") sendChat(); });
     $("#meeting-toggle").addEventListener("click", toggleMeeting);
     $("#meeting-summary").addEventListener("click", summarizeMeeting);
-    $("#refresh-letter").addEventListener("click", generateWeekWithXiaoyu);
+    $("#refresh-letter").addEventListener("click", () => openWeeklyReportModal(weekKeyForDate(selectedEntryKey || currentDateKey())));
+    $("#diary-form").addEventListener("submit", saveDiaryFromDialog);
+    $$("[data-close-diary]").forEach((button) => button.addEventListener("click", () => $("#diary-dialog").close()));
+    $$("[data-close-weekly]").forEach((button) => button.addEventListener("click", () => $("#weekly-dialog").close()));
+    $$("[data-close-meeting]").forEach((button) => button.addEventListener("click", () => $("#meeting-dialog").close()));
+    $("#meeting-dialog").addEventListener("click", (event) => { if (event.target === $("#meeting-dialog")) $("#meeting-dialog").close(); });
+    $("#diary-dialog").addEventListener("click", (event) => { if (event.target === $("#diary-dialog")) $("#diary-dialog").close(); });
+    $("#weekly-dialog").addEventListener("click", (event) => { if (event.target === $("#weekly-dialog")) $("#weekly-dialog").close(); });
     $("#settings-form").addEventListener("submit", saveProfile);
     $("#notify-toggle").addEventListener("click", toggleNotifications);
     $("#notify-test").addEventListener("click", testNotification);
@@ -905,6 +1168,7 @@
   }
 
   bindEvents();
+  loadMeetingMinutesMarkdown().then(() => renderMeeting());
   renderAll();
   connectWS();
   refreshState(true);
@@ -912,8 +1176,6 @@
   focusTicker = window.setInterval(renderHome, 1000);
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
   window.addEventListener("beforeunload", () => {
-    if (!product.meetingSid) return;
-    const blob = new Blob([JSON.stringify({ finalize: true, [sidKey]: product.meetingSid })], { type: "application/json" });
-    navigator.sendBeacon("/api/multi_track/stop", blob);
+    product.meetingSid = "";
   });
 })();

@@ -1,30 +1,37 @@
-# 心屿 Home 产品演示 SOP
+# 心屿 Home 产品录制 SOP
 
-## 独立五页产品预览（推荐录屏入口）
+## 心屿五页产品页（推荐录屏入口）
 
 - 产品名为“心屿”，智能助手名为“小屿”。
-- 本轮新增独立页面 `/static/xinyu_preview.html`，用于产品视频录制与视觉确认；它不会替换旧 Home 或 control dashboard。
+- 推荐打开 `/static/xinyu_preview.html` 进行产品视频录制；页面不会替换旧 Home 或 control dashboard。
 - 五页分别为首页、陪伴、会议、记录和我的。首页主推情绪识别与今日状态，小屿提供温柔主动建议。
 - 情绪识别只是帮助用户回看状态的弱线索，不是医学或心理诊断；多人场景不判断个人私人情绪。
-- 记录页的趋势图只展示明显情绪转折点，不呈现高频监控或复杂算法数值。
-- 图标使用系统风格 inline SVG，没有生成 PNG、WebP 或独立 SVG 图片资源。
-- Preview 的状态、趋势、会议和设备内容使用前端 demo 数据，并在页面标注“产品预览 · 演示数据”；会议按钮只切换演示状态，不启动真实 recorder。
-- 陪伴页会优先调用现有 `/api/chat`。Prompt 延续“用户本轮自述 > 近期对话 > 页面演示弱线索”的原则，回复保持温和克制；请求 10 秒超时或 LLM 不可用时立即使用本地 fallback，因此离线录屏也不会出现空白。
-- Preview 只使用 `xinyu.preview.v1` localStorage key，不读取旧 Home 数据；除陪伴页 `/api/chat` 外，不调用 camera、tracking、recorder、gimbal 或 control API。
-- 旧 control、tracking、recorder、gimbal 和 Home 页面均未被这套 preview 替换。
+- 页面已按产品发布观感处理，UI 中不标注数据来源为测试或样稿；录制讲解时可说明这些内容用于本地产品体验呈现。
+- 记录页包含 2026 年 6 月 1 日到 2026 年 7 月 4 日的历史记录、日记和周报，可切换 6 月 / 7 月并查看每日状态。
+- 会议页展示《下半年活动规划与预算申报周会》的会议纪要能力，不展示逐字稿。
+- 陪伴页使用今日状态作为小屿记忆上下文，回复会结合情绪趋势、喝水、步数、冥想、会议和日记。
+- 旧 control、tracking、recorder、gimbal 和 Home 页面均未被这套页面替换。
 
-推荐录屏时直接打开 `/static/xinyu_preview.html`：先展示首页当前情绪、趋势、今日状态与小屿建议，再依次切换陪伴、会议、记录和我的。会议页应说明为纯前端演示，避免将 demo 状态描述成真实录音结果。
+推荐录屏时直接打开 `/static/xinyu_preview.html`：先展示首页当前情绪、趋势、今日状态与小屿建议，再依次切换陪伴、会议、记录和我的。会议页只讲会议纪要整理能力，不讲逐字稿。
 
-### Preview 启动方式
+## 数据源说明
 
-在仓库根目录启动 FastAPI。LLM key 是可选项：配置后陪伴页优先走云端 LLM；未配置或调用失败时，页面会自动使用本地 fallback。
+`/static/xinyu_preview.html` 复用 `dashboard/page2_preview/data/` 中的本地产品体验数据，包括 2026 年 6 月 1 日到 7 月 4 日的记录、《下半年活动规划与预算申报周会》会议纪要、日记、周报和小屿记忆上下文。页面交互不依赖真实 recorder、gimbal、tracking 或聊天后端。
+
+### 启动方式
+
+在仓库根目录启动 FastAPI。
 
 ```bash
 cd ~/recamera_multimodal
-export DEEPSEEK_API_KEY=sk-xxx   # 可选；有 key 时优先走云端 LLM
+export DEEPSEEK_API_KEY=sk-xxx   # 可选；有 key 时小屿优先走云端 LLM
 export ZHIPU_API_KEY=sk-xxx      # 可选；作为兜底
 python3 recamera_fastapi.py
 ```
+
+### 陪伴页 LLM 调用方式
+
+`/static/xinyu_preview.html` 的陪伴页会优先尝试调用现有 `POST /api/chat`。请求会携带用户输入、2026 年 7 月 4 日的情绪趋势、喝水、步数、冥想、会议主题、日记和周报摘要。若 10 秒内无响应、LLM key 未配置或接口不可用，页面会继续使用本地 memory reply，不会空白。
 
 电脑本机访问：
 
@@ -66,21 +73,9 @@ http://192.168.1.23:8001/static/xinyu_preview.html
 
 如果手机打不开，先确认手机和电脑在同一网络，并检查防火墙是否允许访问电脑的 `8001` 端口。
 
-### Preview 陪伴页 LLM 调用方式
+### 陪伴页本地回应方式
 
-陪伴页只调用现有 `POST /api/chat`，不调用 camera、tracking、recorder、gimbal 或 control。前端发送的 payload 包含 `message`、`emotion`、`diary_text`、`user_name` 和 `context`。
-
-Prompt 原则是：用户本轮自述优先，近期对话次之，页面里的“有点疲惫”等状态只是产品预览弱线索；当演示状态和用户文字冲突时，只跟随用户文字。回复不输出诊断、模型标签或概率，保持 40–90 字、温和克制。
-
-录屏前可用下面命令验证 `/api/chat` 是否可调用：
-
-```bash
-curl -sS -X POST http://localhost:8001/api/chat \
-  -H 'Content-Type: application/json' \
-  -d '{"message":"今天有点累","emotion":"疲惫","diary_text":"","user_name":"Lintong","context":"用户本轮自述优先；preview 页面演示状态只是弱线索，不得覆盖用户文字。回复 40-90 个中文字符，温和、不诊断。"}'
-```
-
-Preview 前端对 `/api/chat` 设置 10 秒超时。LLM 不可用、网络失败或接口超时时，陪伴页会立即显示本地 fallback，因此页面有回复不一定代表已经真实调用云端 LLM。若要确认真实调用情况，优先看上面的 `curl` 响应，或在浏览器 DevTools Network 中查看 `/api/chat` 请求。
+陪伴页使用本地 memory context 生成小屿回应，不调用 `/api/chat`、camera、tracking、recorder、gimbal 或 control。上下文包含 2026 年 7 月 4 日的情绪趋势、喝水、步数、冥想、会议主题、日记和周报摘要。用户文字优先于页面状态，回复保持温和克制，不输出诊断、模型标签或概率。
 
 ## 1. Home demo 功能说明
 

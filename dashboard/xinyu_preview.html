@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#F6EFE5">
-  <title>心屿 · 五页产品预览</title>
+  <title>心屿 · 五页产品页</title>
   <link rel="stylesheet" href="/static/xinyu_preview.css?v=20260704-1">
 </head>
 <body class="xinyu-preview-page">
@@ -22,7 +22,6 @@
     <symbol id="xy-message" viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></symbol>
     <symbol id="xy-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></symbol>
     <symbol id="xy-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
-    <symbol id="xy-battery" viewBox="0 0 24 24"><rect x="2" y="7" width="18" height="10" rx="2"/><path d="M22 10v4M5 10h10"/></symbol>
     <symbol id="xy-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
     <symbol id="xy-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></symbol>
     <symbol id="xy-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.7 2.7 0 1 1 4.7 1.8c-1.2 1.1-2.2 1.6-2.2 3.2M12 18h.01"/></symbol>
@@ -31,12 +30,11 @@
   </svg>
 
   <div class="xy-phone" id="xy-app">
-    <div class="xy-statusbar" aria-label="预览状态栏"><strong>9:41</strong><span>产品预览 · 演示数据</span><svg><use href="#xy-battery"/></svg></div>
 
     <main class="xy-main" id="xy-main">
       <section class="xy-page is-active" data-page="home" aria-labelledby="xy-home-title">
         <header class="xy-page-header xy-home-header">
-          <div><p class="xy-kicker">上午好，Lintong</p><h1 id="xy-home-title">今天先慢一点也可以</h1></div>
+          <div><p class="xy-kicker">晚上好，蛋挞</p><h1 id="xy-home-title">今天先慢一点也可以</h1></div>
           <span class="xy-online"><i></i>心屿在线</span>
         </header>
 
@@ -46,7 +44,7 @@
         </article>
 
         <section class="xy-section">
-          <div class="xy-section-head"><div><h2>情绪趋势 · 今天</h2><p>只记录明显转折点</p></div><span class="xy-demo-chip">演示数据</span></div>
+          <div class="xy-section-head"><div><h2>情绪趋势 · 今天</h2><p>小屿帮你整理了今天的状态变化</p></div></div>
           <div class="xy-trend-card" data-trend="home"></div>
         </section>
 
@@ -67,48 +65,49 @@
       </section>
 
       <section class="xy-page" data-page="companion" aria-labelledby="xy-companion-title" hidden>
-        <header class="xy-page-header"><div><p class="xy-kicker">陪伴对话</p><h1 id="xy-companion-title">和小屿聊聊天</h1><p>你的感受由你来定义；联网时由小屿回应，离线也会温柔陪伴。</p></div><span class="xy-icon-badge xy-amber"><svg><use href="#xy-heart"/></svg></span></header>
+        <header class="xy-page-header"><div><p class="xy-kicker">陪伴对话</p><h1 id="xy-companion-title">和小屿聊聊天</h1><p>你的感受由你来定义；小屿会结合今天的状态陪你慢慢整理。</p></div><span class="xy-icon-badge xy-amber"><svg><use href="#xy-heart"/></svg></span></header>
         <div class="xy-chat" id="xy-chat" aria-live="polite">
-          <article class="xy-bubble xy-bubble-assistant"><span class="xy-icon-badge xy-amber"><svg><use href="#xy-message"/></svg></span><div><strong>Hi，Lintong</strong><p>有什么想和我聊的吗？不用急着说清楚，想到哪里就说到哪里。</p></div></article>
+          <article class="xy-bubble xy-bubble-assistant"><span class="xy-icon-badge xy-amber"><svg><use href="#xy-message"/></svg></span><div><strong>Hi，蛋挞</strong><p>有什么想和我聊的吗？不用急着说清楚，想到哪里就说到哪里。</p></div></article>
         </div>
         <div class="xy-prompt-chips" aria-label="情绪快捷输入">
-          <button type="button">我最近有点压力大</button><button type="button">今天过得怎么样？</button><button type="button">给我一些放松建议</button><button type="button">记录一下我的情绪</button>
+          <button type="button">我今天有点累</button><button type="button">帮我整理一下今天</button><button type="button">给我一些放松建议</button><button type="button">记录一下我的情绪</button>
         </div>
         <form class="xy-chat-compose" id="xy-chat-form"><label for="xy-chat-input">想和小屿说的话</label><div><input id="xy-chat-input" maxlength="160" placeholder="输入你想说的话…"><button type="submit" aria-label="发送"><svg><use href="#xy-send"/></svg></button></div></form>
       </section>
 
       <section class="xy-page" data-page="meeting" aria-labelledby="xy-meeting-title" hidden>
-        <header class="xy-page-header"><div><p class="xy-kicker">会议记录</p><h1 id="xy-meeting-title">整理你的会议内容</h1><p>这是前端演示，不会启动真实录音。</p></div><span class="xy-icon-badge xy-clay"><svg><use href="#xy-users"/></svg></span></header>
-        <article class="xy-meeting-current"><div class="xy-section-head"><div><p class="xy-label">当前会议</p><h2>产品讨论会</h2></div><span class="xy-meeting-status" id="xy-meeting-status">可开始</span></div><div class="xy-wave" id="xy-wave" aria-hidden="true"></div><div class="xy-meeting-meta"><span>演示记录</span><strong id="xy-meeting-time">00:00</strong></div><button class="xy-primary" id="xy-meeting-toggle" type="button">开始记录</button></article>
+        <header class="xy-page-header"><div><p class="xy-kicker">会议记录</p><h1 id="xy-meeting-title">整理你的会议内容</h1><p>小屿会把会议主题、核心内容和待办事项放在一起。</p></div><span class="xy-icon-badge xy-clay"><svg><use href="#xy-users"/></svg></span></header>
+        <article class="xy-meeting-current"><div class="xy-section-head"><div><p class="xy-label">当前会议</p><h2 id="xy-current-meeting-title">下半年活动规划与预算申报周会</h2></div><span class="xy-meeting-status" id="xy-meeting-status">已整理</span></div><div class="xy-meeting-summary" id="xy-meeting-summary"></div><div class="xy-meeting-meta"><span id="xy-meeting-date">2026-07-04 10:30</span><strong id="xy-meeting-time">42:18</strong></div><button class="xy-primary" id="xy-meeting-toggle" type="button">查看会议纪要</button></article>
         <section class="xy-section"><div class="xy-section-head"><div><h2>历史记录</h2><p>最近整理的会议</p></div></div><div class="xy-history">
-          <button type="button" data-toast="项目周会演示摘要已准备好"><span class="xy-icon-badge xy-amber"><svg><use href="#xy-users"/></svg></span><span><strong>项目周会</strong><small>07-04 10:30 · 28 分钟</small></span><svg><use href="#xy-chevron"/></svg></button>
-          <button type="button" data-toast="设计评审会演示摘要已准备好"><span class="xy-icon-badge xy-sage"><svg><use href="#xy-users"/></svg></span><span><strong>设计评审会</strong><small>07-03 15:20 · 42 分钟</small></span><svg><use href="#xy-chevron"/></svg></button>
-          <button type="button" data-toast="客户沟通会演示摘要已准备好"><span class="xy-icon-badge xy-clay"><svg><use href="#xy-users"/></svg></span><span><strong>客户沟通会</strong><small>07-02 14:00 · 31 分钟</small></span><svg><use href="#xy-chevron"/></svg></button>
+          <button type="button" data-meeting-detail><span class="xy-icon-badge xy-amber"><svg><use href="#xy-users"/></svg></span><span><strong>下半年活动规划与预算申报周会</strong><small>2026-07-04 10:30 · 42:18</small></span><svg><use href="#xy-chevron"/></svg></button>
         </div></section>
       </section>
 
       <section class="xy-page" data-page="records" aria-labelledby="xy-records-title" hidden>
-        <header class="xy-page-header"><div><p class="xy-kicker">记录</p><h1 id="xy-records-title">回顾你的每一天</h1><p>只留下值得回看的情绪转折。</p></div><button class="xy-round-button" type="button" data-toast="今天的心情入口已准备好" aria-label="新增今日记录"><svg><use href="#xy-book"/></svg></button></header>
-        <article class="xy-calendar"><div class="xy-calendar-head"><button type="button" data-toast="预览固定展示 2026 年 7 月" aria-label="上个月"><svg><use href="#xy-chevron"/></svg></button><h2>2026 年 7 月</h2><button type="button" data-toast="预览固定展示 2026 年 7 月" aria-label="下个月"><svg><use href="#xy-chevron"/></svg></button></div><div class="xy-week"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div><div class="xy-days" id="xy-calendar-days"></div></article>
-        <section class="xy-section"><div class="xy-section-head"><div><h2>今日情绪趋势</h2><p>只记录明显转折点</p></div><span class="xy-demo-chip">演示数据</span></div><div class="xy-trend-card" data-trend="records"></div></section>
+        <header class="xy-page-header"><div><p class="xy-kicker">记录</p><h1 id="xy-records-title">回顾你的每一天</h1><p>日记、周报和会议纪要都会留在这里。</p></div><button class="xy-round-button" type="button" id="xy-open-diary" aria-label="新增今日记录"><svg><use href="#xy-book"/></svg></button></header>
+        <article class="xy-calendar"><div class="xy-calendar-head"><button type="button" id="xy-calendar-prev" aria-label="上个月"><svg><use href="#xy-chevron"/></svg></button><h2 id="xy-calendar-title">2026 年 7 月</h2><button type="button" id="xy-calendar-next" aria-label="下个月"><svg><use href="#xy-chevron"/></svg></button></div><div class="xy-week"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div><div class="xy-days" id="xy-calendar-days"></div></article>
+        <section class="xy-section"><div class="xy-section-head"><div><h2>今日情绪趋势</h2><p>一天里的状态起伏，已经为你留好</p></div></div><div class="xy-trend-card" data-trend="records"></div></section>
+        <article class="xy-day-detail" id="xy-day-detail"></article>
         <div class="xy-record-links">
-          <button type="button" data-toast="今日日记入口已准备好"><span class="xy-icon-badge xy-amber"><svg><use href="#xy-book"/></svg></span><span><strong>今日日记</strong><small>记录心情与想法</small></span><svg><use href="#xy-chevron"/></svg></button>
-          <button type="button" data-toast="本周周报使用演示数据展示"><span class="xy-icon-badge xy-sage"><svg><use href="#xy-activity"/></svg></span><span><strong>本周周报</strong><small>情绪与状态总结</small></span><svg><use href="#xy-chevron"/></svg></button>
+          <button type="button" id="xy-diary-link"><span class="xy-icon-badge xy-amber"><svg><use href="#xy-book"/></svg></span><span><strong>今日日记</strong><small>记录心情与想法</small></span><svg><use href="#xy-chevron"/></svg></button>
+          <button type="button" id="xy-weekly-link"><span class="xy-icon-badge xy-sage"><svg><use href="#xy-activity"/></svg></span><span><strong>本周周报</strong><small>情绪与状态总结</small></span><svg><use href="#xy-chevron"/></svg></button>
         </div>
+        <section class="xy-section"><div class="xy-section-head"><div><h2>近日日记</h2><p>最近写下的几天</p></div></div><div class="xy-history" id="xy-diary-history"></div></section>
+        <section class="xy-section"><div class="xy-section-head"><div><h2>历史周报</h2><p>小屿为你整理的每一周</p></div></div><div class="xy-history" id="xy-weekly-history"></div></section>
       </section>
 
       <section class="xy-page" data-page="mine" aria-labelledby="xy-mine-title" hidden>
-        <header class="xy-profile-head"><div class="xy-avatar" aria-hidden="true"><svg><use href="#xy-user"/></svg></div><div><h1 id="xy-mine-title">Lintong</h1><p>愿你被温柔以待</p></div></header>
-        <article class="xy-device-card"><div><p class="xy-label">设备状态</p><h2>心屿设备</h2><span class="xy-online"><i></i>在线</span><p><svg><use href="#xy-battery"/></svg>电量 85%</p></div><div class="xy-device-art" aria-hidden="true"><i></i><span></span></div></article>
+        <header class="xy-profile-head"><div class="xy-avatar" aria-hidden="true"><svg><use href="#xy-user"/></svg></div><div><h1 id="xy-mine-title">蛋挞</h1><p>愿你被温柔以待</p></div></header>
+        <article class="xy-device-card"><div><p class="xy-label">设备状态</p><h2>心屿设备</h2><span class="xy-online"><i></i>在线</span><p><svg><use href="#xy-activity"/></svg>电量 85%</p></div></article>
         <div class="xy-settings">
           <button type="button" data-toast="提醒设置为温和模式"><span class="xy-icon-badge xy-amber"><svg><use href="#xy-bell"/></svg></span><span>提醒设置</span><svg><use href="#xy-chevron"/></svg></button>
           <button type="button" data-toast="小屿设置入口已准备好"><span class="xy-icon-badge xy-blue"><svg><use href="#xy-smile"/></svg></span><span>小屿设置</span><svg><use href="#xy-chevron"/></svg></button>
           <button type="button" data-toast="我的目标入口已准备好"><span class="xy-icon-badge xy-sage"><svg><use href="#xy-target"/></svg></span><span>我的目标</span><svg><use href="#xy-chevron"/></svg></button>
           <button type="button" data-toast="预览数据只保存在本机"><span class="xy-icon-badge xy-lavender"><svg><use href="#xy-lock"/></svg></span><span>数据与隐私</span><svg><use href="#xy-chevron"/></svg></button>
           <button type="button" data-toast="帮助与反馈入口已准备好"><span class="xy-icon-badge xy-clay"><svg><use href="#xy-help"/></svg></span><span>帮助与反馈</span><svg><use href="#xy-chevron"/></svg></button>
-          <button type="button" data-toast="心屿产品预览版"><span class="xy-icon-badge xy-amber"><svg><use href="#xy-leaf"/></svg></span><span>关于心屿</span><svg><use href="#xy-chevron"/></svg></button>
+          <button type="button" data-toast="心屿会陪你回看状态，也陪你慢慢照顾自己"><span class="xy-icon-badge xy-amber"><svg><use href="#xy-leaf"/></svg></span><span>关于心屿</span><svg><use href="#xy-chevron"/></svg></button>
         </div>
-        <button class="xy-logout" type="button" data-toast="预览模式不会真的退出登录">退出登录</button>
+        <button class="xy-logout" type="button" data-toast="已回到安静状态">退出登录</button>
       </section>
     </main>
 
@@ -121,6 +120,10 @@
     </nav>
     <div class="xy-toast" id="xy-toast" role="status" aria-live="polite"></div>
   </div>
+  <dialog class="xy-sheet" id="xy-meeting-dialog" aria-labelledby="xy-meeting-dialog-title"><section><button type="button" data-close-dialog aria-label="关闭">×</button><div id="xy-meeting-dialog-body"></div></section></dialog>
+  <dialog class="xy-sheet" id="xy-diary-dialog" aria-labelledby="xy-diary-dialog-title"><form method="dialog" id="xy-diary-form"><button type="button" data-close-dialog aria-label="关闭">×</button><h2 id="xy-diary-dialog-title">今日日记</h2><p id="xy-diary-date"></p><label for="xy-diary-editor">写下今天想留下的一句话</label><textarea id="xy-diary-editor" rows="6" maxlength="600"></textarea><div class="xy-assistant-reply" id="xy-diary-reply"></div><button class="xy-primary" type="submit">保存日记</button></form></dialog>
+  <dialog class="xy-sheet" id="xy-weekly-dialog" aria-labelledby="xy-weekly-dialog-title"><section><button type="button" data-close-dialog aria-label="关闭">×</button><div id="xy-weekly-dialog-body"></div></section></dialog>
+  <script src="/static/page2_preview/data/xinyu_seed_data.js?v=20260704-1"></script>
   <script src="/static/xinyu_preview.js?v=20260704-1"></script>
 </body>
 </html>
