@@ -59,6 +59,12 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((root / "config" / "tracking_control.json").exists())
         self.assertTrue((root / "docs" / "tracking_tuning_sop.md").exists())
 
+    def test_voice_target_enum_accepts_recamera_aliases(self) -> None:
+        self.assertEqual(api._normalize_voice_target("recamera_speaker"), "recamera_speaker")
+        self.assertEqual(api._normalize_voice_target("recamera"), "recamera_speaker")
+        self.assertEqual(api._normalize_voice_target("device"), "recamera_speaker")
+        self.assertEqual(api._normalize_voice_target("browser"), "browser")
+
     def test_snapshot_exposes_home_compatibility_fields_and_valence(self) -> None:
         old_runtime = dict(api._runtime_cache)
         old_emotion = api._emotieff_result

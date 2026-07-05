@@ -58,7 +58,7 @@ lease/session logic:
 
 | Endpoint | Method | Purpose |
 | --- | --- | --- |
-| `/recamera-control/v1/audio/play` | POST | Accept base64 WAV, save it on-device, run `aplay -D hw:1,0 <file.wav>` |
+| `/recamera-control/v1/audio/play` | POST | Accept base64 WAV, save it on-device, run `aplay -D <device> <file.wav>` |
 | `/recamera-control/v1/audio/status` | GET | Return `{ok,state,audio_id,last_error}` where state is `idle/playing/done/error/stopped` |
 | `/recamera-control/v1/audio/stop` | POST | Stop the current `aplay` process if one is running |
 
@@ -72,14 +72,16 @@ Playback payload contract:
   "encoding": "base64",
   "sample_rate": 16000,
   "sample_format": "S16_LE",
-  "aplay_device": "hw:1,0",
+  "aplay_device": "auto",
   "audio_base64": "..."
 }
 ```
 
-The reCamera Gimbal hardware guide documents the speaker path as WAV playback
-with `sudo aplay -D hw:1,0 /home/recamera/test.wav`; keep generated files at
-16 kHz / 16-bit WAV for the first closed-loop version.
+Set `RECAMERA_APLAY_DEVICE` or `VOICE_APLAY_DEVICE` on the reCamera Node-RED
+runtime when the speaker card is known, for example `hw:1,0`. If the payload or
+environment value is `auto`/`default`, the supplement runs `aplay -l` on-device
+and uses the first listed card as `hw:<card>,0`, falling back to ALSA `default`.
+Keep generated files at 16 kHz / 16-bit WAV for the first closed-loop version.
 
 After importing the supplement, open `/control` and use **Voice / Speaker Loop**:
 

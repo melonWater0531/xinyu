@@ -997,8 +997,18 @@ def _register_voice_audio(path: str, text: str = "", content_type: str = "audio/
     return meta
 
 
+def _normalize_voice_target(target: str = "") -> str:
+    raw = str(target or os.environ.get("VOICE_PLAYBACK_TARGET", _voice_playback.get("target") or "recamera_speaker"))
+    normalized = raw.strip().lower().replace("-", "_")
+    if normalized in {"recamera", "device", "speaker", "recamera_speaker"}:
+        return "recamera_speaker"
+    if normalized in {"browser", "browser_speech", "web"}:
+        return "browser"
+    return normalized or "recamera_speaker"
+
+
 async def _play_voice_audio(audio_id: str, target: str = "", reason: str = "api") -> dict:
-    target = str(target or os.environ.get("VOICE_PLAYBACK_TARGET", _voice_playback.get("target") or "recamera_speaker"))
+    target = _normalize_voice_target(target)
     meta = _voice_audio_meta(audio_id)
     _voice_playback.update({"target": target, "audio_id": str(audio_id or ""), "updated_at": time.time()})
     if not meta:

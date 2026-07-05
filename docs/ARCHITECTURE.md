@@ -510,7 +510,7 @@ main_phase3 runtime snapshot ──> EventBus ──> FastAPI ──> Dashboard
 - **ReSpeaker XVF3800**：四麦克风 DOA/VAD、会议 USB Audio、12 颗 WS2812 实体 DOA 灯环。
 - **reCamera Gimbal 2002w**：SSCMA 摄像头、Node-RED bridge、CAN yaw/pitch 电机、语音输出扬声器。
 - **Windows/WSL 主机**：FastAPI 感知和录音、EventBus、唯一 control runtime。
-- reCamera 自带扬声器已纳入语音输出闭环：FastAPI 缓存 WAV，通过 Node-RED `/recamera-control/v1/audio/play` 触发设备端 `aplay -D hw:1,0`；自带麦克风和补光灯仍不参与当前业务闭环。
+- reCamera 自带扬声器已纳入语音输出闭环：FastAPI 缓存 WAV，通过 Node-RED `/recamera-control/v1/audio/play` 触发设备端 `aplay -D <device>`；设备名由 `RECAMERA_APLAY_DEVICE` / `VOICE_APLAY_DEVICE` 或 `aplay -l` 自动探测决定。自带麦克风和补光灯仍不参与当前业务闭环。
 
 配套设备 Flow 位于 `deploy/node_red/recamera_control_bridge.json`，暴露 command、stop、status 三个版本化 endpoint。Bridge 不可达时 `--enable-control` fail closed。
 

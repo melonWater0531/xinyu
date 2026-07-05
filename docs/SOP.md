@@ -123,7 +123,7 @@ usbipd.exe detach --busid <BUSID>
 | `/recamera-control/v1/command` | POST | 双轴绝对/相对运动命令 |
 | `/recamera-control/v1/stop` | POST | 紧急停止 |
 | `/recamera-control/v1/calibrate` | POST | 执行 `gimbal cali`（撤销 lease） |
-| `/recamera-control/v1/audio/play` | POST | 可选语音闭环：保存 WAV 并用 `aplay -D hw:1,0` 播放 |
+| `/recamera-control/v1/audio/play` | POST | 可选语音闭环：保存 WAV 并用 `aplay -D <device>` 播放 |
 | `/recamera-control/v1/audio/status` | GET | 可选语音闭环：返回 `idle/playing/done/error/stopped` |
 | `/recamera-control/v1/audio/stop` | POST | 可选语音闭环：停止当前 `aplay` |
 
@@ -407,6 +407,9 @@ ASR 默认优先使用智谱 GLM-ASR（需要 `ZHIPU_API_KEY`）；云端不可�
 | `ZHIPU_TTS_VOLUME` | 空 | TTS 音量，可由 payload/preset 覆盖 |
 | `ZHIPU_TTS_FORMAT` | `wav` | 第一版使用 WAV，匹配 reCamera `aplay` |
 | `VOICE_PLAYBACK_TARGET` | `recamera_speaker` | `recamera_speaker` 优先；失败回退浏览器；也可直接设 `browser` |
+| `RECAMERA_AUDIO_BRIDGE_URL` | 空 | 可选，覆盖语音播放 Node-RED bridge 地址；未设置时使用 `RECAMERA_DEVICE_IP` / `RECAMERA_BASE_URL` 的 1880 端口 |
+| `RECAMERA_APLAY_DEVICE` / `VOICE_APLAY_DEVICE` | `auto` | reCamera 设备端 `aplay -D` 设备名；`auto` 时由 Node-RED bridge 运行 `aplay -l` 自动选择 |
+| `RECAMERA_AUDIO_BRIDGE_RETRIES` | `5` | FastAPI 到 audio bridge 的最大重试次数，指数退避 |
 | `ASR_PROVIDER` | `zhipu` | `zhipu` 优先云端 ASR；`local` 强制本地 whisper |
 | `ENABLE_WAKE_WORD` | `false` | `true` 时启动可选 openWakeWord 服务；缺依赖或模型时 state 显示 unavailable |
 | `ENABLE_TTS_VOICE` | `true` | 后端是否广播 voice event；前端仍可本地静音 |
@@ -753,7 +756,7 @@ curl -X POST http://localhost:8001/api/voice/play \
   -d '{"audio_id":"reply_xxx","target":"recamera_speaker"}'
 ```
 
-`/api/voice/chat` 返回 `{transcript, reply, audio_url, playback_target, providers}`。默认 `VOICE_PLAYBACK_TARGET=recamera_speaker`：FastAPI 生成 WAV 后通过 Node-RED `/recamera-control/v1/audio/play` 传到设备，由 reCamera 执行 `aplay -D hw:1,0`。失败时 `/api/voice/state.playback` 会记录原因，前端回退浏览器音频/文字反馈。
+`/api/voice/chat` 返回 `{transcript, reply, audio_url, playback_target, providers}`。默认 `VOICE_PLAYBACK_TARGET=recamera_speaker`：FastAPI 生成 WAV 后通过 Node-RED `/recamera-control/v1/audio/play` 传到设备，由 reCamera 执行 `aplay -D <device>`。设备名优先使用 `RECAMERA_APLAY_DEVICE` / `VOICE_APLAY_DEVICE`，默认 `auto` 时从设备端 `aplay -l` 选择第一块声卡。失败时 `/api/voice/state.playback` 会记录原因，前端回退浏览器音频/文字反馈。
 
 `/control` 的 **Voice / Speaker Loop** 卡片可以完成集中验收：先点"刷新 bridge"，再点"reCamera 测试音"确认设备出声；配置智谱 key 后点"智谱 TTS 播放"验证声线；最后用"录音上传"验证 ASR→Chat→TTS→播放闭环。
 

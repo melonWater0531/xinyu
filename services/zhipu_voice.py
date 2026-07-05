@@ -26,21 +26,21 @@ ZHIPU_TTS_VOLUME = os.getenv("ZHIPU_TTS_VOLUME", "")
 VOICE_PRESETS = {
     "gentle_female": {
         "label": "温柔女声",
-        "voice": "gentle_female",
+        "voice": "tongtong",
         "speed": 0.95,
         "volume": 1.0,
         "description": "陪伴、日记回应、情绪安抚优先。",
     },
     "neutral_natural": {
         "label": "中性自然声",
-        "voice": "neutral_natural",
+        "voice": "xiaochen",
         "speed": 1.0,
         "volume": 1.0,
         "description": "默认对话和多数产品提示。",
     },
     "meeting_prompt": {
         "label": "会议提示声",
-        "voice": "meeting_prompt",
+        "voice": "chuichui",
         "speed": 1.08,
         "volume": 0.9,
         "description": "短促、克制，适合会议状态提示。",
@@ -118,6 +118,7 @@ class ZhipuVoiceService:
             "model": str(options.get("model") or os.getenv("ZHIPU_TTS_MODEL", ZHIPU_TTS_MODEL)),
             "input": text,
             "response_format": fmt,
+            "stream": False,
         }
         voice = str(options.get("voice") or os.getenv("ZHIPU_TTS_VOICE", ZHIPU_TTS_VOICE) or preset.get("voice") or "")
         if voice:
