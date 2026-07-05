@@ -16,9 +16,9 @@ DASHBOARD = ROOT / "dashboard"
 class HomeUpgradeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.home = (DASHBOARD / "home.html").read_text(encoding="utf-8")
-        cls.css = (DASHBOARD / "home_selfcare.css").read_text(encoding="utf-8")
-        cls.ui = (DASHBOARD / "home_selfcare_ui.js").read_text(encoding="utf-8")
+        cls.home = (DASHBOARD / "home_legacy.html").read_text(encoding="utf-8")
+        cls.css = (DASHBOARD / "home_legacy" / "home_selfcare.css").read_text(encoding="utf-8")
+        cls.ui = (DASHBOARD / "home_legacy" / "home_selfcare_ui.js").read_text(encoding="utf-8")
         cls.ids = set(re.findall(r'\bid="([^"]+)"', cls.home))
 
     def test_home_structure_has_meditation_without_overview(self) -> None:
@@ -63,7 +63,7 @@ class HomeUpgradeTests(unittest.TestCase):
     def test_wellbeing_focus_and_gesture_are_productized(self) -> None:
         self.assertNotIn('id="comp-ask-advice"', self.home)
         self.assertIn('id="comp-care-text"', self.home)
-        self.assertIn("buildProactiveCareSuggestion", (DASHBOARD / "home_selfcare.js").read_text(encoding="utf-8"))
+        self.assertIn("buildProactiveCareSuggestion", (DASHBOARD / "home_legacy" / "home_selfcare.js").read_text(encoding="utf-8"))
         focus = self.home[self.home.index('class="card comp-focus-card"'):self.home.index('id="comp-chat-thread"')]
         for engineering_term in ("EAR", "闪烁率", "校准", "comp-ear", "comp-blink", "comp-fatigue"):
             self.assertNotIn(engineering_term, focus)
@@ -72,7 +72,7 @@ class HomeUpgradeTests(unittest.TestCase):
         self.assertIn("App.state?.gesture", self.home, "底层手势状态读取应保留")
 
     def test_record_page_contains_lightweight_mood_trend(self) -> None:
-        trend = (DASHBOARD / "home_mood_trend.js").read_text(encoding="utf-8")
+        trend = (DASHBOARD / "home_legacy" / "home_mood_trend.js").read_text(encoding="utf-8")
         self.assertIn("buildMoodTrendPointsForDate", trend)
         self.assertIn("<svg", trend)
         self.assertIn("polyline", trend)
@@ -88,7 +88,7 @@ class HomeUpgradeTests(unittest.TestCase):
 const fs=require('fs'),vm=require('vm');
 const values=new Map();
 global.localStorage={getItem:k=>values.has(k)?values.get(k):null,setItem:(k,v)=>values.set(k,String(v)),removeItem:k=>values.delete(k)};
-for(const file of ['dashboard/home_selfcare.js','dashboard/home_emotion_chat.js','dashboard/home_weekly_report.js','dashboard/home_mood_trend.js'])vm.runInThisContext(fs.readFileSync(file,'utf8'));
+for(const file of ['dashboard/home_legacy/home_selfcare.js','dashboard/home_legacy/home_emotion_chat.js','dashboard/home_legacy/home_weekly_report.js','dashboard/home_legacy/home_mood_trend.js'])vm.runInThisContext(fs.readFileSync(file,'utf8'));
 const anchor=new Date(2026,6,3,12);const repo=new XinyuSelfCare.SelfCareRepository();
 if(repo.getWeek(anchor).length!==7)throw Error('week');
 repo.incrementWater(anchor);repo.recordWalk(anchor);repo.recordMeditation(anchor,10,'forest');

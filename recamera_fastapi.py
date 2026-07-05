@@ -4427,10 +4427,12 @@ async def health():
     }
 
 
-# Two pages only
+# Product + control pages
 # PAGE 1 = Control Dashboard (real telemetry/observability) -> /control , /v2
 # PAGE 2 = User product home                                -> / , /home
+# BACKUP = Previous Home product page                       -> /home-old
 HOME_FILE = DASHBOARD_DIR / "home.html"
+LEGACY_HOME_FILE = DASHBOARD_DIR / "home_legacy.html"
 _NOCACHE = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache", "Expires": "0"}
 
@@ -4450,6 +4452,12 @@ async def serve_root():
 async def serve_home():
     # PAGE 2: user product home. Engineering controls stay under /control.
     return _serve_html(HOME_FILE)
+
+
+@app.get("/home-old")
+async def serve_home_old():
+    # Backup of the previous product Home page.
+    return _serve_html(LEGACY_HOME_FILE)
 
 
 @app.get("/control")

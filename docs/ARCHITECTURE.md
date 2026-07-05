@@ -222,22 +222,22 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | 文件 | 路由 | 用途 |
 |---|---|---|
 | `recamera_v2_live.html` | `/control` `/v2` | PAGE 1：实时控制台（只读遥测 + FSM 可观测） |
-| `home.html` | `/home` `/`（经 `/` 重定向） | PAGE 2：当前产品 Home；真实状态优先，WS 失败降级 polling |
+| `home.html` | `/home` `/`（经 `/` 重定向） | PAGE 2：五页产品 Home；真实状态优先，WS 失败降级 polling |
+| `home_legacy.html` | `/home-old` | 上一版 Home 备用入口 |
 | `manifest.webmanifest` | `/manifest.webmanifest` | PWA 清单 |
 | `sw.js` | `/sw.js` | Service Worker |
 
-历史五页录屏预览已保守归档到 `archive/legacy_20260704/dashboard_preview/`：
-`xinyu_preview.*`、`page2_preview/` 和预览截图不再作为 FastAPI 静态路由发布。
-如需恢复旧录屏页，按归档目录 README 将文件复制回原 `dashboard/` 路径。
+历史五页录屏预览仍保留在 `archive/legacy_20260704/dashboard_preview/`；正式产品入口已提升到 `dashboard/home.html`，资源位于 `dashboard/product_home/`。
 
 ### 4.8 文件分层索引
 
 | 类别 | 文件或目录 | 说明 |
 |---|---|---|
-| 活跃前端 | `dashboard/home.html`、`dashboard/home_*.js`、`dashboard/home_selfcare.css` | `/home` 产品页与本地 PWA 交互 |
+| 活跃前端 | `dashboard/home.html`、`dashboard/product_home/` | `/home` 五页产品页、真实接口闭环与本地 fallback |
+| 备用 Home | `dashboard/home_legacy.html`、`dashboard/home_legacy/` | `/home-old` 上一版 Home 备用入口 |
 | 活跃调试台 | `dashboard/recamera_v2_live.html`、`dashboard/tracking_overlay.js` | `/control`、`/v2` 工程控制与遥测 |
 | 活跃静态资产 | `dashboard/icons/`、`dashboard/island_cutout.png`、`dashboard/floating_island.glb`、`dashboard/vendor/three/` | PWA、产品形象和调试台 3D 依赖 |
-| Legacy 预览 | `archive/legacy_20260704/dashboard_preview/` | 旧五页录屏预览和 Page 2 数据；测试仍以 legacy contract 保护 |
+| Legacy 预览 | `archive/legacy_20260704/dashboard_preview/` | 历史五页录屏预览和 Page 2 数据 |
 | 控制孤立模块 | `archive/legacy_20260704/core_orphans/control_filter.py` | 旧比例/EMA 控制滤波器；不在单控制平面中 |
 | 开发工具 | `proxy.py`、`recamera_demo.py`、`tools/run_orchestrator_mvp.py` | 辅助调试或演示入口，不是生产主链路 |
 | 模型资产 | `models/` | MediaPipe、ONNX、EmotiEff 等模型；不参与前端清理 |
@@ -388,16 +388,13 @@ Debounce:
   - 单人分析（专注度/情绪/眼部指标）
   - 系统健康（FPS/DOA age/WS 客户端/云台 RTT）
   - 实时 MJPEG 视频（含检测框 overlay）
-- [x] PAGE 2（`home.html`，待正确路由）：产品 Demo
-  - 通过 `/ws` 订阅真实状态；WebSocket 超过 10 次重连后停止，降级到 `/api/state` 1s polling；页面重新可见时自动复位重连计数并重连
-  - RAF 节流：`scheduleRender()` 将每次状态变化合并到下一帧，避免 200ms WS 推送频繁 DOM 更新
-  - 单一 `runtimeMode` 来自后端 `control.active_feature`，localStorage 仅保存用户偏好
-  - 启动 API 返回的 `session_id` 会被保存；stop、heartbeat（1000ms 间隔）、beforeunload 必须携带 session
-  - 情绪监测（PERCLOS / 眨眼率 / gaze 上下文）、专注度、多人场景、手势 Toast、主动关怀气泡
-  - **日记系统（B 系列）**：`xinyu_diary_entries` 数组格式（含 `id, date, emotion, conversation[]`）；每次保存后 LLM 自动回复并写入 `conversation[0]`；详情页支持多轮对话；迁移函数从旧 `xinyu_diary_calendar` / `xinyu_emotion_calendar` 自动升级
-  - **周报系统（C 系列）**：`aggregateWeekData()` 聚合近 7 天；`generateWeeklyReport()` 调用 LLM 生成书信体周报并持久化到 `xinyu_weekly_reports`
-  - **陪伴对话增强（D 系列）**：聊天发送时携带 PERCLOS / 眨眼率 / gaze / 最近日记摘要上下文；主动关怀触发时在陪伴 Tab 注入带 `data-type="care"` 气泡；每日对话持久化到 `xinyu_chat_YYYY-MM-DD`，标签页切回时恢复最近 20 条
-  - **错误处理（E 系列）**：所有 `/api/chat` 和 `/api/reflect` 调用通过 `apiChatWithTimeout()` 加 10s AbortController；所有 localStorage 写入通过 `lsWrite()` 捕获 `QuotaExceededError`；初始化时检查存储配额超 85% 时提示
+- [x] PAGE 2（`home.html`）：五页产品 Home
+  - 通过 `/ws` 订阅真实状态；失败后降级到 `/api/state` polling
+  - 聊天调用 `/api/chat`，日记调用 `/api/reflect`，周报调用 `/api/report/weekly`
+  - 会议调用 `/api/conversation/start`、`/api/meeting/complete`、`/api/conversation/state`、`/api/meeting/speakers`
+  - 语音调用 `/api/voice/chat` 和 `/api/voice/stop`
+  - 设备页读取 `/api/system/health` 与 `/api/voice/state`
+  - 所有接口失败时保留 seed data、localStorage 和本地文案 fallback
   - PWA 支持（manifest + service worker）
 
 DeepSeek 默认模型保留 `deepseek-v4-flash`。旧截图中“模型不存在”的判断已过期，不作为回退依据。云端 LLM 路由失败时返回空字符串，由 `/api/chat`、`/api/reflect`、`/api/emotion/infer` 和 `/api/meeting/summarize` 各自的既有 fallback 逻辑处理，避免把本地模板误标为云端 provider。`/api/emotion/infer` 是低频语义接口，不进入 `/ws` 实时状态流。

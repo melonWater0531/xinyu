@@ -240,6 +240,7 @@ python3 main_phase3.py \
 
 ```text
 http://localhost:8001/home      # 产品页（/home 重定向）
+http://localhost:8001/home-old  # 上一版 Home 备用页
 http://localhost:8001/control   # 控制调试台
 ```
 
@@ -435,7 +436,8 @@ LLM 路由顺序为 DeepSeek → 智谱 GLM-4-Flash → 端点本地 fallback。
 | 路由 | 页面 | 数据 |
 |---|---|---|
 | `/control`、`/v2` | Control Dashboard | FastAPI 真实视频、感知、录音状态和 UI Event 请求 |
-| `/home` | 产品 Demo | `/ws` 实时状态，失败时降级 `/api/state` polling |
+| `/home` | 五页产品页 | `/ws` 实时状态，失败时降级 `/api/state` polling；聊天、日记、周报、会议和语音接后端接口 |
+| `/home-old` | 旧 Home 备用页 | 上一版 Home 页面和 self-care 本地逻辑 |
 | `/` | 重定向 | 跳转 `/home` |
 
 Dashboard 左侧导航：
@@ -457,8 +459,8 @@ Dashboard 左侧导航：
 - 打开或切换到页面后只显示信息，不会自动启动该页功能。
 - 必须点击当前页"启动功能"按钮。
 - 启动成功后，前端保存返回的 `session_id`；stop、heartbeat（1000ms）、页面切换和 `beforeunload` 都必须携带该 session。
-- `/home` 优先使用 `/ws` 接收真实状态；WebSocket 断线后每 3s 重连，超过 10 次后停止重连并降级到 `/api/state` 1s polling；页面重新变为可见时自动复位重连计数并重连。
-- `/home` 运行态以后端 `control.active_feature`、`session_id` 和 `conversation` 为准；localStorage 只保存用户偏好，不伪造"运行中"。
+- `/home` 优先使用 `/ws` 接收真实状态；失败后降级到 `/api/state` polling。
+- `/home` 的会议运行态以后端 `control.active_feature`、`session_id` 和 `conversation` 为准；localStorage 只保存用户偏好和当前会议 session。
 - 切换页面前，前端对旧页面发送对应 stop/deactivate 请求；缺少 `session_id` 的 stop 应被后端拒绝。
 - 页面隐藏或关闭时 best-effort 发送带 session 的 stop（陪伴用 `sendBeacon` + `/api/single_track/stop`，会议用 `sendBeacon` + `/api/conversation/stop`）。
 - 网络断开或进程强制终止时 best-effort 请求不保证送达；租约 1.5s 后自动到期。
@@ -848,7 +850,7 @@ Session 和心跳：
 
 7. 进入陪伴 Tab → Network 每 1000ms 出现 `POST /api/control/heartbeat {session_id}`。
 8. 离开陪伴 Tab → 心跳停止；`beforeunload` 时出现 `sendBeacon` 到 `/api/single_track/stop`。
-9. 启动会议 → `POST /api/conversation/start {control_session:true, save_audio:true}`；结束 → `POST /api/conversation/stop {session_id, finalize:true}`。
+9. 启动会议 → `POST /api/conversation/start {control_session:true, save_audio:true}`；结束整理 → `POST /api/meeting/complete {session_id}`，状态轮询 `/api/conversation/state`。
 
 日记与 LLM：
 
@@ -863,7 +865,7 @@ Session 和心跳：
 
 周报：
 
-18. 点击"让小屿写周报" → 请求 `/api/chat`；文本更新到页面；`xinyu_weekly_reports` 有新条目。
+18. 点击"本周周报" → 请求 `/api/report/weekly`；失败时显示本地周报 fallback。
 18. 切换到其他标签再回来 → 周报文本从 localStorage 重新渲染（非空白或旧文案）。
 
 存储：

@@ -3,21 +3,21 @@
 ## 心屿五页产品页（当前入口）
 
 - 产品名为“心屿”，智能助手名为“小屿”。
-- 推荐打开 `/home` 进行当前产品功能录制；`/control` 仍是开发调试台。
-- 旧五页静态录屏预览已归档到 `archive/legacy_20260704/dashboard_preview/xinyu_preview.html`，不再作为 FastAPI 静态路由发布。
+- 推荐打开 `/home` 进行当前产品功能录制；`/control` 仍是开发调试台，上一版 Home 保留在 `/home-old`。
+- 五页 `xinyu_preview` 已提升为正式 `/home` 产品页；归档目录 `archive/legacy_20260704/dashboard_preview/` 仅作为历史材料保留。
 - 五页分别为首页、陪伴、会议、记录和我的。首页主推情绪识别与今日状态，小屿提供温柔主动建议。
 - 情绪识别只是帮助用户回看状态的弱线索，不是医学或心理诊断；多人场景不判断个人私人情绪。
 - 页面已按产品发布观感处理，UI 中不标注数据来源为测试或样稿；录制讲解时可说明这些内容用于本地产品体验呈现。
 - 记录页包含 2026 年 6 月 1 日到 2026 年 7 月 4 日的历史记录、日记和周报，可切换 6 月 / 7 月并查看每日状态。
 - 会议页展示《下半年活动规划与预算申报周会》的会议纪要能力，不展示逐字稿。
 - 陪伴页使用今日状态作为小屿记忆上下文，回复会结合情绪趋势、喝水、步数、冥想、会议和日记。
-- 旧静态预览没有替换当前 `/home`、`/control`、tracking、recorder 或 gimbal 链路。
+- 页面优先连接真实接口；接口、设备或云端 key 不可用时使用本地记录和 seed data 兜底，不白屏。
 
 推荐录屏时直接打开 `http://localhost:8001/home`：先展示首页当前情绪、趋势、今日状态与小屿建议，再依次切换陪伴、会议、记录和我的。会议页只讲会议纪要整理能力，不讲逐字稿。
 
 ## 数据源说明
 
-归档静态预览复用 `archive/legacy_20260704/dashboard_preview/page2_preview/data/` 中的本地产品体验数据，包括 2026 年 6 月 1 日到 7 月 4 日的记录、《下半年活动规划与预算申报周会》会议纪要、日记、周报和小屿记忆上下文。归档页面交互不依赖真实 recorder、gimbal、tracking 或聊天后端；如需重新服务该预览，请按归档 README 将文件恢复到原 `dashboard/` 路径。
+正式 `/home` 复用 `dashboard/product_home/seed_data.js` 中的本地产品体验数据，包括 2026 年 6 月 1 日到 7 月 4 日的记录、《下半年活动规划与预算申报周会》会议纪要、日记、周报和小屿记忆上下文。页面会优先读取 `/ws` 或 `/api/state`，并接入聊天、日记、周报、会议和语音接口；失败时继续使用本地数据。
 
 ### 启动方式
 
@@ -32,12 +32,13 @@ python3 recamera_fastapi.py
 
 ### 陪伴页 LLM 调用方式
 
-归档 `xinyu_preview.html` 的陪伴页会优先尝试调用现有 `POST /api/chat`。请求会携带用户输入、2026 年 7 月 4 日的情绪趋势、喝水、步数、冥想、会议主题、日记和周报摘要。若 10 秒内无响应、LLM key 未配置或接口不可用，页面会继续使用本地 memory reply，不会空白。
+`/home` 陪伴页会优先调用 `POST /api/chat`。日记保存调用 `POST /api/reflect`，周报调用 `POST /api/report/weekly`，会议记录调用 `POST /api/conversation/start` 和 `POST /api/meeting/complete`，语音对话调用 `POST /api/voice/chat`。若接口无响应、LLM key 未配置或设备不可用，页面会继续使用本地 memory reply，不会空白。
 
 电脑本机访问：
 
 ```text
 http://localhost:8001/home
+http://localhost:8001/home-old
 ```
 
 ### 手机录屏时如何找到电脑 IP
