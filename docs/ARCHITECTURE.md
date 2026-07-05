@@ -81,7 +81,7 @@ FastAPI = UI Event emitter + perception/recording + runtime telemetry viewer
 | 是否有第二 FSM | **NO**（FastAPI 只查询 main runtime snapshot） |
 | 孤立 PD 模块 | `core/control_filter.py`（有比例增益代码，但**未被任何生产代码 import**，属于孤立遗留模块） |
 
-控制闭环、session 租约与设备看门狗的整改细节见 [CONTROL_CLOSURE.md](CONTROL_CLOSURE.md)。
+控制闭环、session 租约与设备看门狗的关键结论已合并在本节与 SOP 验收章节中。
 
 ---
 
@@ -386,9 +386,9 @@ Debounce:
 
 DeepSeek 默认模型保留 `deepseek-v4-flash`。旧截图中“模型不存在”的判断已过期，不作为回退依据。云端 LLM 路由失败时返回空字符串，由 `/api/chat`、`/api/reflect`、`/api/emotion/infer` 和 `/api/meeting/summarize` 各自的既有 fallback 逻辑处理，避免把本地模板误标为云端 provider。`/api/emotion/infer` 是低频语义接口，不进入 `/ws` 实时状态流。
 
-会议 pipeline 当前只实现轻量 speaker label，不执行 pitch 搜索、唇动验证、ArcFace 重识别或重型 diarization。暂未执行功能和后续落地路径见 `docs/FUTURE_MEETING_PIPELINE_UPGRADES.md`。
+会议 pipeline 当前只实现轻量 speaker label，不执行 pitch 搜索、唇动验证、ArcFace 重识别或重型 diarization；这些扩展暂不进入当前主链路。
 
-TTS 初版只广播 `voice_utterance` / `voice_stop` 事件，`/home` 使用浏览器 Web Speech API 播放或降级为文字/toast，`/control` 展示 voice debug。云端 TTS、主机扬声器输出、流式 TTS 和语音输入 ASR 见 `docs/FUTURE_TTS_VOICE_UPGRADES.md`。
+TTS 初版只广播 `voice_utterance` / `voice_stop` 事件，`/home` 使用浏览器 Web Speech API 播放或降级为文字/toast，`/control` 展示 voice debug。云端 TTS、主机扬声器输出、流式 TTS 和语音输入 ASR 暂不进入当前主链路。
 
 ---
 

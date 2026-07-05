@@ -676,7 +676,7 @@ curl http://localhost:8001/api/meeting/speakers
 
 `/api/wake_word/state` 返回 `{enabled, available, listening, paused, error}`。默认 `enabled=false`；`ENABLE_WAKE_WORD=true` 但缺少 openWakeWord 或音频输入不可用时返回 unavailable/error，不阻塞 FastAPI。检测到唤醒词后，WebSocket 广播 `{"type":"wake_word_detected","name":str,"score":float,"time":float}`。
 
-`/api/meeting/speakers` 返回当前会议 session 内通过 DOA zone 注册的说话人列表。当前实现只做非阻塞辅助标注，后续完整搜索、唇动验证和重识别见 `docs/FUTURE_MEETING_PIPELINE_UPGRADES.md`。
+`/api/meeting/speakers` 返回当前会议 session 内通过 DOA zone 注册的说话人列表。当前实现只做非阻塞辅助标注，不执行完整搜索、唇动验证或重识别。
 
 ### 7.7 TTS Voice Event
 
@@ -691,7 +691,7 @@ curl -X POST http://localhost:8001/api/voice/stop \
   -H 'Content-Type: application/json' -d '{"reason":"curl"}'
 ```
 
-`/api/voice/say` 不合成音频，只广播 `voice_utterance` WebSocket 事件。`/home` 收到后用浏览器 Web Speech 朗读；浏览器不支持或用户关闭语音时，仍显示文字和 toast。会议开始/停止、会议摘要完成/失败、wake word detected 会触发短句提示，不朗读会议原文。后续云端 TTS、主机扬声器和语音输入见 `docs/FUTURE_TTS_VOICE_UPGRADES.md`。
+`/api/voice/say` 不合成音频，只广播 `voice_utterance` WebSocket 事件。`/home` 收到后用浏览器 Web Speech 朗读；浏览器不支持或用户关闭语音时，仍显示文字和 toast。会议开始/停止、会议摘要完成/失败、wake word detected 会触发短句提示，不朗读会议原文；云端 TTS、主机扬声器和语音输入暂不进入当前主链路。
 
 ### 7.8 EventBus 端口
 
