@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-reCamera Multimodal ->Main Dashboard (FastAPI)
-鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+reCamera Multimodal - Main Dashboard (FastAPI)
 
 Architecture:
-  Device (<RECAMERA_IP>)                This Server (0.0.0.0:8001)
-  鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->             鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->  ->SSCMA Node :8090    鈹傗攢鈹€WebSocket鈹€鈹€鈫掆攤 /video_feed  (MJPEG)     ->  ->Node-RED  :1880     鈹傗啇鈹€Socket.IO鈹€鈹€鈹€->/api/gimbal/* (control)  ->  ->                    ->             ->/ws          (state push) ->  ->                    ->             ->/home        (蹇冨笨)       ->  ->                    ->             ->/v2          (鎺у埗->     ->  鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->             鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->
+  reCamera SSCMA :8090 -> FastAPI video/perception -> /video_feed, /ws, /api/state
+  Dashboard UI -> FastAPI UI Events -> EventBus -> main_phase3.py control runtime
+  main_phase3.py -> Orchestrator/FSM/SafetyLayer -> RecameraClient -> Node-RED :1880
+
 Usage:
     python recamera_fastapi.py                                      # safe dry-run
     export RECAMERA_DEVICE_IP=<RECAMERA_IP>
     python recamera_fastapi.py --device-ip "$RECAMERA_DEVICE_IP"    # video/perception source
 
 Other entry points (secondary):
-    main_phase3.py       ->Phase 3 control pipeline (AI tracking + gimbal)
-    recamera_demo.py     ->Alternative dashboard with DOA support
-    proxy.py             ->Dev reverse proxy :5173 ->:8080
+    main_phase3.py       -> Phase 3 control pipeline (AI tracking + gimbal)
+    recamera_demo.py     -> Alternative dashboard entrypoint
+    proxy.py             -> Dev reverse proxy :5173 -> :8080
 """
 from __future__ import annotations
 
@@ -64,8 +65,7 @@ logger = get_logger(__name__)
 
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  Configuration
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
+# Configuration
 DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
 HTML_FILE = DASHBOARD_DIR / "recamera_v2_live.html"
 
@@ -77,8 +77,7 @@ class Config:
     ssl_enabled: bool = False
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  SSCMA Video Client (adapted from health-app camera_service.py)
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
+# SSCMA Video Client
 class SSCMAVideoClient:
     """
     Connects to reCamera SSCMA WebSocket (ws://<device>:8090/).
@@ -240,8 +239,7 @@ class SSCMAVideoClient:
 
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  WebSocket Connection Manager
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
+# WebSocket Connection Manager
 class ConnectionManager:
     def __init__(self):
         self._connections: set[WebSocket] = set()
@@ -274,8 +272,7 @@ class ConnectionManager:
             pass
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  Global instances (set during lifespan)
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
+# Global instances (set during lifespan)
 video_client: Optional[SSCMAVideoClient] = None
 _video_client_lock = threading.Lock()
 _gimbal_tlm = {
@@ -558,13 +555,14 @@ def _runtime_with_telemetry_defaults(runtime: dict | None = None) -> dict:
     return data
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  Build state snapshot dict
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
+# State snapshot helpers
 def detect_target(frame_jpeg: bytes, want_face: bool = False) -> dict:
     """
-    涓夌骇鐩爣妫€-> ->->鑲╄唨 ->韬綋 bbox->    杩斿洖褰掍竴鍖栧潗->(0-1)->
-    want_face=True: 鍙浜鸿劯 (Stage 2 鍨傜洿瀵瑰噯->
-    want_face=False: ->> 鑲╄唨 > 韬綋 (Stage 1 姘村钩瀵瑰噯->
+    Three-stage target detection: face, shoulder midpoint, then body bbox.
+    Returns normalized coordinates in the 0-1 frame space.
+
+    want_face=True: accept only face targets for pitch alignment.
+    want_face=False: prefer shoulder/body targets for horizontal alignment.
     """
     import cv2, numpy as np
     arr = np.frombuffer(frame_jpeg, dtype=np.uint8)
@@ -574,7 +572,7 @@ def detect_target(frame_jpeg: bytes, want_face: bool = False) -> dict:
 
     h, w = img.shape[:2]
 
-    # 鈹€鈹€ Level 1: YuNet 浜鸿劯 (楂樼疆淇″害) 鈹€鈹€
+    # Level 1: high-confidence YuNet face detection.
     try:
         yunet = cv2.FaceDetectorYN_create(
             "models/face_detection_yunet.onnx", "", (w, h), 0.7, 0.4, 5000)
@@ -592,11 +590,11 @@ def detect_target(frame_jpeg: bytes, want_face: bool = False) -> dict:
                     "cx": (fx + fw_v/2) / w, "cy": (fy + fh_v/2) / h,
                     "quality": conf, "detail": f"face conf={conf:.2f}"}
 
-    # Stage 2 鍙->->娌¤劯灏辫繑鍥炵┖
+    # Stage 2 only accepts faces; return empty if no face was found.
     if want_face:
         return {"found": False, "type": "none", "detail": "no face for pitch align"}
 
-    # 鈹€鈹€ Level 2: 鑲╄唨鍏抽敭->鈹€鈹€
+    # Level 2: shoulder midpoint from pose keypoints.
     for p in _latest_pose_persons:
         shoulders = [kp for kp in p.keypoints
                      if kp.name in ("left_shoulder", "right_shoulder") and kp.conf > 0.6]
@@ -607,7 +605,7 @@ def detect_target(frame_jpeg: bytes, want_face: bool = False) -> dict:
                     "cx": cx / w, "cy": cy / h, "quality": 0.8,
                     "detail": "shoulder midpoint"}
 
-    # 鈹€鈹€ Level 3: YOLO bbox ->SSCMA format [cx, cy, w, h, conf, cls]
+    # Level 3: SSCMA/YOLO bbox format [cx, cy, w, h, conf, cls].
     boxes = video_client.boxes if video_client else []
     for box in boxes:
         if len(box) < 6: continue
@@ -616,7 +614,7 @@ def detect_target(frame_jpeg: bytes, want_face: bool = False) -> dict:
         conf = conf_raw / 100.0 if conf_raw > 1 else float(conf_raw)
         area_ratio = (bw * bh) / (w * h)
         if conf >= 0.6 and area_ratio >= 0.03:
-            cy = cy_b - bh * 0.3  # center寰€->0% ->闈犺繎鑳搁儴
+            cy = cy_b - bh * 0.3  # shift body center toward upper torso
             return {"found": True, "type": "body",
                     "cx": cx_b / w, "cy": cy / h,
                     "quality": conf, "detail": f"body conf={conf:.2f}"}
@@ -1677,7 +1675,7 @@ def _refine_faces(img, persons: list) -> list:
 
     h, w = img.shape[:2]
 
-    # 鈹€鈹€ YuNet face detection (楂橀槇-> 鍑忓皯鍋囬槼-> 鈹€鈹€
+    # YuNet face detection with a high threshold to reduce false positives.
     faces = []
     try:
         yunet = _get_yunet(w, h)
@@ -1688,7 +1686,7 @@ def _refine_faces(img, persons: list) -> list:
 
     result = []
 
-    # 鈹€鈹€ YuNet faces ->鐪熷疄浜斿畼鍏抽敭->鈹€鈹€
+    # Convert YuNet faces into real five-point facial keypoints.
     for face in faces:
         fx, fy, fw, fh = float(face[0]), float(face[1]), float(face[2]), float(face[3])
         conf = float(face[14]) if len(face) > 14 else 0.8
@@ -1709,7 +1707,7 @@ def _refine_faces(img, persons: list) -> list:
         pp._source = "yunet_refine"
         result.append(pp)
 
-    # 鈹€鈹€ YuNet missed but pose already has face points: keep them for lock/attention 鈹€鈹€
+    # If YuNet misses but pose already has face points, keep them for lock/attention.
     if not result:
         for p in persons:
             face_names = {kp.name for kp in p.keypoints if kp.conf >= 0.3}
@@ -1718,17 +1716,17 @@ def _refine_faces(img, persons: list) -> list:
                 p._source = "pose_face"
                 result.append(p)
 
-    # 鈹€鈹€ 鏃犺劯-> 鍙敤璁惧 person 妗嗙敾鑲╄唨, 涓嶇敾鍋囪劯 鈹€鈹€
+    # If no face exists, use device person boxes for shoulders only; do not fake faces.
     if not result:
         device_boxes = video_client.boxes if video_client else []
         for box in device_boxes[:5]:
             if len(box) < 6: continue
             cls = int(box[5]) if len(box) > 5 else -1
-            if cls != 0: continue  # 鍙 person
+            if cls != 0: continue  # person only
             conf = box[4]/100.0 if box[4] > 1 else float(box[4])
             if conf < 0.55: continue
             cx_b, cy_b, bw, bh = [float(v) for v in box[:4]]
-            if bh < 50 or bw*bh/(w*h) < 0.02: continue  # 澶皬璺宠繃
+            if bh < 50 or bw*bh/(w*h) < 0.02: continue  # skip tiny boxes
             x1, y1 = cx_b-bw/2, cy_b-bh/2
             x2, y2 = cx_b+bw/2, cy_b+bh/2
             kps = [
@@ -1992,8 +1990,7 @@ def build_state_snapshot() -> dict:
     return _json_clean(snapshot)
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  FastAPI App
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
+# FastAPI App
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 
@@ -2177,7 +2174,7 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=str(DASHBOARD_DIR)), name="static")
 
 
-# 鈹€鈹€ State push loop 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# State push loop
 
 def _external_control_telemetry() -> dict:
     """FastAPI-owned placeholder; main_phase3 owns hardware telemetry."""
@@ -2665,7 +2662,7 @@ async def state_push_loop():
         await asyncio.sleep(0.25)  # ~4 Hz state push; heavy models are independently throttled
 
 
-# 鈹€鈹€ WebSocket Endpoint 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# WebSocket endpoint
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
@@ -2693,7 +2690,7 @@ async def ws_endpoint(ws: WebSocket):
         await ws_mgr.disconnect(ws)
 
 
-# 鈹€鈹€ MJPEG Video Feed 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# MJPEG video feed
 
 @app.get("/video_feed")
 async def video_feed():
@@ -2733,7 +2730,7 @@ async def video_feed():
     )
 
 
-# 鈹€鈹€ REST API Endpoints 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# REST API endpoints
 
 @app.get("/api/state")
 async def api_state():
@@ -2840,7 +2837,7 @@ async def api_gimbal_state():
 # remain and map to control runtime feature_start/feature_stop events.
 
 
-# 鈹€鈹€ Conversation Recording API 鈹€鈹€
+# Conversation recording API
 
 @app.get("/api/conversation/state")
 async def api_conversation_state():
@@ -3447,7 +3444,7 @@ async def debug_video():
     return dict(vc=vc, jpeg_ok=jpeg_ok, snap_ok=snap_ok, fps=video_client.fps if video_client else 0)
 
 
-# 鈹€鈹€ Emotion debug (using EmotiEffLib now, see /api/state) 鈹€鈹€
+# Emotion debug (using EmotiEffLib now, see /api/state)
 
 
 @app.post("/api/reflect")
@@ -4068,7 +4065,7 @@ async def health():
     }
 
 
-# 鈹€鈹€ Two pages only 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# Two pages only
 # PAGE 1 = Control Dashboard (real telemetry/observability) -> /control , /v2
 # PAGE 2 = User product home                                -> / , /home
 HOME_FILE = DASHBOARD_DIR / "home.html"
@@ -4123,8 +4120,7 @@ async def serve_service_worker():
     ) if t.is_file() else HTMLResponse("Not found", status_code=404)
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  CLI + Entry point
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
+# CLI + entry point
 def parse_args():
     p = argparse.ArgumentParser(
         description="reCamera Demo Dashboard (FastAPI+MJPEG)",

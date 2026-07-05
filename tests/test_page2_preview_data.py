@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGE2 = ROOT / "dashboard" / "page2_preview"
+PAGE2 = ROOT / "archive" / "legacy_20260704" / "dashboard_preview" / "page2_preview"
 
 
 def load_seed_data() -> dict:
@@ -18,7 +18,7 @@ def load_seed_data() -> dict:
 const fs = require("fs");
 const vm = require("vm");
 const ctx = { window: {} };
-vm.runInNewContext(fs.readFileSync("dashboard/page2_preview/data/xinyu_seed_data.js", "utf8"), ctx);
+vm.runInNewContext(fs.readFileSync("archive/legacy_20260704/dashboard_preview/page2_preview/data/xinyu_seed_data.js", "utf8"), ctx);
 const d = ctx.window.XINYU_PREVIEW_DATA;
 console.log(JSON.stringify({
   currentDate: d.currentDate,

@@ -118,7 +118,7 @@ Dashboard UI Event
 | 设备地址配置 | `/api/device/config` | 已部署 | 只重连视频/感知，不创建硬件控制客户端 |
 | 产品首页 | `/home` | 已部署 | 情绪、专注、日记、趋势、健康和手势陪伴 |
 | 调试控制台 | `/control`、`/v2` | 已部署 | 面向开发与硬件联调 |
-| Page 2 预览 | `dashboard/page2_preview/` | 部分部署 | 独立静态预览，尚未替换 `/home` 主页面 |
+| Legacy Page 2 预览 | `archive/legacy_20260704/dashboard_preview/` | 已归档 | 旧独立静态预览；`/home` 当前由 `dashboard/home.html` 提供 |
 | PWA 壳与缓存 | manifest + `sw.js` | 已部署 | HTTPS 或 localhost 下注册 Service Worker |
 | DeepSeek 陪伴对话 | `POST /api/chat` | 已部署（资源待补） | 需 `DEEPSEEK_API_KEY`；否则本地 fallback |
 | LLM 日记反思 | `POST /api/reflect` | 已部署（资源待补） | 未配置 LLM 时保留本地日记能力 |

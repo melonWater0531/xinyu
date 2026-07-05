@@ -9,20 +9,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD = ROOT / "dashboard"
+ARCHIVE = ROOT / "archive" / "legacy_20260704" / "dashboard_preview"
 DOCS = ROOT / "docs"
 
 
 class XinyuPreviewTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.html = (DASHBOARD / "xinyu_preview.html").read_text(encoding="utf-8")
-        cls.css = (DASHBOARD / "xinyu_preview.css").read_text(encoding="utf-8")
-        cls.js = (DASHBOARD / "xinyu_preview.js").read_text(encoding="utf-8")
+        cls.html = (ARCHIVE / "xinyu_preview.html").read_text(encoding="utf-8")
+        cls.css = (ARCHIVE / "xinyu_preview.css").read_text(encoding="utf-8")
+        cls.js = (ARCHIVE / "xinyu_preview.js").read_text(encoding="utf-8")
         cls.all_text = "\n".join((cls.html, cls.css, cls.js))
 
     def test_preview_files_and_five_pages_exist(self) -> None:
         for name in ("xinyu_preview.html", "xinyu_preview.css", "xinyu_preview.js"):
-            self.assertTrue((DASHBOARD / name).is_file())
+            self.assertTrue((ARCHIVE / name).is_file())
         self.assertEqual(
             re.findall(r'data-page="(home|companion|meeting|records|mine)"', self.html),
             ["home", "companion", "meeting", "records", "mine"],
@@ -55,8 +56,8 @@ class XinyuPreviewTests(unittest.TestCase):
         self.assertGreaterEqual(self.html.count("<use href=\"#xy-"), 20)
         self.assertNotIn("<img", self.html.lower())
         self.assertNotRegex(self.all_text, r"https?://")
-        self.assertFalse(list(DASHBOARD.glob("xinyu_preview*.png")))
-        self.assertFalse(list(DASHBOARD.glob("xinyu_preview*.webp")))
+        self.assertFalse(list(ARCHIVE.glob("xinyu_preview*.png")))
+        self.assertFalse(list(ARCHIVE.glob("xinyu_preview*.webp")))
         badges = re.findall(r'<span class="[^"]*xy-icon-badge[^"]*">(.*?)</span>', self.html, re.S)
         self.assertTrue(badges)
         self.assertTrue(all("<svg" in content and not re.search(r"[\u4e00-\u9fff]", re.sub(r"<[^>]+>", "", content)) for content in badges))
@@ -89,7 +90,7 @@ class XinyuPreviewTests(unittest.TestCase):
             "buildLLMPayload", "requestLLMReply", 'fetch("/api/chat"',
         ):
             self.assertIn(phrase, self.js)
-        seed = (DASHBOARD / "page2_preview" / "data" / "xinyu_seed_data.js").read_text(encoding="utf-8")
+        seed = (ARCHIVE / "page2_preview" / "data" / "xinyu_seed_data.js").read_text(encoding="utf-8")
         self.assertIn("meeting_summary_2026-07-04.md", seed)
         self.assertIn("2026-07", self.html + self.js)
 
@@ -103,7 +104,7 @@ class XinyuPreviewTests(unittest.TestCase):
         self.assertIn('quick["给我一些放松建议"]', self.js)
 
     def test_evening_copy_user_name_and_trend_label(self) -> None:
-        seed = (DASHBOARD / "page2_preview" / "data" / "xinyu_seed_data.js").read_text(encoding="utf-8")
+        seed = (ARCHIVE / "page2_preview" / "data" / "xinyu_seed_data.js").read_text(encoding="utf-8")
         for phrase in ("晚上好，蛋挞", "Hi，蛋挞", '<h1 id="xy-mine-title">蛋挞</h1>'):
             self.assertIn(phrase, self.html)
         self.assertIn('user_name: "蛋挞"', self.js)
@@ -129,15 +130,10 @@ class XinyuPreviewTests(unittest.TestCase):
     def test_sop_documents_actual_page2_and_xinyu_access(self) -> None:
         sop = (DOCS / "home_demo_sop.md").read_text(encoding="utf-8")
         for phrase in (
-            "/static/xinyu_preview.html",
+            "archive/legacy_20260704/dashboard_preview/xinyu_preview.html",
             "本地 memory context",
             "python3 recamera_fastapi.py",
-            "http://localhost:8001/static/xinyu_preview.html",
-            "手机录屏时如何找到电脑 IP",
-            "hostname -I",
-            "ip -4 addr",
-            "ipconfig",
-            "http://<电脑IP>:8001/static/xinyu_preview.html",
+            "http://localhost:8001/home",
             "export DEEPSEEK_API_KEY=sk-xxx",
             "export ZHIPU_API_KEY=sk-xxx",
             "POST /api/chat",
@@ -159,14 +155,14 @@ class XinyuPreviewTests(unittest.TestCase):
     def test_storage_and_seed_contract(self) -> None:
         self.assertIn('"xinyu.preview.v1"', self.js)
         self.assertIn('"xinyu.actual.diary.v1"', self.js)
-        seed = (DASHBOARD / "page2_preview" / "data" / "xinyu_seed_data.js").read_text(encoding="utf-8")
+        seed = (ARCHIVE / "page2_preview" / "data" / "xinyu_seed_data.js").read_text(encoding="utf-8")
         for phrase in ("2026-06-01", "2026-07-04", "下半年活动规划与预算申报周会", "meeting-2026-07-04-activity-budget"):
             self.assertIn(phrase, seed)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for preview syntax validation")
     def test_preview_javascript_syntax(self) -> None:
         subprocess.run(
-            ["node", "--check", str(DASHBOARD / "xinyu_preview.js")],
+            ["node", "--check", str(ARCHIVE / "xinyu_preview.js")],
             cwd=ROOT,
             check=True,
             capture_output=True,

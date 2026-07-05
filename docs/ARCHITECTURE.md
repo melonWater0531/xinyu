@@ -79,7 +79,7 @@ FastAPI = UI Event emitter + perception/recording + runtime telemetry viewer
 | apply_command 调用点 | **仅 `main_phase3.py` control runtime** |
 | FastAPI 是否调用 apply_command | **NEVER**（注释确认，代码无调用） |
 | 是否有第二 FSM | **NO**（FastAPI 只查询 main runtime snapshot） |
-| 孤立 PD 模块 | `core/control_filter.py`（有比例增益代码，但**未被任何生产代码 import**，属于孤立遗留模块） |
+| 孤立 PD 模块 | 已归档到 `archive/legacy_20260704/core_orphans/control_filter.py`；未被任何生产代码 import |
 
 控制闭环、session 租约与设备看门狗的整改细节见 [CONTROL_CLOSURE.md](CONTROL_CLOSURE.md)。
 
@@ -141,7 +141,7 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 
 | 风险 ID | 位置 | 描述 | 级别 | 结论 |
 |---|---|---|---|---|
-| R01 | `core/control_filter.py` | 含比例增益/EMA 控制数学，有 `ControlFilter` 类 | WARNING | **孤立模块**：无任何生产代码 import，不在控制链路中 |
+| R01 | `archive/legacy_20260704/core_orphans/control_filter.py` | 含比例增益/EMA 控制数学，有 `ControlFilter` 类 | ARCHIVED | **孤立模块**：无任何生产代码 import，不在控制链路中 |
 | R02 | `hardware/recamera_client.py` | 旧 Socket.IO `widget-change` shadow transport | DELETED | 已由版本化 Node-RED HTTP bridge 替代 |
 | R03 | `tools/run_orchestrator_mvp.py` | 含 `MockGimbal.apply_command()` 调用 | OK | 开发工具，不被任何生产入口 import |
 | R04 | `recamera_fastapi.py` runtime cache | FastAPI 展示控制状态 | OK | 状态来自 main runtime snapshot，无 Orchestrator 实例 |
@@ -160,7 +160,7 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | `core/orchestrator.py` | **ACTIVE** | 唯一决策引擎；持有 FSM 实例；输出 ControlCommand |
 | `core/event.py` | **ACTIVE** | 数据类：Event、BBox、ControlCommand（均为 frozen dataclass） |
 | `core/safety_layer.py` | **ACTIVE** | ControlCommand hard gate；rate/step/range/speed 仅 allow/block |
-| `core/control_filter.py` | **ORPHAN** | 遗留比例控制平滑模块；未被生产代码 import，可删除 |
+| `archive/legacy_20260704/core_orphans/control_filter.py` | **ARCHIVED ORPHAN** | 遗留比例控制平滑模块；未被生产代码 import；仅作备用 |
 
 ### 4.2 硬件（`hardware/`）
 
@@ -220,12 +220,26 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | 文件 | 路由 | 用途 |
 |---|---|---|
 | `recamera_v2_live.html` | `/control` `/v2` | PAGE 1：实时控制台（只读遥测 + FSM 可观测） |
-| `home.html` | 需将 `HOME_FILE` 指向此文件 | PAGE 2：产品 Demo（单文件 IIFE，含所有 A–E 功能） |
-| `page2_preview/index.html` | `/home` `/`（当前实际路由） | 旧版产品首页预览（不含 A–E 功能）；**待替换为 home.html** |
+| `home.html` | `/home` `/`（经 `/` 重定向） | PAGE 2：当前产品 Home；真实状态优先，WS 失败降级 polling |
 | `manifest.webmanifest` | `/manifest.webmanifest` | PWA 清单 |
 | `sw.js` | `/sw.js` | Service Worker |
 
-> **路由问题**：`recamera_fastapi.py:2233` 的 `HOME_FILE` 仍指向 `page2_preview/index.html`，导致 `/home` 不服务 `home.html`。修复：将 `HOME_FILE` 改为 `DASHBOARD_DIR / "home.html"` 并移除 `_serve_html` 中针对 `page2_preview` 的 CSS/JS 路径替换逻辑。
+历史五页录屏预览已保守归档到 `archive/legacy_20260704/dashboard_preview/`：
+`xinyu_preview.*`、`page2_preview/` 和预览截图不再作为 FastAPI 静态路由发布。
+如需恢复旧录屏页，按归档目录 README 将文件复制回原 `dashboard/` 路径。
+
+### 4.8 文件分层索引
+
+| 类别 | 文件或目录 | 说明 |
+|---|---|---|
+| 活跃前端 | `dashboard/home.html`、`dashboard/home_*.js`、`dashboard/home_selfcare.css` | `/home` 产品页与本地 PWA 交互 |
+| 活跃调试台 | `dashboard/recamera_v2_live.html`、`dashboard/tracking_overlay.js` | `/control`、`/v2` 工程控制与遥测 |
+| 活跃静态资产 | `dashboard/icons/`、`dashboard/island_cutout.png`、`dashboard/floating_island.glb`、`dashboard/vendor/three/` | PWA、产品形象和调试台 3D 依赖 |
+| Legacy 预览 | `archive/legacy_20260704/dashboard_preview/` | 旧五页录屏预览和 Page 2 数据；测试仍以 legacy contract 保护 |
+| 控制孤立模块 | `archive/legacy_20260704/core_orphans/control_filter.py` | 旧比例/EMA 控制滤波器；不在单控制平面中 |
+| 开发工具 | `proxy.py`、`recamera_demo.py`、`tools/run_orchestrator_mvp.py` | 辅助调试或演示入口，不是生产主链路 |
+| 模型资产 | `models/` | MediaPipe、ONNX、EmotiEff 等模型；不参与前端清理 |
+| 部署资产 | `deploy/node_red/`、`vendor/recamera_*` | 设备桥和厂商参考代码；不参与前端清理 |
 
 ---
 
@@ -411,7 +425,7 @@ TTS 初版只广播 `voice_utterance` / `voice_stop` 事件，`/home` 使用浏�
 
 | 模块 | 状态 | 说明 |
 |---|---|---|
-| `core/control_filter.py` | **ORPHAN** | 含 EMA + Kp 比例控制；未被任何生产文件 import；可在后续清理中删除 |
+| `archive/legacy_20260704/core_orphans/control_filter.py` | **ARCHIVED ORPHAN** | 含 EMA + Kp 比例控制；未被任何生产文件 import；作为备用保留 |
 | `tools/run_orchestrator_mvp.py` | **DEV TOOL** | 含 `MockGimbal.apply_command()`；仅用于开发测试，不在生产链路 |
 | `tools/build_function_arch_docx.py` | **DEV TOOL** | 文档生成工具；含已过时模块引用（`gimbal_mode_state.py`、`state_machine.py`），不影响运行 |
 
