@@ -59,6 +59,12 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((root / "config" / "tracking_control.json").exists())
         self.assertTrue((root / "docs" / "tracking_tuning_sop.md").exists())
 
+    def test_voice_target_enum_accepts_recamera_aliases(self) -> None:
+        self.assertEqual(api._normalize_voice_target("recamera_speaker"), "recamera_speaker")
+        self.assertEqual(api._normalize_voice_target("recamera"), "recamera_speaker")
+        self.assertEqual(api._normalize_voice_target("device"), "recamera_speaker")
+        self.assertEqual(api._normalize_voice_target("browser"), "browser")
+
     def test_snapshot_exposes_home_compatibility_fields_and_valence(self) -> None:
         old_runtime = dict(api._runtime_cache)
         old_emotion = api._emotieff_result
@@ -542,6 +548,103 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             api._heartbeat_state.clear()
             api._heartbeat_state.update(old_state)
 
+    async def test_degraded_hardware_handlers_return_within_one_second(self) -> None:
+        old_eventbus = api._eventbus
+        old_start_feature = api._start_feature
+        old_ensure_asr_worker = api._ensure_asr_worker
+        old_runtime = dict(api._runtime_cache)
+        old_ui_session = api._ui_session_id
+        old_started = api._meeting_started_at
+        old_ended = api._meeting_ended_at
+        old_report = dict(api._meeting_report)
+        old_requested = api._conversation_recording_requested
+        old_task = api._meeting_recording_task
+        old_heartbeat_future = api._heartbeat_future
+        old_heartbeat_in_flight = api._heartbeat_eventbus_in_flight
+
+        degraded_runtime = {
+            "connected": True,
+            "active_feature": "multi_sound_yaw",
+            "session_id": "meeting-timeout",
+            "lease_remaining_ms": 5000,
+            "hardware_ready": False,
+            "gimbal_bridge_status": "timeout",
+            "gimbal_bridge_circuit_open": True,
+            "gimbal_bridge_last_error": "bridge request timed out",
+        }
+
+        class DegradedEventBus:
+            host = "127.0.0.1"
+            port = 8765
+
+            def emit(self, _event):
+                return {"ok": True, "accepted": True, "authority": "main_phase3", "runtime": degraded_runtime}
+
+        async def degraded_start(_feature):
+            return {
+                "ok": True, "accepted": True, "session_id": "meeting-timeout",
+                "hardware_ready": False, **degraded_runtime,
+            }
+
+        try:
+            api._eventbus = DegradedEventBus()
+            api._start_feature = degraded_start
+            api._ensure_asr_worker = lambda: None
+            api._runtime_cache = api._runtime_with_telemetry_defaults(degraded_runtime)
+            api._ui_session_id = ""
+            api._heartbeat_future = None
+            api._heartbeat_eventbus_in_flight = False
+
+            handlers = [
+                ("state", lambda: api.api_state()),
+                ("runtime", lambda: api.api_control_runtime()),
+                ("heartbeat", lambda: api.api_control_heartbeat({"session_id": "meeting-timeout"})),
+                ("multi_start", lambda: api.api_multi_track_start({"save_audio": False})),
+                ("control_page", lambda: api.serve_control()),
+                ("video_feed", lambda: api.video_feed()),
+                ("snapshot", lambda: api.snapshot()),
+            ]
+            results = {}
+            for name, handler in handlers:
+                started = time.monotonic()
+                results[name] = await handler()
+                self.assertLess(time.monotonic() - started, 1.0, name)
+
+            self.assertTrue(results["heartbeat"]["accepted"])
+            self.assertGreater(results["heartbeat"]["last_heartbeat_at"], 0)
+            self.assertGreater(results["heartbeat"]["runtime"]["lease_remaining_ms"], 0)
+            self.assertEqual(results["runtime"]["runtime"]["gimbal_bridge_status"], "timeout")
+            self.assertTrue(results["runtime"]["runtime"]["gimbal_bridge_circuit_open"])
+            self.assertEqual(results["multi_start"]["start_status"], "accepted_with_degraded_hardware")
+            self.assertEqual(results["multi_start"]["recording_state"], "disabled")
+        finally:
+            api._eventbus = old_eventbus
+            api._start_feature = old_start_feature
+            api._ensure_asr_worker = old_ensure_asr_worker
+            api._runtime_cache = old_runtime
+            api._ui_session_id = old_ui_session
+            api._meeting_started_at = old_started
+            api._meeting_ended_at = old_ended
+            api._meeting_report = old_report
+            api._conversation_recording_requested = old_requested
+            api._meeting_recording_task = old_task
+            api._heartbeat_future = old_heartbeat_future
+            api._heartbeat_eventbus_in_flight = old_heartbeat_in_flight
+
+    async def test_meeting_duration_advances_without_audio_segments(self) -> None:
+        old_recorder = api._conversation_recorder
+        old_started = api._meeting_started_at
+        old_ended = api._meeting_ended_at
+        try:
+            api._conversation_recorder = None
+            api._meeting_started_at = time.monotonic() - 2.0
+            api._meeting_ended_at = 0.0
+            self.assertGreaterEqual(api._conversation_state()["stats"]["duration"], 1.9)
+        finally:
+            api._conversation_recorder = old_recorder
+            api._meeting_started_at = old_started
+            api._meeting_ended_at = old_ended
+
     async def test_system_health_reports_zhipu_unconfigured(self) -> None:
         old_key = os.environ.pop("ZHIPU_API_KEY", None)
         try:
@@ -553,6 +656,86 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
         finally:
             if old_key is not None:
                 os.environ["ZHIPU_API_KEY"] = old_key
+
+    async def test_voice_tts_degrades_without_zhipu_key(self) -> None:
+        old_key = os.environ.pop("ZHIPU_API_KEY", None)
+        try:
+            result = await api.api_voice_tts({"text": "测试一句话", "play": False})
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error"], "unconfigured")
+            self.assertIn("playback", result["state"])
+        finally:
+            if old_key is not None:
+                os.environ["ZHIPU_API_KEY"] = old_key
+
+    async def test_voice_play_missing_audio_reports_error(self) -> None:
+        result = await api.api_voice_play({"audio_id": "missing_audio_for_test", "target": "browser"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "audio_missing")
+
+    async def test_voice_test_tone_generates_audio_without_zhipu_key(self) -> None:
+        old_key = os.environ.pop("ZHIPU_API_KEY", None)
+        try:
+            result = await api.api_voice_test_tone({"play": False})
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["provider"], "local_test_tone")
+            path = Path(result["path"])
+            self.assertTrue(path.is_file())
+            self.assertEqual(path.read_bytes()[:4], b"RIFF")
+            self.assertTrue(result["audio_url"].startswith("/api/voice/audio/"))
+        finally:
+            if old_key is not None:
+                os.environ["ZHIPU_API_KEY"] = old_key
+
+    async def test_voice_playback_status_reports_unreachable_bridge(self) -> None:
+        class FakeAudioClient:
+            def state(self):
+                return {"configured": True, "last_error": "timeout", "last_result": {}}
+
+            def status(self):
+                return {"ok": False, "state": "unreachable", "error": "timeout"}
+
+        old_client = api._voice_audio_client
+        try:
+            api._voice_audio_client = FakeAudioClient()
+            result = await api.api_voice_playback_status()
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["state"], "unreachable")
+            self.assertEqual(result["playback"]["last_error"], "timeout")
+        finally:
+            api._voice_audio_client = old_client
+
+    async def test_voice_control_routes_registered(self) -> None:
+        route_paths = {getattr(route, "path", "") for route in api.app.routes}
+        for path in (
+            "/api/voice/playback/status",
+            "/api/voice/test_tone",
+            "/api/voice/chat",
+            "/api/voice/tts",
+            "/api/voice/play",
+        ):
+            self.assertIn(path, route_paths)
+
+    async def test_doa_direction_endpoint_persists_and_returns_handedness(self) -> None:
+        calib = Path(api.__file__).resolve().parent / "runtime" / "doa_calibration.json"
+        old_text = calib.read_text(encoding="utf-8") if calib.is_file() else None
+        old_ui_sid = api._ui_session_id
+        try:
+            api._ui_session_id = ""
+            result = await api.api_control_doa_direction({"doa_direction": -1})
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["doa_direction"], -1)
+            saved = calib.read_text(encoding="utf-8")
+            self.assertIn('"doa_direction": -1', saved)
+        finally:
+            api._ui_session_id = old_ui_sid
+            if old_text is None:
+                try:
+                    calib.unlink()
+                except FileNotFoundError:
+                    pass
+            else:
+                calib.write_text(old_text, encoding="utf-8")
 
 
 class AttentionScoringTests(unittest.TestCase):

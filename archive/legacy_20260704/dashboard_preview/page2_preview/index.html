@@ -73,12 +73,19 @@
                 </button>
               </div>
               <blockquote id="daily-quote">“允许今天只是今天，也是一种温柔。”</blockquote>
+              <div class="home-trend-card" aria-labelledby="home-trend-title">
+                <div>
+                  <h3 id="home-trend-title">情绪趋势 · 今天</h3>
+                  <p>小屿帮你整理了今天的状态变化</p>
+                </div>
+                <div class="mood-trend-chart" id="home-trend-chart" role="img" aria-label="今天的情绪状态变化"></div>
+              </div>
             </article>
             <article class="companion-strip paper-panel">
               <div class="section-heading compact"><div><p class="eyebrow">QUICK START</p><h2>常用入口</h2></div></div>
               <div class="feature-list">
                 <button type="button" class="feature-row" data-go="companion"><span class="feature-icon coral">☻</span><span><strong>单人陪伴</strong><small>情绪与专注自动呈现</small></span><i>›</i></button>
-                <button type="button" class="feature-row" data-go="meeting"><span class="feature-icon plum">◌</span><span><strong>会议记录</strong><small>录音、整理和会议日记</small></span><i>›</i></button>
+                <button type="button" class="feature-row" data-go="meeting"><span class="feature-icon plum">◌</span><span><strong>会议记录</strong><small>纪要、重点和会议日记</small></span><i>›</i></button>
                 <button type="button" class="feature-row" data-go="records"><span class="feature-icon amber">✎</span><span><strong>日记与周报</strong><small>把一天慢慢放下来</small></span><i>›</i></button>
                 <button type="button" class="feature-row" data-go="mine"><span class="feature-icon sage">◎</span><span><strong>提醒与设备</strong><small>通知、昵称和设备动作</small></span><i>›</i></button>
               </div>
@@ -94,7 +101,7 @@
         <div class="product-grid">
           <article class="paper-panel product-card large">
             <div class="section-heading compact"><div><p class="eyebrow">EMOTION</p><h2>此刻的情绪</h2></div><span class="soft-status" id="emotion-quality">正在观察</span></div>
-            <div class="signal-main"><img class="detail-face mood-icon" id="live-face" src="./assets/moods/calm.png" alt=""><div><strong id="live-emotion">暂未看到你</strong><p id="live-emotion-copy">当你出现在画面里，心屿会自动更新这里。</p></div></div>
+            <div class="emotion-main"><img class="detail-face mood-icon" id="live-face" src="./assets/moods/calm.png" alt=""><div><strong id="live-emotion">暂未看到你</strong><p id="live-emotion-copy">当你出现在画面里，心屿会自动更新这里。</p></div></div>
             <button class="soft-button" type="button" id="ask-advice">让小屿给一句建议</button>
           </article>
           <article class="paper-panel product-card">
@@ -120,6 +127,7 @@
           <article class="paper-panel product-card wide">
             <p class="eyebrow">XIAOYU</p><h2>和小屿聊聊</h2>
             <div class="chat-thread" id="chat-thread"><div class="chat-bubble">你可以把此刻想说的话放在这里，小屿会结合今天的状态回应。</div></div>
+            <div class="quick-chat" id="quick-chat" aria-label="快捷输入"></div>
             <div class="chat-compose"><input id="chat-input" maxlength="180" aria-label="想和小屿说的话" placeholder="说说现在的感受……"><button type="button" id="chat-send">发送</button></div>
           </article>
         </div>
@@ -131,9 +139,9 @@
         </div>
         <div class="product-grid meeting-grid">
           <article class="paper-panel product-card large">
-            <div class="section-heading compact"><div><p class="eyebrow">RECORDING</p><h2>会议记录</h2></div><span class="soft-status" id="meeting-status">未开始</span></div>
-            <p id="meeting-copy">点击开始后，心屿会记录可整理的发言片段。</p>
-            <div class="inline-actions"><button class="primary-cta" type="button" id="meeting-toggle">开始会议记录</button><button class="soft-button" type="button" id="meeting-summary">整理交流</button></div>
+            <div class="section-heading compact"><div><p class="eyebrow">MEETING BRIEF</p><h2 id="meeting-current-title">会议纪要</h2></div><span class="soft-status" id="meeting-status">已整理</span></div>
+            <p id="meeting-copy">小屿已为你整理会议主题、核心内容和待办事项。</p>
+            <div class="inline-actions"><button class="primary-cta" type="button" id="meeting-toggle">结束记录</button><button class="soft-button" type="button" id="meeting-summary">查看纪要</button></div>
           </article>
           <article class="paper-panel product-card">
             <p class="eyebrow">SPEAKING</p><h2>发言方向</h2>
@@ -146,9 +154,9 @@
             <p>人数为画面内粗略估计，短暂遮挡会被平滑处理。</p>
           </article>
           <article class="paper-panel product-card">
-            <p class="eyebrow">QUALITY</p><h2>录音质量</h2>
-            <strong id="audio-quality">基础录音模式</strong>
-            <p>如果增强可用，页面会提示录音质量增强已开启。</p>
+            <p class="eyebrow">QUALITY</p><h2>声音清晰度</h2>
+            <strong id="audio-quality">清晰度稳定</strong>
+            <p>心屿会用更适合阅读的方式整理会议重点。</p>
           </article>
           <article class="paper-panel product-card wide">
             <p class="eyebrow">SUMMARY</p><h2>会议整理</h2>
@@ -173,12 +181,17 @@
             <div class="entry-content" id="entry-content" hidden>
               <div class="entry-topline"><span id="entry-date"></span><span id="entry-weather"></span></div>
               <div class="entry-mood-line"><img class="detail-face mood-icon" id="entry-face" src="./assets/moods/calm.png" alt=""><div><small>那天的心情</small><h2 id="entry-mood"></h2></div></div>
+              <div class="selected-day-summary" id="selected-day-summary"></div>
+              <div class="record-trend-chart" id="record-trend-chart" role="img" aria-label="选中日期的情绪状态变化"></div>
               <div class="tag-list" id="entry-tags"></div><p class="entry-note" id="entry-note"></p>
-              <div class="entry-actions"><button type="button" class="soft-button" id="entry-edit">编辑记录</button><button type="button" class="danger-link" id="entry-delete">删除</button></div>
+              <div class="assistant-reply-card" id="entry-assistant-reply"></div>
+              <div class="entry-actions"><button type="button" class="soft-button" id="entry-edit">今日日记</button><button type="button" class="soft-button" id="entry-weekly">本周周报</button></div>
             </div>
           </article>
-          <article class="weekly-letter paper-panel record-panel"><span class="letter-stamp" aria-hidden="true">屿</span><p class="eyebrow">WEEKLY LETTER</p><h2>写给这一周的你</h2><p id="weekly-letter-text"></p><button type="button" class="soft-button" id="refresh-letter">让小屿写周报</button></article>
+          <article class="weekly-letter paper-panel record-panel"><span class="letter-stamp" aria-hidden="true">屿</span><p class="eyebrow">WEEKLY LETTER</p><h2>本周周报</h2><p id="weekly-letter-text"></p><button type="button" class="soft-button" id="refresh-letter">查看本周回顾</button></article>
           <article class="paper-panel record-panel"><p class="eyebrow">MEETING NOTES</p><h2>会议记录</h2><div class="meeting-notes-list" id="meeting-history">暂无会议整理。</div></article>
+          <article class="paper-panel record-panel"><p class="eyebrow">DIARY HISTORY</p><h2>近日日记</h2><div class="history-list" id="diary-history"></div></article>
+          <article class="paper-panel record-panel"><p class="eyebrow">WEEKLY HISTORY</p><h2>历史周报</h2><div class="history-list" id="weekly-history"></div></article>
         </div>
       </section>
 
@@ -188,7 +201,7 @@
         </div>
         <div class="profile-layout">
           <article class="profile-card paper-panel"><div class="profile-avatar" aria-hidden="true">屿</div><div><small>岛屿主人</small><h2 id="profile-display-name">心屿用户</h2><p>你的记录只留在这台设备里。</p></div></article>
-          <article class="profile-card paper-panel service-card"><div class="service-dot" id="service-dot" aria-hidden="true"></div><div><small>心屿连接</small><h2 id="service-title">正在确认连接</h2><p id="service-copy">本地记录始终可用。</p></div></article>
+          <article class="profile-card paper-panel service-card"><div class="service-dot" id="service-dot" aria-hidden="true"></div><div><small>设备状态</small><h2 id="service-title">心屿设备</h2><p id="service-copy">在线 · 电量 85%</p></div></article>
           <form class="settings-card paper-panel" id="settings-form">
             <div class="field"><label for="profile-name">昵称</label><input id="profile-name" name="profileName" maxlength="20" autocomplete="nickname"></div>
             <fieldset><legend>提醒节奏</legend><div class="segmented"><label><input type="radio" name="reminderTone" value="quiet"><span>安静</span></label><label><input type="radio" name="reminderTone" value="gentle"><span>温和</span></label><label><input type="radio" name="reminderTone" value="active"><span>积极</span></label></div></fieldset>
@@ -234,7 +247,36 @@
     </form>
   </dialog>
 
+  <dialog class="experience-dialog" id="meeting-dialog" aria-labelledby="meeting-dialog-title">
+    <section class="experience-sheet">
+      <button class="sheet-handle" type="button" data-close-meeting aria-label="关闭"><span></span></button>
+      <div class="sheet-body" id="meeting-dialog-body"></div>
+    </section>
+  </dialog>
+
+  <dialog class="experience-dialog" id="diary-dialog" aria-labelledby="diary-dialog-title">
+    <form method="dialog" class="experience-sheet" id="diary-form">
+      <button class="sheet-handle" type="button" data-close-diary aria-label="关闭"><span></span></button>
+      <div class="experience-hero">
+        <p class="eyebrow">TODAY DIARY</p>
+        <h2 id="diary-dialog-title">今日日记</h2>
+        <p id="diary-dialog-date"></p>
+      </div>
+      <label class="note-field" for="diary-editor">写下今天想留下的一句话<textarea id="diary-editor" rows="6" maxlength="600"></textarea></label>
+      <div class="assistant-reply-card" id="diary-dialog-reply"></div>
+      <div class="experience-actions"><button type="button" class="soft-button" data-close-diary>稍后再写</button><button type="submit" class="primary-cta">保存日记</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="experience-dialog" id="weekly-dialog" aria-labelledby="weekly-dialog-title">
+    <section class="experience-sheet">
+      <button class="sheet-handle" type="button" data-close-weekly aria-label="关闭"><span></span></button>
+      <div class="sheet-body" id="weekly-dialog-body"></div>
+    </section>
+  </dialog>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="./data/xinyu_seed_data.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

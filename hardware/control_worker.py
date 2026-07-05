@@ -34,6 +34,7 @@ class HardwareControlWorker:
             "queue_state": "idle", "command_state": "idle", "command_id": 0,
             "last_error": "", "last_result_at": None, "command_started_at": None,
             "consecutive_failures": 0,
+            "last_hardware_command_error": "", "hardware_command_queue_size": 0,
         }
 
     def start(self) -> None:
@@ -83,8 +84,13 @@ class HardwareControlWorker:
             self._cv.notify()
 
     def snapshot(self) -> dict:
+        bridge_state = self._bridge_state()
         with self._cv:
-            return dict(self._state)
+            return {
+                **self._state,
+                **bridge_state,
+                "hardware_command_queue_size": len(self._priority) + (1 if self._motion is not None else 0),
+            }
 
     def _enqueue(self, kind: str, session_id: str, front: bool = False) -> None:
         with self._cv:
@@ -116,7 +122,10 @@ class HardwareControlWorker:
                 status = self.client.get_status()
                 next_telemetry = time.monotonic() + self.telemetry_interval
                 if self.on_status:
-                    self.on_status(status or {"connected": False, "source": "bridge_unavailable", "last_error": "status unavailable"})
+                    self.on_status({
+                        **(status or {"connected": False, "source": "bridge_unavailable", "last_error": "status unavailable"}),
+                        **self._bridge_state(),
+                    })
                 with self._cv:
                     if status and status.get("verified"):
                         self._state["command_state"] = "verified"
@@ -149,6 +158,7 @@ class HardwareControlWorker:
                 self._record(False, str(exc)[:160])
 
     def _record(self, ok: bool, error: str, telemetry: bool = False, accepted_only: bool = False) -> None:
+        bridge_state = self._bridge_state()
         with self._cv:
             self._state["queue_state"] = "idle"
             if not telemetry:
@@ -157,4 +167,12 @@ class HardwareControlWorker:
                 self._state["last_error"] = "" if ok else error
             self._state["last_result_at"] = round(time.time(), 3)
             self._state["consecutive_failures"] = 0 if ok else self._state["consecutive_failures"] + 1
+            if not telemetry:
+                self._state["last_hardware_command_error"] = "" if ok else error
+            self._state.update(bridge_state)
+            self._state["hardware_command_queue_size"] = len(self._priority) + (1 if self._motion is not None else 0)
             self._cv.notify_all()
+
+    def _bridge_state(self) -> dict:
+        snapshot = getattr(self.client, "bridge_state", None)
+        return snapshot() if callable(snapshot) else {}

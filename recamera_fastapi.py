@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-reCamera Multimodal ->Main Dashboard (FastAPI)
-鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+reCamera Multimodal - Main Dashboard (FastAPI)
 
 Architecture:
-  Device (<RECAMERA_IP>)                This Server (0.0.0.0:8001)
-  鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->             鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->  ->SSCMA Node :8090    鈹傗攢鈹€WebSocket鈹€鈹€鈫掆攤 /video_feed  (MJPEG)     ->  ->Node-RED  :1880     鈹傗啇鈹€Socket.IO鈹€鈹€鈹€->/api/gimbal/* (control)  ->  ->                    ->             ->/ws          (state push) ->  ->                    ->             ->/home        (蹇冨笨)       ->  ->                    ->             ->/v2          (鎺у埗->     ->  鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->             鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€->
+  reCamera SSCMA :8090 -> FastAPI video/perception -> /video_feed, /ws, /api/state
+  Dashboard UI -> FastAPI UI Events -> EventBus -> main_phase3.py control runtime
+  main_phase3.py -> Orchestrator/FSM/SafetyLayer -> RecameraClient -> Node-RED :1880
+
 Usage:
     python recamera_fastapi.py                                      # safe dry-run
     export RECAMERA_DEVICE_IP=<RECAMERA_IP>
     python recamera_fastapi.py --device-ip "$RECAMERA_DEVICE_IP"    # video/perception source
 
 Other entry points (secondary):
-    main_phase3.py       ->Phase 3 control pipeline (AI tracking + gimbal)
-    recamera_demo.py     ->Alternative dashboard with DOA support
-    proxy.py             ->Dev reverse proxy :5173 ->:8080
+    main_phase3.py       -> Phase 3 control pipeline (AI tracking + gimbal)
+    recamera_demo.py     -> Alternative dashboard entrypoint
+    proxy.py             -> Dev reverse proxy :5173 -> :8080
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ import sys
 import threading
 import time
 import uuid
+import wave
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -64,8 +66,7 @@ logger = get_logger(__name__)
 
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  Configuration
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
+# Configuration
 DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
 HTML_FILE = DASHBOARD_DIR / "recamera_v2_live.html"
 
@@ -77,8 +78,7 @@ class Config:
     ssl_enabled: bool = False
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  SSCMA Video Client (adapted from health-app camera_service.py)
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
+# SSCMA Video Client
 class SSCMAVideoClient:
     """
     Connects to reCamera SSCMA WebSocket (ws://<device>:8090/).
@@ -103,6 +103,7 @@ class SSCMAVideoClient:
         self._frame_event: Optional[asyncio.Event] = None  # signal MJPEG generator
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None  # for thread-safe set()
         self._fail_count: int = 0  # consecutive connection failures
+        self._last_frame_at: float = 0.0
 
     @property
     def resolution(self) -> list:
@@ -132,6 +133,12 @@ class SSCMAVideoClient:
     def fps(self) -> float:
         with self._lock:
             return self._fps
+
+    @property
+    def last_frame_age_ms(self) -> Optional[int]:
+        with self._lock:
+            last_frame_at = self._last_frame_at
+        return max(0, int((time.monotonic() - last_frame_at) * 1000)) if last_frame_at else None
 
     def start(self):
         if self._running:
@@ -212,6 +219,7 @@ class SSCMAVideoClient:
                     self._jpeg_bytes = jpeg
                     self._jpeg_b64 = img_b64
                     self._boxes = boxes if boxes else []
+                    self._last_frame_at = time.monotonic()
                     # Extract actual resolution from JPEG on first frame
                     if self._resolution == [1920, 1080]:
                         try:
@@ -232,8 +240,7 @@ class SSCMAVideoClient:
 
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  WebSocket Connection Manager
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
+# WebSocket Connection Manager
 class ConnectionManager:
     def __init__(self):
         self._connections: set[WebSocket] = set()
@@ -266,8 +273,7 @@ class ConnectionManager:
             pass
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  Global instances (set during lifespan)
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
+# Global instances (set during lifespan)
 video_client: Optional[SSCMAVideoClient] = None
 _video_client_lock = threading.Lock()
 _gimbal_tlm = {
@@ -320,13 +326,17 @@ _emotieff_result = None  # EmotiEffLib parallel inference result
 _doa_reader = None
 _conversation_recorder = None
 _conversation_recording_requested = False
+_meeting_save_audio = False
 _last_conversation_start_attempt = 0.0
+_recording_start_requested_at = 0.0
 _meeting_report = {
     "status": "idle", "summary": "", "minutes": "", "transcript": "",
     "turns": 0, "duration_min": 0.0, "error": "",
 }
 _meeting_summary_task = None
 _meeting_recording_task = None
+_meeting_started_at = 0.0
+_meeting_ended_at = 0.0
 _asr_queue = None
 _asr_worker_task = None
 _asr_worker_tasks: list = []
@@ -346,6 +356,25 @@ try:
     from services.voice_policy import voice_policy
 except Exception:
     voice_policy = None
+try:
+    from services.zhipu_voice import zhipu_voice
+except Exception:
+    zhipu_voice = None
+try:
+    from hardware.recamera_audio_client import RecameraAudioClient
+except Exception:
+    RecameraAudioClient = None
+_voice_audio_client = None
+_voice_audio_root = Path(__file__).resolve().parent / "runtime" / "voice_audio"
+_voice_audio_cache: dict[str, dict] = {}
+_voice_playback = {
+    "target": os.environ.get("VOICE_PLAYBACK_TARGET", "recamera_speaker"),
+    "state": "idle",
+    "audio_id": "",
+    "last_error": "",
+    "last_result": {},
+    "updated_at": 0.0,
+}
 # Single/multi tracking mode — UI state only (no hardware binding)
 _tracking_mode: str = "single"
 _single_track_active: bool = False
@@ -354,15 +383,13 @@ _ui_session_id: str = ""
 CONTROL_LEASE_MS = 5000
 EVENTBUS_TIMEOUT_S = float(os.environ.get("RECAMERA_EVENTBUS_TIMEOUT", "2.0"))
 HEARTBEAT_EVENTBUS_TIMEOUT_S = float(os.environ.get("RECAMERA_HEARTBEAT_EVENTBUS_TIMEOUT", "0.75"))
-RECORDING_START_TIMEOUT_S = float(os.environ.get("RECAMERA_RECORDING_START_TIMEOUT", "4.0"))
+RECORDING_START_TIMEOUT_S = float(os.environ.get("RECAMERA_RECORDING_START_TIMEOUT", "3.0"))
 RECORDING_STOP_TIMEOUT_S = float(os.environ.get("RECAMERA_RECORDING_STOP_TIMEOUT", "3.0"))
 ASR_IDLE_WAIT_S = float(os.environ.get("RECAMERA_ASR_IDLE_WAIT", "45.0"))
 _heartbeat_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="eventbus-heartbeat")
-# Recorder start/stop can block indefinitely inside PortAudio when the audio
-# device is absent/busy. A dedicated single-worker pool caps the damage to one
-# stranded thread; a stuck start is detected via _recorder_start_future below.
-_recorder_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recorder-ctl")
 _recorder_start_future = None
+_recorder_start_thread = None
+_recorder_start_token = 0
 # EventBus emits get their own small pool so a wedged recorder thread can
 # never starve the control plane (which previously shared the default pool).
 _bus_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="eventbus-emit")
@@ -371,6 +398,7 @@ _heartbeat_eventbus_in_flight = False
 _heartbeat_state = {
     "state": "idle",
     "last_ok_at": 0.0,
+    "last_heartbeat_at": 0.0,
     "last_error": "",
     "last_error_at": 0.0,
     "eventbus_in_flight": False,
@@ -534,16 +562,27 @@ def _runtime_with_telemetry_defaults(runtime: dict | None = None) -> dict:
     }
     if runtime:
         data.update(runtime)
+    for key, default in {
+        "gimbal_bridge_status": "unavailable",
+        "gimbal_bridge_last_error": "",
+        "gimbal_bridge_last_ok_at": 0.0,
+        "gimbal_bridge_fail_count": 0,
+        "gimbal_bridge_circuit_open": False,
+        "last_hardware_command_error": "",
+        "hardware_command_queue_size": 0,
+    }.items():
+        data.setdefault(key, default)
     return data
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  Build state snapshot dict
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
+# State snapshot helpers
 def detect_target(frame_jpeg: bytes, want_face: bool = False) -> dict:
     """
-    涓夌骇鐩爣妫€-> ->->鑲╄唨 ->韬綋 bbox->    杩斿洖褰掍竴鍖栧潗->(0-1)->
-    want_face=True: 鍙浜鸿劯 (Stage 2 鍨傜洿瀵瑰噯->
-    want_face=False: ->> 鑲╄唨 > 韬綋 (Stage 1 姘村钩瀵瑰噯->
+    Three-stage target detection: face, shoulder midpoint, then body bbox.
+    Returns normalized coordinates in the 0-1 frame space.
+
+    want_face=True: accept only face targets for pitch alignment.
+    want_face=False: prefer shoulder/body targets for horizontal alignment.
     """
     import cv2, numpy as np
     arr = np.frombuffer(frame_jpeg, dtype=np.uint8)
@@ -553,7 +592,7 @@ def detect_target(frame_jpeg: bytes, want_face: bool = False) -> dict:
 
     h, w = img.shape[:2]
 
-    # 鈹€鈹€ Level 1: YuNet 浜鸿劯 (楂樼疆淇″害) 鈹€鈹€
+    # Level 1: high-confidence YuNet face detection.
     try:
         yunet = cv2.FaceDetectorYN_create(
             "models/face_detection_yunet.onnx", "", (w, h), 0.7, 0.4, 5000)
@@ -571,11 +610,11 @@ def detect_target(frame_jpeg: bytes, want_face: bool = False) -> dict:
                     "cx": (fx + fw_v/2) / w, "cy": (fy + fh_v/2) / h,
                     "quality": conf, "detail": f"face conf={conf:.2f}"}
 
-    # Stage 2 鍙->->娌¤劯灏辫繑鍥炵┖
+    # Stage 2 only accepts faces; return empty if no face was found.
     if want_face:
         return {"found": False, "type": "none", "detail": "no face for pitch align"}
 
-    # 鈹€鈹€ Level 2: 鑲╄唨鍏抽敭->鈹€鈹€
+    # Level 2: shoulder midpoint from pose keypoints.
     for p in _latest_pose_persons:
         shoulders = [kp for kp in p.keypoints
                      if kp.name in ("left_shoulder", "right_shoulder") and kp.conf > 0.6]
@@ -586,7 +625,7 @@ def detect_target(frame_jpeg: bytes, want_face: bool = False) -> dict:
                     "cx": cx / w, "cy": cy / h, "quality": 0.8,
                     "detail": "shoulder midpoint"}
 
-    # 鈹€鈹€ Level 3: YOLO bbox ->SSCMA format [cx, cy, w, h, conf, cls]
+    # Level 3: SSCMA/YOLO bbox format [cx, cy, w, h, conf, cls].
     boxes = video_client.boxes if video_client else []
     for box in boxes:
         if len(box) < 6: continue
@@ -595,7 +634,7 @@ def detect_target(frame_jpeg: bytes, want_face: bool = False) -> dict:
         conf = conf_raw / 100.0 if conf_raw > 1 else float(conf_raw)
         area_ratio = (bw * bh) / (w * h)
         if conf >= 0.6 and area_ratio >= 0.03:
-            cy = cy_b - bh * 0.3  # center寰€->0% ->闈犺繎鑳搁儴
+            cy = cy_b - bh * 0.3  # shift body center toward upper torso
             return {"found": True, "type": "body",
                     "cx": cx_b / w, "cy": cy / h,
                     "quality": conf, "detail": f"body conf={conf:.2f}"}
@@ -687,7 +726,7 @@ def _apply_runtime_result(result: dict) -> None:
     _multi_track_active = feature in {"multi_sound_yaw", "meeting_sound_yaw", "meeting_recording"}
     if feature == "inactive" and previous_feature in {"multi_sound_yaw", "meeting_recording", "meeting_sound_yaw"}:
         _conversation_recording_requested = False
-        _stop_conversation_recording(finalize=True)
+        _request_conversation_stop_background(finalize=True)
     _gimbal_tlm = dict(runtime.get("gimbal") or _gimbal_tlm)
     _control_obs = {
         "observe_only": False,
@@ -698,6 +737,13 @@ def _apply_runtime_result(result: dict) -> None:
         "safety": runtime.get("safety", {}),
         "hardware_io": runtime.get("hardware_io", {}),
         "hardware_ready": bool(runtime.get("hardware_ready")),
+        "gimbal_bridge_status": runtime.get("gimbal_bridge_status", "unavailable"),
+        "gimbal_bridge_last_error": runtime.get("gimbal_bridge_last_error", ""),
+        "gimbal_bridge_last_ok_at": runtime.get("gimbal_bridge_last_ok_at", 0.0),
+        "gimbal_bridge_fail_count": runtime.get("gimbal_bridge_fail_count", 0),
+        "gimbal_bridge_circuit_open": bool(runtime.get("gimbal_bridge_circuit_open", False)),
+        "last_hardware_command_error": runtime.get("last_hardware_command_error", ""),
+        "hardware_command_queue_size": runtime.get("hardware_command_queue_size", 0),
         "resource_locks": {
             "gimbal": runtime.get("active_feature", "inactive"),
             "analytics": [name for name, active in _analysis_features.items() if active],
@@ -720,6 +766,7 @@ def _apply_runtime_result(result: dict) -> None:
         "seek_to_lock_ms": runtime.get("seek_to_lock_ms"),
         "heartbeat_state": dict(_heartbeat_state),
         "last_heartbeat_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
+        "last_heartbeat_at": _heartbeat_state.get("last_heartbeat_at", 0.0),
         "last_heartbeat_error": _heartbeat_state.get("last_error", ""),
         "eventbus_in_flight": bool(_heartbeat_eventbus_in_flight),
     }
@@ -918,7 +965,127 @@ def _wake_word_state() -> dict:
     return _wake_word_service.state()
 
 
+def _ensure_voice_audio_client():
+    global _voice_audio_client
+    if _voice_audio_client is None and RecameraAudioClient is not None:
+        _voice_audio_client = RecameraAudioClient()
+    return _voice_audio_client
+
+
+def _voice_audio_meta(audio_id: str) -> Optional[dict]:
+    meta = _voice_audio_cache.get(str(audio_id or ""))
+    if not meta:
+        return None
+    path = Path(str(meta.get("path") or ""))
+    if not path.is_file():
+        return None
+    return meta
+
+
+def _register_voice_audio(path: str, text: str = "", content_type: str = "audio/wav", provider: str = "") -> dict:
+    audio_id = Path(path).stem
+    meta = {
+        "id": audio_id,
+        "path": str(path),
+        "text": text,
+        "content_type": content_type or "audio/wav",
+        "provider": provider,
+        "created_at": time.time(),
+        "audio_url": f"/api/voice/audio/{audio_id}",
+    }
+    _voice_audio_cache[audio_id] = meta
+    return meta
+
+
+def _normalize_voice_target(target: str = "") -> str:
+    raw = str(target or os.environ.get("VOICE_PLAYBACK_TARGET", _voice_playback.get("target") or "recamera_speaker"))
+    normalized = raw.strip().lower().replace("-", "_")
+    if normalized in {"recamera", "device", "speaker", "recamera_speaker"}:
+        return "recamera_speaker"
+    if normalized in {"browser", "browser_speech", "web"}:
+        return "browser"
+    return normalized or "recamera_speaker"
+
+
+async def _play_voice_audio(audio_id: str, target: str = "", reason: str = "api") -> dict:
+    target = _normalize_voice_target(target)
+    meta = _voice_audio_meta(audio_id)
+    _voice_playback.update({"target": target, "audio_id": str(audio_id or ""), "updated_at": time.time()})
+    if not meta:
+        _voice_playback.update({"state": "error", "last_error": "audio_missing", "last_result": {}})
+        return {"ok": False, "error": "audio_missing", "state": _voice_playback}
+    if target == "browser":
+        _voice_playback.update({"state": "browser", "last_error": "", "last_result": {"target": "browser"}})
+        return {"ok": True, "target": "browser", "audio_url": meta["audio_url"], "state": _voice_playback}
+    if target == "recamera_speaker":
+        client = _ensure_voice_audio_client()
+        if client is None:
+            _voice_playback.update({"state": "fallback_browser", "last_error": "audio_client_unavailable", "last_result": {}})
+            return {"ok": False, "fallback": "browser", "error": "audio_client_unavailable", "state": _voice_playback}
+        result = await asyncio.to_thread(
+            client.play,
+            str(meta["path"]),
+            str(meta["id"]),
+            str(meta.get("content_type") or "audio/wav"),
+        )
+        ok = bool(result.get("ok", result.get("accepted", False)))
+        _voice_playback.update({
+            "state": str(result.get("state") or ("playing" if ok else "fallback_browser")),
+            "last_error": "" if ok else str(result.get("error") or result.get("reason") or "play_failed"),
+            "last_result": result,
+            "updated_at": time.time(),
+        })
+        return {"ok": ok, "target": "recamera_speaker", "audio_url": meta["audio_url"], "bridge": result, "state": _voice_playback}
+    _voice_playback.update({"state": "unsupported_target", "last_error": target, "last_result": {}})
+    return {"ok": False, "error": "unsupported_target", "target": target, "state": _voice_playback}
+
+
+async def _voice_playback_status() -> dict:
+    playback = dict(_voice_playback)
+    client = _ensure_voice_audio_client()
+    if client is None:
+        playback.update({"bridge_state": "unconfigured", "bridge_error": "audio_client_unavailable"})
+        return {"ok": False, "state": "unconfigured", "error": "audio_client_unavailable", "playback": playback}
+    status = await asyncio.to_thread(client.status)
+    ok = bool(status.get("ok", True)) and str(status.get("state", "")) not in {"unconfigured", "unreachable", "error"}
+    bridge_state = str(status.get("state") or ("ready" if ok else "unreachable"))
+    if status:
+        _voice_playback.update({
+            "state": bridge_state,
+            "last_error": str(status.get("error") or status.get("last_error") or ""),
+            "last_result": status,
+            "updated_at": time.time(),
+        })
+    playback = dict(_voice_playback)
+    playback["bridge"] = client.state()
+    return {"ok": ok, "state": bridge_state, "bridge": status, "playback": playback}
+
+
+def _write_test_tone_wav(path: Path, duration_sec: float = 0.7, frequency_hz: float = 880.0, volume: float = 0.22) -> None:
+    sample_rate = 16000
+    total = max(1, int(sample_rate * max(0.1, min(3.0, float(duration_sec)))))
+    amp = int(32767 * max(0.01, min(0.9, float(volume))))
+    frames = bytearray()
+    for i in range(total):
+        # Short raised-cosine fade avoids a click on the device speaker.
+        edge = min(i / max(1, sample_rate // 40), (total - i - 1) / max(1, sample_rate // 40), 1.0)
+        val = int(amp * max(0.0, edge) * np.sin(2 * np.pi * float(frequency_hz) * i / sample_rate))
+        frames.extend(struct.pack("<h", val))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(bytes(frames))
+
+
 def _voice_state() -> dict:
+    playback = dict(_voice_playback)
+    client = _ensure_voice_audio_client()
+    if client is not None:
+        playback["bridge"] = client.state()
+    if zhipu_voice is not None:
+        playback["zhipu"] = zhipu_voice.status()
     if voice_policy is None:
         return {
             "enabled": False,
@@ -928,11 +1095,16 @@ def _voice_state() -> dict:
             "last_utterance": "",
             "last_reason": "",
             "engine": "browser_speech",
+            "playback": playback,
             "cooldowns": {},
             "recent_events": [],
             "error": "voice_policy_unavailable",
         }
-    return voice_policy.state()
+    state = voice_policy.state()
+    state["engine"] = "zhipu_tts+recamera_speaker" if playback.get("state") in {"playing", "done"} else state.get("engine", "browser_speech")
+    state["playback"] = playback
+    state["audio_cache_size"] = len(_voice_audio_cache)
+    return state
 
 
 async def _emit_voice(
@@ -983,9 +1155,19 @@ async def _emit_voice_reason(
 async def _emit_voice_stop(reason: str = "manual") -> dict:
     if voice_policy is None:
         return {"ok": False, "reason": "voice_policy_unavailable"}
+    client = _ensure_voice_audio_client()
+    audio_result = {}
+    if client is not None:
+        audio_result = await asyncio.to_thread(client.stop, reason)
+        _voice_playback.update({
+            "state": "stopped",
+            "last_error": "" if audio_result.get("ok", True) else str(audio_result.get("error") or ""),
+            "last_result": audio_result,
+            "updated_at": time.time(),
+        })
     event = voice_policy.stop_event(reason=reason)
     await ws_mgr.broadcast(event)
-    return {"ok": True, "event": event, "state": _voice_state()}
+    return {"ok": True, "event": event, "audio": audio_result, "state": _voice_state()}
 
 
 def _pause_wake_word() -> None:
@@ -1030,13 +1212,18 @@ def _asr_state() -> dict:
             queue_size = int(_asr_queue.qsize())
         except Exception:
             queue_size = 0
+    worker_active = any(not task.done() for task in _asr_worker_tasks)
+    last_error = str(_asr_stats.get("last_error", "") or "")
     return {
+        "status": "degraded" if last_error else "ready" if worker_active else "disabled",
+        "worker_active": worker_active,
+        "queue_size": queue_size,
         "queue": queue_size,
         "pending": int(_asr_stats.get("pending", 0) or 0),
         "running": int(_asr_stats.get("running", 0) or 0),
         "done": int(_asr_stats.get("done", 0) or 0),
         "failed": int(_asr_stats.get("failed", 0) or 0),
-        "last_error": str(_asr_stats.get("last_error", "") or ""),
+        "last_error": last_error,
         "last_error_at": float(_asr_stats.get("last_error_at", 0.0) or 0.0),
     }
 
@@ -1115,7 +1302,14 @@ def _on_conversation_segment(turn: dict) -> None:
 
 async def _asr_worker_loop():
     from pathlib import Path as _Path
-    from services.cloud_asr import cloud_asr as _cloud_asr
+    try:
+        import importlib
+        loop = asyncio.get_running_loop()
+        module = await loop.run_in_executor(_slow_pool, importlib.import_module, "services.cloud_asr")
+        _cloud_asr = module.cloud_asr
+    except Exception as exc:
+        _mark_asr_error(f"ASR initialization failed: {exc}")
+        return
 
     while True:
         turn = await _asr_queue.get()
@@ -1173,24 +1367,63 @@ class RecorderBusyError(RuntimeError):
 
 
 async def _start_conversation_recording_async() -> bool:
-    global _recorder_start_future
-    loop = _current_running_loop()
-    if loop is None:
-        return _start_conversation_recording()
-    # A stranded start (PortAudio blocked in C) keeps the single recorder
-    # worker busy; report degraded immediately instead of queueing behind it.
-    if _recorder_start_future is not None and not _recorder_start_future.done():
+    global _recorder_start_future, _recorder_start_thread, _recorder_start_token
+    loop = asyncio.get_running_loop()
+    # A stranded daemon start is abandoned rather than joined or reused.
+    if _recorder_start_thread is not None and _recorder_start_thread.is_alive():
         raise RecorderBusyError("录音设备无响应（上一次启动仍未返回），请检查麦克风连接")
-    _recorder_start_future = loop.run_in_executor(_recorder_pool, _start_conversation_recording)
-    return bool(await asyncio.wait_for(
-        asyncio.shield(_recorder_start_future),
-        timeout=RECORDING_START_TIMEOUT_S,
-    ))
+    _recorder_start_token += 1
+    token = _recorder_start_token
+    _recorder_start_future = loop.create_future()
+
+    def _run_start() -> None:
+        try:
+            result, error = bool(_start_conversation_recording()), None
+        except BaseException as exc:  # PortAudio wrappers may raise non-Exception errors.
+            result, error = False, exc
+        if token != _recorder_start_token:
+            if result:
+                try:
+                    _stop_conversation_recording(finalize=False)
+                except BaseException:
+                    pass
+            return
+
+        def _finish() -> None:
+            future = _recorder_start_future
+            if future is None or future.done():
+                return
+            if error is not None:
+                future.set_exception(error)
+            else:
+                future.set_result(result)
+        try:
+            loop.call_soon_threadsafe(_finish)
+        except RuntimeError:
+            pass
+
+    _recorder_start_thread = threading.Thread(
+        target=_run_start, daemon=True, name="recorder-start-daemon",
+    )
+    _recorder_start_thread.start()
+    try:
+        return bool(await asyncio.wait_for(
+            asyncio.shield(_recorder_start_future), timeout=RECORDING_START_TIMEOUT_S,
+        ))
+    except asyncio.TimeoutError:
+        _recorder_start_token += 1
+        if _recorder_start_future is not None and not _recorder_start_future.done():
+            _recorder_start_future.cancel()
+        raise
 
 
 async def _start_meeting_recording_background() -> None:
-    global _conversation_recording_requested, _meeting_report
-    _ensure_asr_worker()
+    global _conversation_recording_requested, _meeting_report, _recording_start_requested_at
+    try:
+        _ensure_asr_worker()
+    except Exception as exc:
+        _mark_asr_error(f"ASR initialization failed: {exc}")
+    _recording_start_requested_at = time.time()
     _meeting_report = {
         **_meeting_report,
         "status": "recording_starting",
@@ -1223,7 +1456,7 @@ async def _start_meeting_recording_background() -> None:
         _meeting_report = {
             **_meeting_report,
             "status": "recording_degraded",
-            "error": f"录音设备启动超过 {RECORDING_START_TIMEOUT_S:.1f}s，已降级为仅定位",
+            "error": "recording_start_timeout",
             "progress": 0,
         }
     except RecorderBusyError as exc:
@@ -1244,41 +1477,123 @@ async def _start_meeting_recording_background() -> None:
         }
 
 
+async def recorder_watchdog_loop() -> None:
+    """Cached-state watchdog; never calls or joins the audio device."""
+    global _conversation_recording_requested, _meeting_report, _recorder_start_token
+    while True:
+        if (_meeting_report.get("status") == "recording_starting"
+                and _recording_start_requested_at
+                and time.time() - _recording_start_requested_at > 5.0):
+            _conversation_recording_requested = False
+            _recorder_start_token += 1
+            _meeting_report = {
+                **_meeting_report,
+                "status": "recording_degraded",
+                "error": "recording_start_timeout",
+                "progress": 0,
+            }
+        await asyncio.sleep(0.5)
+
+
 def _stop_conversation_recording(finalize: bool = True) -> None:
     if _conversation_recorder is not None:
         _conversation_recorder.stop(finalize=finalize)
 
 
 async def _stop_conversation_recording_async(finalize: bool = True) -> bool:
-    loop = _current_running_loop()
-    if loop is None:
-        _stop_conversation_recording(finalize=finalize)
-        return True
+    global _recorder_start_token
+    loop = asyncio.get_running_loop()
+    _recorder_start_token += 1
+    future = loop.create_future()
+
+    def _run_stop() -> None:
+        try:
+            _stop_conversation_recording(finalize=finalize)
+            result, error = True, None
+        except BaseException as exc:
+            result, error = False, exc
+
+        def _finish() -> None:
+            if future.done():
+                return
+            if error is not None:
+                future.set_exception(error)
+            else:
+                future.set_result(result)
+        try:
+            loop.call_soon_threadsafe(_finish)
+        except RuntimeError:
+            pass
+
+    threading.Thread(target=_run_stop, daemon=True, name="recorder-stop-daemon").start()
     try:
-        await asyncio.wait_for(
-            loop.run_in_executor(_recorder_pool, lambda: _stop_conversation_recording(finalize=finalize)),
-            timeout=RECORDING_STOP_TIMEOUT_S,
-        )
-        return True
+        return bool(await asyncio.wait_for(asyncio.shield(future), timeout=RECORDING_STOP_TIMEOUT_S))
     except asyncio.TimeoutError:
+        future.cancel()
         logger.warning("Conversation recorder stop timed out after %.1fs", RECORDING_STOP_TIMEOUT_S)
         return False
+    except BaseException as exc:
+        logger.warning("Conversation recorder stop failed: %s", str(exc)[:160])
+        return False
+
+
+def _request_conversation_stop_background(finalize: bool = True) -> None:
+    """Schedule stop without ever blocking a state-sync or request thread."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        threading.Thread(
+            target=lambda: _stop_conversation_recording(finalize=finalize),
+            daemon=True,
+            name="recorder-stop-request",
+        ).start()
+        return
+    loop.create_task(_stop_conversation_recording_async(finalize=finalize))
 
 
 def _conversation_state() -> dict:
     from services.speaker_mapper import speaker_mapper
     asr = _asr_state()
-    if _conversation_recorder is None:
+    meeting_elapsed = max(0.0, (_meeting_ended_at or time.monotonic()) - _meeting_started_at) if _meeting_started_at else 0.0
+    report_status = str(_meeting_report.get("status", "idle"))
+    starting = bool(
+        report_status == "recording_starting"
+        and _meeting_recording_task is not None
+        and not _meeting_recording_task.done()
+    )
+    if starting:
+        recording_status = "starting"
+    elif report_status == "recording_degraded":
+        recording_status = "degraded"
+    elif report_status == "error":
+        recording_status = "error"
+    else:
+        recording_status = "disabled"
+    start_age = max(0.0, time.time() - _recording_start_requested_at) if starting and _recording_start_requested_at else 0.0
+    audio_device = os.environ.get("RECAMERA_AUDIO_DEVICE", "").strip() or "system_default"
+    if not _meeting_save_audio or _conversation_recorder is None:
         return {
             "active": False,
+            "meeting_active": bool(_multi_track_active),
             "available": True,
             "error": "",
-            "mode": "doa_only",
+            "mode": "tracking_only",
+            "status": "tracking_only" if not _meeting_save_audio else recording_status,
             "requested": bool(_conversation_recording_requested),
-            "recording_state": "starting" if (_meeting_recording_task is not None and not _meeting_recording_task.done()) else "idle",
+            "save_audio": bool(_meeting_save_audio),
+            "recording_requested": bool(_conversation_recording_requested),
+            "recorder_active": False,
+            "recording_status": recording_status,
+            "recording_state": "starting" if starting else "disabled" if not _meeting_save_audio else recording_status,
+            "recording_started_at": None,
+            "recording_start_age_sec": round(start_age, 2),
+            "audio_device": audio_device,
             "meeting_state": _meeting_report.get("status", "idle"),
             "last_recording_error": str(_meeting_report.get("error", "") or ""),
             "last_asr_error": asr["last_error"],
+            "asr_status": asr["status"],
+            "asr_worker_active": asr["worker_active"],
+            "asr_queue_size": asr["queue_size"],
             "asr_queue": asr["queue"],
             "asr_pending": asr["pending"],
             "asr_running": asr["running"],
@@ -1288,11 +1603,13 @@ def _conversation_state() -> dict:
             "recording": False,
             "current": {},
             "timeline": [],
-            "stats": {"turns": 0, "speakers": 0, "duration": 0.0},
+            "stats": {"turns": 0, "speakers": 0, "duration": meeting_elapsed},
             "speakers": speaker_mapper.get_registered_speakers(),
             "report": dict(_meeting_report),
         }
     state = _conversation_recorder.state()
+    state["stats"] = dict(state.get("stats") or {})
+    state["stats"]["duration"] = max(float(state["stats"].get("duration", 0.0) or 0.0), meeting_elapsed)
     if state.get("active"):
         recording_state = "recording"
         mode = "audio_recording"
@@ -1309,8 +1626,17 @@ def _conversation_state() -> dict:
         recording_state = "idle"
         mode = "recording_complete"
     state["mode"] = mode
+    state["status"] = recording_state
+    state["meeting_active"] = bool(_multi_track_active)
     state["requested"] = bool(_conversation_recording_requested)
+    state["save_audio"] = bool(_meeting_save_audio)
+    state["recording_requested"] = bool(_conversation_recording_requested)
+    state["recorder_active"] = bool(state.get("active"))
+    state["recording_status"] = "degraded" if report_status == "recording_degraded" else "error" if report_status == "error" else recording_state
     state["recording_state"] = recording_state
+    state["recording_started_at"] = state.get("started_at")
+    state["recording_start_age_sec"] = round(start_age, 2)
+    state["audio_device"] = audio_device
     state["meeting_state"] = _meeting_report.get("status", "idle")
     state["last_recording_error"] = str(state.get("error") or _meeting_report.get("error", "") or "")
     state["last_asr_error"] = asr["last_error"]
@@ -1320,6 +1646,9 @@ def _conversation_state() -> dict:
     state["asr_done"] = asr["done"]
     state["asr_failed"] = asr["failed"]
     state["asr"] = asr
+    state["asr_status"] = asr["status"]
+    state["asr_worker_active"] = asr["worker_active"]
+    state["asr_queue_size"] = asr["queue_size"]
     state["speakers"] = speaker_mapper.get_registered_speakers()
     state["report"] = dict(_meeting_report)
     return state
@@ -1341,6 +1670,7 @@ def _zhipu_health_components() -> dict:
         import services.cloud_asr as cloud_asr_module
         llm_status = llm_router.router.status().get("zhipu", {})
         asr = cloud_asr_module.cloud_asr
+        voice = zhipu_voice
         key = os.environ.get("ZHIPU_API_KEY", "")
         configured = bool(key)
         key_len = len(key) if key else 0
@@ -1381,12 +1711,27 @@ def _zhipu_health_components() -> dict:
                     {"auth": "智谱 Key 无效或 ASR 权限不足", "quota": "智谱 ASR 额度不足或被限流", "timeout": "智谱 ASR 请求超时", "network": "访问智谱 ASR 网络异常", "bad_response": "智谱 ASR 响应异常", "local_missing": "本地 ASR fallback 缺依赖"}.get(asr_error, "")
                 ),
             },
+            "zhipu_tts": {
+                "status": _status(str(getattr(voice, "last_tts_error", "") or "")) if voice is not None else "offline",
+                "configured": configured and voice is not None,
+                "key_len": key_len,
+                "model": os.environ.get("ZHIPU_TTS_MODEL", "glm-tts"),
+                "format": os.environ.get("ZHIPU_TTS_FORMAT", "wav"),
+                "last_error": str(getattr(voice, "last_tts_error", "") or "") if voice is not None else "voice_service_unavailable",
+                "last_success_at": float(getattr(voice, "last_tts_success_at", 0.0) or 0.0) if voice is not None else 0.0,
+                "actionable_reason": (
+                    "设置 ZHIPU_API_KEY 后可启用智谱 TTS"
+                    if not configured else
+                    {"auth": "智谱 Key 无效或 TTS 权限不足", "quota": "智谱 TTS 额度不足或被限流", "timeout": "智谱 TTS 请求超时", "network": "访问智谱 TTS 网络异常", "bad_response": "智谱 TTS 响应异常", "unconfigured": "缺少 ZHIPU_API_KEY"}.get(str(getattr(voice, "last_tts_error", "") or ""), "")
+                ),
+            },
         }
     except Exception as exc:
         reason = str(exc)[:160]
         return {
             "zhipu_llm": {"status": "degraded", "configured": False, "last_error": reason, "last_success_at": 0.0, "actionable_reason": reason},
             "zhipu_asr": {"status": "degraded", "configured": False, "last_error": reason, "last_success_at": 0.0, "actionable_reason": reason},
+            "zhipu_tts": {"status": "degraded", "configured": False, "last_error": reason, "last_success_at": 0.0, "actionable_reason": reason},
         }
 
 
@@ -1501,7 +1846,7 @@ def _refine_faces(img, persons: list) -> list:
 
     h, w = img.shape[:2]
 
-    # 鈹€鈹€ YuNet face detection (楂橀槇-> 鍑忓皯鍋囬槼-> 鈹€鈹€
+    # YuNet face detection with a high threshold to reduce false positives.
     faces = []
     try:
         yunet = _get_yunet(w, h)
@@ -1512,7 +1857,7 @@ def _refine_faces(img, persons: list) -> list:
 
     result = []
 
-    # 鈹€鈹€ YuNet faces ->鐪熷疄浜斿畼鍏抽敭->鈹€鈹€
+    # Convert YuNet faces into real five-point facial keypoints.
     for face in faces:
         fx, fy, fw, fh = float(face[0]), float(face[1]), float(face[2]), float(face[3])
         conf = float(face[14]) if len(face) > 14 else 0.8
@@ -1533,7 +1878,7 @@ def _refine_faces(img, persons: list) -> list:
         pp._source = "yunet_refine"
         result.append(pp)
 
-    # 鈹€鈹€ YuNet missed but pose already has face points: keep them for lock/attention 鈹€鈹€
+    # If YuNet misses but pose already has face points, keep them for lock/attention.
     if not result:
         for p in persons:
             face_names = {kp.name for kp in p.keypoints if kp.conf >= 0.3}
@@ -1542,17 +1887,17 @@ def _refine_faces(img, persons: list) -> list:
                 p._source = "pose_face"
                 result.append(p)
 
-    # 鈹€鈹€ 鏃犺劯-> 鍙敤璁惧 person 妗嗙敾鑲╄唨, 涓嶇敾鍋囪劯 鈹€鈹€
+    # If no face exists, use device person boxes for shoulders only; do not fake faces.
     if not result:
         device_boxes = video_client.boxes if video_client else []
         for box in device_boxes[:5]:
             if len(box) < 6: continue
             cls = int(box[5]) if len(box) > 5 else -1
-            if cls != 0: continue  # 鍙 person
+            if cls != 0: continue  # person only
             conf = box[4]/100.0 if box[4] > 1 else float(box[4])
             if conf < 0.55: continue
             cx_b, cy_b, bw, bh = [float(v) for v in box[:4]]
-            if bh < 50 or bw*bh/(w*h) < 0.02: continue  # 澶皬璺宠繃
+            if bh < 50 or bw*bh/(w*h) < 0.02: continue  # skip tiny boxes
             x1, y1 = cx_b-bw/2, cy_b-bh/2
             x2, y2 = cx_b+bw/2, cy_b+bh/2
             kps = [
@@ -1732,6 +2077,7 @@ def build_state_snapshot() -> dict:
     control.update({
         "heartbeat_state": dict(_heartbeat_state),
         "last_heartbeat_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
+        "last_heartbeat_at": _heartbeat_state.get("last_heartbeat_at", 0.0),
         "last_heartbeat_error": _heartbeat_state.get("last_error", ""),
         "eventbus_in_flight": bool(_heartbeat_eventbus_in_flight),
     })
@@ -1761,6 +2107,8 @@ def build_state_snapshot() -> dict:
             "gimbal": dict(_gimbal_tlm),
             "video": {
                 "connected": bool(video_client.connected) if video_client else False,
+                "video_connected": bool(video_client.connected) if video_client else False,
+                "last_frame_age_ms": video_client.last_frame_age_ms if video_client else None,
                 "fps": video_client.fps if video_client else 0.0,
                 "width": video_client.resolution[0] if video_client else 1920,
                 "height": video_client.resolution[1] if video_client else 1080,
@@ -1813,8 +2161,7 @@ def build_state_snapshot() -> dict:
     return _json_clean(snapshot)
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  FastAPI App
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
+# FastAPI App
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 
@@ -1909,7 +2256,6 @@ async def lifespan(app: FastAPI):
     _doa_reader = None
     _conversation_recording_requested = False
     _ensure_doa_reader()
-    _ensure_asr_worker()
 
     audio_device = os.environ.get("RECAMERA_AUDIO_DEVICE", "").strip()
     if audio_device:
@@ -1943,6 +2289,7 @@ async def lifespan(app: FastAPI):
     push_task = asyncio.create_task(state_push_loop())
     runtime_task = asyncio.create_task(runtime_sync_loop())
     doa_task = asyncio.create_task(doa_event_loop())
+    recorder_watchdog_task = asyncio.create_task(recorder_watchdog_loop())
 
     logger.info("=" * 55)
     logger.info("reCamera Demo Dashboard (FastAPI) - display only")
@@ -1961,18 +2308,19 @@ async def lifespan(app: FastAPI):
     push_task.cancel()
     runtime_task.cancel()
     doa_task.cancel()
+    recorder_watchdog_task.cancel()
     for t in _asr_worker_tasks:
         if not t.done():
             t.cancel()
     try: await push_task
     except asyncio.CancelledError: pass
-    for task in (runtime_task, doa_task, *_asr_worker_tasks):
+    for task in (runtime_task, doa_task, recorder_watchdog_task, *_asr_worker_tasks):
         if task is None:
             continue
         try: await task
         except asyncio.CancelledError: pass
 
-    _stop_conversation_recording(finalize=True)
+    await _stop_conversation_recording_async(finalize=True)
     if _wake_word_service:
         _wake_word_service.stop()
     if video_client: video_client.stop()
@@ -1997,7 +2345,7 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=str(DASHBOARD_DIR)), name="static")
 
 
-# 鈹€鈹€ State push loop 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# State push loop
 
 def _external_control_telemetry() -> dict:
     """FastAPI-owned placeholder; main_phase3 owns hardware telemetry."""
@@ -2485,7 +2833,7 @@ async def state_push_loop():
         await asyncio.sleep(0.25)  # ~4 Hz state push; heavy models are independently throttled
 
 
-# 鈹€鈹€ WebSocket Endpoint 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# WebSocket endpoint
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
@@ -2513,7 +2861,7 @@ async def ws_endpoint(ws: WebSocket):
         await ws_mgr.disconnect(ws)
 
 
-# 鈹€鈹€ MJPEG Video Feed 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# MJPEG video feed
 
 @app.get("/video_feed")
 async def video_feed():
@@ -2553,7 +2901,7 @@ async def video_feed():
     )
 
 
-# 鈹€鈹€ REST API Endpoints 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# REST API endpoints
 
 @app.get("/api/state")
 async def api_state():
@@ -2600,7 +2948,10 @@ async def api_system_health():
         "node_red": {"status": "ready" if gimbal.get("connected") else "degraded", "reason": gimbal.get("last_error") or "检查设备 1880 bridge 与电机读回"},
         "gimbal": {"status": "ready" if gimbal.get("verified") or gimbal.get("connected") else "degraded", "reason": "尚未验证电机动作" if not gimbal.get("verified") else ""},
         "respeaker": {"status": "ready" if doa.get("available") or doa.get("connected") else "offline", "reason": str(doa.get("error", "检查 USB/DOA 输入"))},
-        "recorder": {"status": "ready" if conversation.get("available", True) else "offline", "reason": conversation.get("error", "")},
+        "recorder": {
+            "status": "degraded" if conversation.get("recording_status") in {"degraded", "error"} else "ready",
+            "reason": conversation.get("last_recording_error", ""),
+        },
         "llm": {"status": "ready" if os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("ZHIPU_API_KEY") else "degraded", "reason": "未配置云端模型，将使用本地回退"},
         **zhipu_components,
     }
@@ -2657,7 +3008,7 @@ async def api_gimbal_state():
 # remain and map to control runtime feature_start/feature_stop events.
 
 
-# 鈹€鈹€ Conversation Recording API 鈹€鈹€
+# Conversation recording API
 
 @app.get("/api/conversation/state")
 async def api_conversation_state():
@@ -2671,12 +3022,16 @@ async def api_conversation_debug():
 
 @app.post("/api/conversation/start")
 async def api_conversation_start(payload: dict = None):
-    global _conversation_recording_requested, _ui_session_id, _meeting_report, _meeting_recording_task
+    global _conversation_recording_requested, _meeting_save_audio, _ui_session_id
+    global _meeting_report, _meeting_recording_task, _recording_start_requested_at
     payload = payload or {}
     from services.speaker_mapper import speaker_mapper
     speaker_mapper.reset()
+    save_audio = bool(payload.get("save_audio", False))
+    _meeting_save_audio = save_audio
+    _recording_start_requested_at = 0.0
     _meeting_report = {
-        "status": "recording_starting", "summary": "", "minutes": "", "transcript": "",
+        "status": "recording_starting" if save_audio else "recording_disabled", "summary": "", "minutes": "", "transcript": "",
         "turns": 0, "duration_min": 0.0, "error": "", "progress": 0,
     }
     _pause_wake_word()
@@ -2686,8 +3041,7 @@ async def api_conversation_start(payload: dict = None):
         if not session_result.get("accepted"):
             _resume_wake_word()
             return {"success": False, "recording_success": False, **session_result}
-    _conversation_recording_requested = bool(payload.get("save_audio", False))
-    _ensure_asr_worker()
+    _conversation_recording_requested = save_audio
     if _conversation_recording_requested:
         if _meeting_recording_task is None or _meeting_recording_task.done():
             _meeting_recording_task = asyncio.create_task(
@@ -2695,7 +3049,7 @@ async def api_conversation_start(payload: dict = None):
                 name="conversation-recording-start",
             )
     else:
-        _meeting_report["status"] = "idle"
+        _meeting_report["status"] = "recording_disabled"
     return {
         "success": True,
         "recording_success": bool(_conversation_recorder and _conversation_recorder.active),
@@ -2787,6 +3141,151 @@ async def api_voice_stop(payload: dict = Body(default={})):
     payload = payload or {}
     return await _emit_voice_stop(str(payload.get("reason") or "api"))
 
+
+@app.get("/api/voice/playback/status")
+async def api_voice_playback_status():
+    return await _voice_playback_status()
+
+
+@app.post("/api/voice/test_tone")
+async def api_voice_test_tone(payload: dict = Body(default={})):
+    payload = payload or {}
+    audio_id = f"tone_{uuid.uuid4().hex[:12]}"
+    out_path = _voice_audio_root / f"{audio_id}.wav"
+    _write_test_tone_wav(
+        out_path,
+        duration_sec=float(payload.get("duration_sec", 0.7) or 0.7),
+        frequency_hz=float(payload.get("frequency_hz", 880.0) or 880.0),
+        volume=float(payload.get("volume", 0.22) or 0.22),
+    )
+    meta = _register_voice_audio(
+        str(out_path),
+        text="control test tone",
+        content_type="audio/wav",
+        provider="local_test_tone",
+    )
+    play_result = {}
+    if bool(payload.get("play", False)):
+        play_result = await _play_voice_audio(meta["id"], str(payload.get("target") or ""), reason="test_tone")
+    return {
+        "ok": True,
+        **meta,
+        "providers": {"tts": {"ok": True, "provider": "local_test_tone", "format": "wav", "sample_rate": 16000}},
+        "playback": play_result,
+        "state": _voice_state(),
+    }
+
+
+@app.post("/api/voice/tts")
+async def api_voice_tts(payload: dict = Body(default={})):
+    payload = payload or {}
+    text = str(payload.get("text") or "")
+    if not text.strip():
+        return {"ok": False, "error": "empty_text", "state": _voice_state()}
+    if zhipu_voice is None:
+        return {"ok": False, "error": "zhipu_voice_unavailable", "state": _voice_state()}
+    audio_id = f"tts_{uuid.uuid4().hex[:12]}"
+    fmt = str(payload.get("format") or os.environ.get("ZHIPU_TTS_FORMAT", "wav") or "wav").lower()
+    suffix = "wav" if fmt == "wav" else fmt
+    out_path = _voice_audio_root / f"{audio_id}.{suffix}"
+    result = await zhipu_voice.tts(text, str(out_path), payload)
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("error", "tts_failed"), "providers": {"tts": result}, "state": _voice_state()}
+    meta = _register_voice_audio(
+        str(out_path),
+        text=text,
+        content_type=str(result.get("content_type") or "audio/wav"),
+        provider=str(result.get("provider") or "zhipu"),
+    )
+    play_result = {}
+    if bool(payload.get("play", False)):
+        play_result = await _play_voice_audio(meta["id"], str(payload.get("target") or ""), reason="tts")
+    return {"ok": True, **meta, "providers": {"tts": result}, "playback": play_result, "state": _voice_state()}
+
+
+@app.post("/api/voice/play")
+async def api_voice_play(payload: dict = Body(default={})):
+    payload = payload or {}
+    audio_id = str(payload.get("audio_id") or payload.get("id") or "")
+    target = str(payload.get("target") or "")
+    return await _play_voice_audio(audio_id, target=target, reason=str(payload.get("reason") or "api"))
+
+
+@app.get("/api/voice/audio/{audio_id}")
+async def api_voice_audio(audio_id: str):
+    meta = _voice_audio_meta(audio_id)
+    if not meta:
+        return JSONResponse({"ok": False, "error": "audio_missing"}, status_code=404)
+    return FileResponse(str(meta["path"]), media_type=str(meta.get("content_type") or "audio/wav"), filename=Path(str(meta["path"])).name)
+
+
+@app.post("/api/voice/chat")
+async def api_voice_chat(
+    request: Request,
+    context: str = "",
+    user_name: str = "",
+    target: str = "",
+    preset: str = "",
+):
+    if zhipu_voice is None:
+        return {"ok": False, "error": "zhipu_voice_unavailable", "state": _voice_state()}
+    upload_id = f"voice_{uuid.uuid4().hex[:12]}"
+    content_type = str(request.headers.get("content-type") or "audio/webm").split(";")[0]
+    suffix = ".wav" if "wav" in content_type else ".webm" if "webm" in content_type else ".audio"
+    in_path = _voice_audio_root / "uploads" / f"{upload_id}{suffix}"
+    in_path.parent.mkdir(parents=True, exist_ok=True)
+    raw = await request.body()
+    if not raw:
+        return {"ok": False, "error": "empty_audio", "state": _voice_state()}
+    in_path.write_bytes(raw)
+
+    asr = await zhipu_voice.transcribe(str(in_path))
+    transcript = str(asr.get("text") or "").strip()
+    if not transcript:
+        return {"ok": False, "error": "asr_empty", "transcript": "", "providers": {"asr": asr}, "state": _voice_state()}
+    chat = await zhipu_voice.chat(transcript, context=context, user_name=user_name)
+    reply = str(chat.get("text") or "").strip()
+    tts_options = {"preset": preset, "format": os.environ.get("ZHIPU_TTS_FORMAT", "wav")}
+    audio_id = f"reply_{uuid.uuid4().hex[:12]}"
+    out_path = _voice_audio_root / f"{audio_id}.wav"
+    tts = await zhipu_voice.tts(reply, str(out_path), tts_options)
+    audio_url = ""
+    playback = {}
+    if tts.get("ok"):
+        meta = _register_voice_audio(
+            str(out_path),
+            text=reply,
+            content_type=str(tts.get("content_type") or "audio/wav"),
+            provider=str(tts.get("provider") or "zhipu"),
+        )
+        audio_url = meta["audio_url"]
+        playback = await _play_voice_audio(meta["id"], target=target or "", reason="voice_chat")
+    else:
+        _voice_playback.update({
+            "state": "fallback_browser",
+            "audio_id": "",
+            "last_error": str(tts.get("error") or "tts_failed"),
+            "last_result": tts,
+            "updated_at": time.time(),
+        })
+    await ws_mgr.broadcast({
+        "type": "voice_chat_reply",
+        "transcript": transcript,
+        "reply": reply,
+        "audio_url": audio_url,
+        "playback_target": playback.get("target") or os.environ.get("VOICE_PLAYBACK_TARGET", "recamera_speaker"),
+    })
+    return {
+        "ok": True,
+        "transcript": transcript,
+        "reply": reply,
+        "audio_url": audio_url,
+        "playback_target": playback.get("target") or os.environ.get("VOICE_PLAYBACK_TARGET", "recamera_speaker"),
+        "providers": {"asr": asr, "chat": chat, "tts": tts},
+        "playback": playback,
+        "state": _voice_state(),
+    }
+
 # NOTE: removed /api/auto_align (gimbal yaw/pitch search + face-tracking start).
 
 _last_snapshot = None  # cache last good frame
@@ -2834,20 +3333,29 @@ async def api_single_track_stop(payload: dict = Body(default={})):
 @app.post("/api/multi_track/start")
 async def api_multi_track_start(payload: dict = Body(default={})):
     global _multi_track_active, _single_track_active, _tracking_mode
-    global _conversation_recording_requested, _meeting_report, _meeting_recording_task
+    global _conversation_recording_requested, _meeting_save_audio, _meeting_report, _meeting_recording_task
+    global _recording_start_requested_at
+    global _meeting_started_at, _meeting_ended_at
     from services.speaker_mapper import speaker_mapper
 
     save_audio = bool(payload.get("save_audio", False))
     if _runtime_cache.get("active_feature") == "multi_sound_yaw" and _ui_session_id:
+        if not _meeting_started_at:
+            _meeting_started_at = time.monotonic()
+            _meeting_ended_at = 0.0
+        hardware_ready = bool(_runtime_cache.get("hardware_ready"))
         return {
             "ok": True, "accepted": True, "active": True, "reused": True,
             "session_id": _ui_session_id, "feature": "multi_sound_yaw",
+            "start_status": "accepted" if hardware_ready else "accepted_with_degraded_hardware",
             "recording_success": bool(_conversation_recorder and _conversation_recorder.active),
             "state": _conversation_state(),
         }
+    _meeting_save_audio = save_audio
+    _recording_start_requested_at = 0.0
     speaker_mapper.reset()
     _meeting_report = {
-        "status": "recording_starting" if save_audio else "idle",
+        "status": "recording_starting" if save_audio else "recording_disabled",
         "summary": "", "minutes": "", "transcript": "",
         "turns": 0, "duration_min": 0.0, "error": "",
         "progress": 0,
@@ -2860,8 +3368,9 @@ async def api_multi_track_start(payload: dict = Body(default={})):
     _single_track_active = False
     _multi_track_active = True
     _tracking_mode = "multi"
+    _meeting_started_at = time.monotonic()
+    _meeting_ended_at = 0.0
     _conversation_recording_requested = save_audio
-    _ensure_asr_worker()
     if save_audio:
         if _meeting_recording_task is None or _meeting_recording_task.done():
             _meeting_recording_task = asyncio.create_task(
@@ -2871,6 +3380,7 @@ async def api_multi_track_start(payload: dict = Body(default={})):
     return {
         **result,
         "success": True,
+        "start_status": "accepted" if result.get("hardware_ready") else "accepted_with_degraded_hardware",
         "recording_success": bool(_conversation_recorder and _conversation_recorder.active),
         "recording_state": "starting" if save_audio else "disabled",
         "active": True,
@@ -2880,11 +3390,14 @@ async def api_multi_track_start(payload: dict = Body(default={})):
 
 @app.post("/api/multi_track/stop")
 async def api_multi_track_stop(payload: dict = Body(default={})):
-    global _multi_track_active, _conversation_recording_requested, _meeting_report
+    global _multi_track_active, _conversation_recording_requested, _meeting_report, _meeting_ended_at
     session_id = str(payload.get("session_id", ""))
     if not session_id:
         return {"ok": False, "accepted": False, "active": _multi_track_active, "reason": "session_id_required"}
     _multi_track_active = False
+    if _meeting_started_at and not _meeting_ended_at:
+        _meeting_ended_at = time.monotonic()
+        _meeting_report["duration_min"] = round((_meeting_ended_at - _meeting_started_at) / 60.0, 2)
     if payload.get("finalize", True):
         _conversation_recording_requested = False
         stop_ok = await _stop_conversation_recording_async(finalize=True)
@@ -3006,6 +3519,7 @@ async def _emit_heartbeat_event(session_id: str) -> dict:
             _heartbeat_state.update({
                 "state": "ready",
                 "last_ok_at": time.time(),
+                "last_heartbeat_at": time.time(),
                 "last_error": "",
             })
         else:
@@ -3024,6 +3538,15 @@ async def _emit_heartbeat_event(session_id: str) -> dict:
     except Exception as exc:
         return _heartbeat_degraded("eventbus_error", event, str(exc)[:160])
 
+    if result.get("accepted"):
+        accepted_at = time.time()
+        _heartbeat_state.update({
+            "state": "ready",
+            "last_ok_at": accepted_at,
+            "last_heartbeat_at": accepted_at,
+            "last_error": "",
+        })
+
     eventbus_state = {"host": _eventbus.host, "port": _eventbus.port, "last_result": result}
     _control_obs.update({
         "authority": result.get("authority", "unreachable"),
@@ -3037,6 +3560,7 @@ async def _emit_heartbeat_event(session_id: str) -> dict:
         "degraded": not bool(result.get("accepted")),
         "lease_may_be_stale": not bool(result.get("accepted")),
         "last_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
+        "last_heartbeat_at": _heartbeat_state.get("last_heartbeat_at", 0.0),
         "heartbeat_state": dict(_heartbeat_state),
         "event": event.to_dict(),
         "eventbus": eventbus_state,
@@ -3085,6 +3609,7 @@ async def api_control_runtime():
     runtime.update({
         "heartbeat_state": dict(_heartbeat_state),
         "last_heartbeat_ok_at": _heartbeat_state.get("last_ok_at", 0.0),
+        "last_heartbeat_at": _heartbeat_state.get("last_heartbeat_at", 0.0),
         "last_heartbeat_error": _heartbeat_state.get("last_error", ""),
         "eventbus_in_flight": bool(_heartbeat_eventbus_in_flight),
     })
@@ -3163,13 +3688,20 @@ async def api_control_doa_calibrate(payload: dict = Body(default={})):
     offset = max(-180.0, min(180.0, offset))
     calib_path = Path(__file__).resolve().parent / "runtime" / "doa_calibration.json"
     try:
+        existing = {}
+        if calib_path.is_file():
+            try:
+                existing = json.loads(calib_path.read_text(encoding="utf-8"))
+            except Exception:
+                existing = {}
         calib_path.parent.mkdir(parents=True, exist_ok=True)
-        calib_path.write_text(json.dumps({
+        existing.update({
             "doa_offset_deg": round(offset, 1),
             "measured_doa_median": round(median, 1),
             "samples": len(samples),
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        }, ensure_ascii=False), encoding="utf-8")
+        })
+        calib_path.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
     except OSError as exc:
         logger.warning("DOA calibration persist failed: %s", str(exc)[:80])
     # Apply live to the running control session (if any)
@@ -3181,6 +3713,37 @@ async def api_control_doa_calibrate(payload: dict = Body(default={})):
         })
     return {"ok": True, "doa_offset_deg": round(offset, 1),
             "measured_doa_median": round(median, 1), "samples": len(samples)}
+
+
+@app.post("/api/control/doa_direction")
+async def api_control_doa_direction(payload: dict = Body(default={})):
+    """Flip or set DOA handedness after the right-side speech validation step."""
+    direction_raw = payload.get("doa_direction", payload.get("direction", 1))
+    direction = -1 if float(direction_raw) < 0 else 1
+    calib_path = Path(__file__).resolve().parent / "runtime" / "doa_calibration.json"
+    data = {}
+    try:
+        if calib_path.is_file():
+            data = json.loads(calib_path.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    data.update({
+        "doa_direction": direction,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "direction_note": "DOA 0 front, 90 camera-right; use -1 if right-side speech moves yaw left.",
+    })
+    try:
+        calib_path.parent.mkdir(parents=True, exist_ok=True)
+        calib_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("DOA direction persist failed: %s", str(exc)[:80])
+    session_id = str(payload.get("session_id", "") or _ui_session_id)
+    if session_id:
+        await _emit_ui_event("control_config", {
+            "session_id": session_id,
+            "doa_direction": direction,
+        })
+    return {"ok": True, "doa_direction": direction}
 
 
 @app.post("/api/gimbal/home")
@@ -3235,7 +3798,7 @@ async def debug_video():
     return dict(vc=vc, jpeg_ok=jpeg_ok, snap_ok=snap_ok, fps=video_client.fps if video_client else 0)
 
 
-# 鈹€鈹€ Emotion debug (using EmotiEffLib now, see /api/state) 鈹€鈹€
+# Emotion debug (using EmotiEffLib now, see /api/state)
 
 
 @app.post("/api/reflect")
@@ -3295,9 +3858,17 @@ async def api_llm_reflect(payload: dict = Body(default={})):
     elif mode == "report":
         total_min = payload.get("total_min", 0)
         focused_pct = payload.get("focused_pct", 0)
+        day_summary = payload.get("day_summary") or {}
+        face_visible_sec = day_summary.get("face_visible_sec", 0)
+        focused_visible_sec = day_summary.get("focused_visible_sec", 0)
+        away_sec = day_summary.get("away_sec", 0)
         messages = [
             {"role": "system", "content": "你是温柔的陪伴助手小屿，用中文写一段简短的一日陪伴总结（80字以内），语气温暖不评判。"},
-            {"role": "user", "content": f"今天陪伴时长约 {total_min} 分钟，专注时间占比 {focused_pct}%，主要情绪是 {emotion}，专注均分 {attn}。请写一段总结。"},
+            {"role": "user", "content": (
+                f"今天陪伴时长约 {total_min} 分钟，专注时间占比 {focused_pct}%，主要情绪是 {emotion}，专注均分 {attn}。"
+                f"后台观察：可见 {face_visible_sec} 秒、可见且较专注 {focused_visible_sec} 秒、离开/未见 {away_sec} 秒。"
+                "请自然总结，不要像秒表一样逐项报数。"
+            )},
         ]
         result = await _cloud_llm_complete(messages, max_tokens=200)
         text = str(result.get("text") or "")
@@ -3856,7 +4427,7 @@ async def health():
     }
 
 
-# 鈹€鈹€ Two pages only 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# Two pages only
 # PAGE 1 = Control Dashboard (real telemetry/observability) -> /control , /v2
 # PAGE 2 = User product home                                -> / , /home
 HOME_FILE = DASHBOARD_DIR / "home.html"
@@ -3911,8 +4482,7 @@ async def serve_service_worker():
     ) if t.is_file() else HTMLResponse("Not found", status_code=404)
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->#  CLI + Entry point
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲->
+# CLI + entry point
 def parse_args():
     p = argparse.ArgumentParser(
         description="reCamera Demo Dashboard (FastAPI+MJPEG)",

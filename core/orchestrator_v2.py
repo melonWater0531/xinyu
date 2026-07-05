@@ -83,6 +83,30 @@ def _load_tracking_control_config():
         }
 
 
+def _coerce_event(event) -> Event:
+    if isinstance(event, Event):
+        return event
+    if isinstance(event, dict):
+        raw = dict(event)
+        raw_type = str(raw.get("type", ""))
+        payload = dict(raw.get("payload") or raw.get("data") or {})
+        for key, value in raw.items():
+            if key not in {"type", "name", "payload", "data", "timestamp", "source"}:
+                payload.setdefault(key, value)
+        if ":" in raw_type and not raw.get("name"):
+            event_type, name = raw_type.split(":", 1)
+        else:
+            event_type, name = raw_type, str(raw.get("name", ""))
+        return Event.make(
+            event_type,
+            name,
+            str(raw.get("source", "")),
+            payload=payload,
+            timestamp=raw.get("timestamp"),
+        )
+    raise TypeError("Orchestrator.handle_event requires Event or dict")
+
+
 class Orchestrator:
     def __init__(self, *, center_yaw=180.0, center_pitch=90.0, audio_max_step=35.0,
                  vision_yaw_gain=70.0, vision_pitch_gain=45.0, audio_stale_s=1.0,
@@ -123,6 +147,7 @@ class Orchestrator:
         self._command_sequence = self._vision_lost_frames = self._frame_count = 0
         self._doa_candidate = self._active_doa = None
         self._doa_candidate_since = self._last_speech_at = 0.0
+        self.doa_switch_threshold_deg = 15.0
         self._speaker_seek = False
         self._speaker_confidence = 0.0
         self._seek_started_at = 0.0   # monotonic ts of the last audio_coarse
@@ -176,6 +201,7 @@ class Orchestrator:
                 self._pitch_target = self._gimbal_pitch
 
     def handle_event(self, event):
+        event = _coerce_event(event)
         lifecycle = self._lifecycle(event)
         if lifecycle is not _NOT_LIFECYCLE:
             return lifecycle
@@ -352,13 +378,16 @@ class Orchestrator:
         doa = float(event.payload.get("doa_deg", 0.0)) % 360
         confidence = max(0.0, min(1.0, float(event.payload.get("speaker_confidence", event.payload.get("vad_confidence", 0.7)))))
         lip_motion = event.payload.get("lip_motion")
-        if confidence < 0.55 or lip_motion is False:
+        if lip_motion is False:
+            confidence = max(0.0, confidence - 0.1)
+            self._command_suppressed_reason = "weak_lip_motion"
+        if confidence < 0.55:
             return None
         self._last_speech_at = now
         if self._active_doa is not None and self._angle(doa, self._active_doa) <= 20:
             self._doa_candidate = None
             return None
-        if self._doa_candidate is None or self._angle(doa, self._doa_candidate) > 8:
+        if self._doa_candidate is None or self._angle(doa, self._doa_candidate) > self.doa_switch_threshold_deg:
             self._doa_candidate, self._doa_candidate_since = doa, now
             return None
         switching = self._active_doa is not None

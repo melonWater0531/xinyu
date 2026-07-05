@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import Optional
 from urllib import error, parse, request
@@ -13,21 +14,27 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-DEFAULT_TIMEOUT_MS = 350
-DEFAULT_RETRY = 3
+DEFAULT_READBACK_TIMEOUT_MS = 500
+DEFAULT_MOTION_TIMEOUT_MS = 800
+DEFAULT_RETRY = 1
+CIRCUIT_FAILURE_THRESHOLD = 3
+CIRCUIT_COOLDOWN_S = 8.0
 
 
 class RecameraClient:
     """The sole adapter allowed to exchange gimbal commands and readback."""
 
-    def __init__(self, base_url: str = "", timeout_ms: int = DEFAULT_TIMEOUT_MS, retry: int = DEFAULT_RETRY) -> None:
+    def __init__(self, base_url: str = "", timeout_ms: int = DEFAULT_READBACK_TIMEOUT_MS,
+                 retry: int = DEFAULT_RETRY,
+                 motion_timeout_ms: int = DEFAULT_MOTION_TIMEOUT_MS) -> None:
         raw = (base_url or device_http_url()).rstrip("/")
         parsed = parse.urlparse(raw)
         host = parsed.hostname or ""
         scheme = parsed.scheme or "http"
         port = parsed.port or 1880
         self._bridge_url = f"{scheme}://{host}:{port}/recamera-control/v1" if host else ""
-        self._timeout_sec = max(0.05, timeout_ms / 1000.0)
+        self._readback_timeout_sec = max(0.05, timeout_ms / 1000.0)
+        self._motion_timeout_sec = max(0.05, motion_timeout_ms / 1000.0)
         self._retry = max(1, int(retry))
         self._connected = False
         self._dry_run = True
@@ -36,6 +43,12 @@ class RecameraClient:
         self._consecutive_fails = 0
         self._last_latency_ms = 0.0
         self._last_failure_log_at = 0.0
+        self._last_error = ""
+        self._last_failure_kind = "unavailable"
+        self._last_ok_at = 0.0
+        self._circuit_open_until = 0.0
+        self._half_open_in_flight = False
+        self._state_lock = threading.Lock()
         self._session_id = ""
         self._sequence = 0
         self._lease_deadline = 0.0
@@ -70,6 +83,12 @@ class RecameraClient:
         self._session_id = ""
         self._lease_deadline = 0.0
         self._connected = False
+        with self._state_lock:
+            self._consecutive_fails = 0
+            self._last_error = ""
+            self._last_failure_kind = "unavailable"
+            self._circuit_open_until = 0.0
+            self._half_open_in_flight = False
         return bool(self._bridge_url) and self.connect(dry_run=False)
 
     def apply_command(self, command: ControlCommand) -> bool:
@@ -209,35 +228,104 @@ class RecameraClient:
 
     def _request_json(self, method: str, path: str, payload: dict | None = None) -> Optional[dict]:
         if not self._bridge_url:
+            self._record_failure("unavailable", "gimbal bridge URL is not configured")
+            return None
+        if not self._allow_request():
             return None
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
         headers = {"Content-Type": "application/json"} if body is not None else {}
         last_error = ""
+        failure_kind = "degraded"
+        timeout_sec = self._readback_timeout_sec if method == "GET" or path == "status" else self._motion_timeout_sec
         for attempt in range(self._retry):
             self._request_count += 1
             started = time.monotonic()
             try:
                 req = request.Request(f"{self._bridge_url}/{path}", data=body, headers=headers, method=method)
-                with self._direct_opener.open(req, timeout=self._timeout_sec) as response:
+                with self._direct_opener.open(req, timeout=timeout_sec) as response:
                     self._last_latency_ms = (time.monotonic() - started) * 1000.0
                     raw = response.read().decode("utf-8", errors="replace")
                     data = json.loads(raw) if raw else {}
-                    self._consecutive_fails = 0
+                    self._record_success()
                     return data
-            except (error.URLError, error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+            except (error.URLError, error.HTTPError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                 last_error = str(exc)
+                reason = getattr(exc, "reason", None)
+                failure_kind = "timeout" if isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError) or "timed out" in last_error.lower() else "degraded"
             if attempt + 1 < self._retry:
                 time.sleep(0.05)
-        self._fail_count += 1
-        self._consecutive_fails += 1
+        self._record_failure(failure_kind, last_error or "bridge request failed")
         now = time.monotonic()
-        if self._consecutive_fails == 1 or now - self._last_failure_log_at >= 5.0:
+        is_status_poll = method == "GET" and path == "status"
+        should_warn = (
+            not is_status_poll
+            and self._consecutive_fails == 1
+        ) or self._consecutive_fails >= CIRCUIT_FAILURE_THRESHOLD
+        if should_warn and now - self._last_failure_log_at >= 5.0:
             logger.warning(
                 "gimbal bridge request failed: %s %s (%s); consecutive=%d",
                 method, path, last_error[:120], self._consecutive_fails,
             )
             self._last_failure_log_at = now
+        elif is_status_poll:
+            logger.debug(
+                "gimbal bridge status poll failed: %s %s (%s); consecutive=%d",
+                method, path, last_error[:120], self._consecutive_fails,
+            )
         return None
+
+    def _allow_request(self) -> bool:
+        now = time.monotonic()
+        with self._state_lock:
+            if self._circuit_open_until <= 0:
+                return True
+            if now < self._circuit_open_until:
+                return False
+            if self._half_open_in_flight:
+                return False
+            self._half_open_in_flight = True
+            return True
+
+    def _record_success(self) -> None:
+        with self._state_lock:
+            self._consecutive_fails = 0
+            self._last_error = ""
+            self._last_failure_kind = "ok"
+            self._last_ok_at = time.time()
+            self._circuit_open_until = 0.0
+            self._half_open_in_flight = False
+
+    def _record_failure(self, kind: str, message: str) -> None:
+        with self._state_lock:
+            self._fail_count += 1
+            self._consecutive_fails += 1
+            self._last_failure_kind = kind if kind in {"timeout", "unavailable"} else "degraded"
+            self._last_error = str(message or "bridge request failed")[:160]
+            self._half_open_in_flight = False
+            if self._consecutive_fails >= CIRCUIT_FAILURE_THRESHOLD:
+                self._circuit_open_until = time.monotonic() + CIRCUIT_COOLDOWN_S
+
+    def bridge_state(self) -> dict:
+        with self._state_lock:
+            circuit_open = self._circuit_open_until > 0
+            if self._dry_run or not self._bridge_url:
+                status = "unavailable"
+            elif self._last_failure_kind == "timeout":
+                status = "timeout"
+            elif circuit_open or self._consecutive_fails:
+                status = "degraded"
+            elif self._last_ok_at:
+                status = "ok"
+            else:
+                status = "unavailable"
+            return {
+                "gimbal_bridge_status": status,
+                "gimbal_bridge_last_error": self._last_error,
+                "gimbal_bridge_last_ok_at": self._last_ok_at,
+                "gimbal_bridge_fail_count": self._fail_count,
+                "gimbal_bridge_consecutive_failures": self._consecutive_fails,
+                "gimbal_bridge_circuit_open": circuit_open,
+            }
 
     @property
     def connected(self) -> bool:

@@ -26,7 +26,14 @@ MIN_EMOTION_CONF = 0.35
 
 
 def _empty_hour() -> dict:
-    return {"emotions": {}, "attention_sum": 0.0, "attention_n": 0, "presence_sec": 0.0}
+    return {
+        "emotions": {},
+        "attention_sum": 0.0,
+        "attention_n": 0,
+        "presence_sec": 0.0,
+        "focused_visible_sec": 0.0,
+        "away_sec": 0.0,
+    }
 
 
 class DayAggregator:
@@ -105,9 +112,11 @@ class DayAggregator:
         dt = min(ts - self._last_tick_ts, 2.0) if self._last_tick_ts else 0.25
         self._last_tick_ts = ts
 
+        h = self._hours.setdefault(str(now.hour), _empty_hour())
         if has_face:
-            h = self._hours.setdefault(str(now.hour), _empty_hour())
             h["presence_sec"] = round(h["presence_sec"] + dt, 1)
+            if attention is not None and float(attention) >= 60.0:
+                h["focused_visible_sec"] = round(h.get("focused_visible_sec", 0.0) + dt, 1)
             if emotion and confidence >= MIN_EMOTION_CONF:
                 h["emotions"][emotion] = h["emotions"].get(emotion, 0) + 1
             if attention is not None:
@@ -123,6 +132,8 @@ class DayAggregator:
                                          "detail": round(self._valence_ema, 2)})
                 elif self._dip_active and self._valence_ema > DIP_EXIT:
                     self._dip_active = False
+        else:
+            h["away_sec"] = round(h.get("away_sec", 0.0) + dt, 1)
 
         # Edge-trigger intervention events
         if intervention_active and not self._intervention_flag:
@@ -152,6 +163,8 @@ class DayAggregator:
         attention_sum = 0.0
         attention_n = 0
         presence_sec = 0.0
+        focused_visible_sec = 0.0
+        away_sec = 0.0
         hours_out = []
         for hr in sorted(hours, key=int):
             h = hours[hr]
@@ -160,12 +173,16 @@ class DayAggregator:
             attention_sum += h.get("attention_sum", 0.0)
             attention_n += h.get("attention_n", 0)
             presence_sec += h.get("presence_sec", 0.0)
+            focused_visible_sec += h.get("focused_visible_sec", 0.0)
+            away_sec += h.get("away_sec", 0.0)
             dom = max(h.get("emotions", {}), key=h["emotions"].get) if h.get("emotions") else ""
             hours_out.append({
                 "hour": int(hr),
                 "dominant_emotion": dom,
                 "attention_avg": round(h["attention_sum"] / h["attention_n"], 1) if h.get("attention_n") else None,
                 "presence_sec": round(h.get("presence_sec", 0.0)),
+                "focused_visible_sec": round(h.get("focused_visible_sec", 0.0)),
+                "away_sec": round(h.get("away_sec", 0.0)),
             })
 
         total_emo = sum(emotion_totals.values())
@@ -179,6 +196,9 @@ class DayAggregator:
             "emotion_counts": emotion_totals,
             "attention_avg": round(attention_sum / attention_n, 1) if attention_n else None,
             "presence_min": round(presence_sec / 60.0, 1),
+            "face_visible_sec": round(presence_sec),
+            "focused_visible_sec": round(focused_visible_sec),
+            "away_sec": round(away_sec),
             "dips": [e for e in events if e.get("type") == "valence_dip"],
             "intervention_count": sum(1 for e in events if e.get("type") == "intervention"),
         }

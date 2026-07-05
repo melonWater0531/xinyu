@@ -96,6 +96,7 @@ class ConversationRecorder:
         self._lock = threading.Lock()
         self._audio_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=200)
         self._running = False
+        self._stop_event = threading.Event()
         self._stream = None
         self._worker: Optional[threading.Thread] = None
         self._session_id = ""
@@ -135,6 +136,7 @@ class ConversationRecorder:
         self._turns.clear()
         self._segment_idx = 0
         self._error = ""
+        self._stop_event.clear()
         self._audio_processor = MeetingAudioProcessor(sample_rate=self.sample_rate)
 
         try:
@@ -177,6 +179,12 @@ class ConversationRecorder:
         if not self._running and self._stream is None:
             return
         self._running = False
+        self._stop_event.set()
+        try:
+            while True:
+                self._audio_q.get_nowait()
+        except queue.Empty:
+            pass
         if self._stream is not None:
             try:
                 self._stream.stop()
@@ -196,9 +204,16 @@ class ConversationRecorder:
         logger.info("🎙️ Conversation recording stopped: %s", self._session_id)
 
     def state(self) -> dict:
-        with self._lock:
-            turns = [t.to_dict() for t in self._turns[-80:]]
-            current = dict(self._current)
+        locked = self._lock.acquire(timeout=0.02)
+        try:
+            turns = [t.to_dict() for t in self._turns[-80:]] if locked else []
+            current = dict(self._current) if locked else {
+                "recording": bool(self._running), "has_speech": False,
+                "elapsed": 0.0, "state_stale": True,
+            }
+        finally:
+            if locked:
+                self._lock.release()
         return {
             "active": self._running,
             "available": not bool(self._error),
@@ -223,8 +238,9 @@ class ConversationRecorder:
         if status:
             logger.debug("Audio input status: %s", status)
         try:
+            if self._stop_event.is_set():
+                return
             mono = np.asarray(indata[:, 0], dtype=np.float32).copy()
-            mono = self._audio_processor.process(mono)
             self._audio_q.put_nowait(mono)
         except queue.Full:
             pass
@@ -244,11 +260,15 @@ class ConversationRecorder:
 
         noise_floor = 0.008
 
-        while self._running or not self._audio_q.empty():
+        while (self._running and not self._stop_event.is_set()) or not self._audio_q.empty():
             try:
                 chunk = self._audio_q.get(timeout=0.2)
             except queue.Empty:
                 continue
+
+            # Optional DSP belongs on the daemon segment worker, never inside
+            # PortAudio's real-time callback. It is disabled by default.
+            chunk = self._audio_processor.process(chunk)
 
             level = float(np.sqrt(np.mean(np.square(chunk))) + 1e-9)
             noise_floor = min(0.06, max(0.004, noise_floor * 0.98 + level * 0.02))

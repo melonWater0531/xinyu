@@ -171,7 +171,7 @@ def main():
             ["DOA 输入", "audio/network_doa.py, audio/doa.py", "监听 TCP 文本，解析声源角度、speech 状态、数据新鲜度和发送端状态。"],
             ["视觉目标检测", "vision/face_tracker_v2.py, vision/pose_estimator.py, vision/mediapipe_face.py", "提供人脸、人形、关键点和面部点位，用于单人搜索、对准和追踪。"],
             ["情绪与专注", "vision/emotieff_adapter.py, vision/attention_engine.py, vision/eye_metrics.py", "基于 face crop、landmarks 和眼部指标输出情绪、置信度、专注分与专注状态。"],
-            ["云台控制与安全", "core/gimbal_mode_state.py, core/control_filter.py, core/safety_layer.py", "处理模式优先级、控制平滑、死区、步长限制和真实控制安全门。"],
+            ["云台控制与安全", "core/orchestrator_v2.py, core/control_session.py, core/safety_layer.py", "处理模式优先级、租约、死区、步长限制和真实控制安全门。"],
             ["用户侧产品界面", "dashboard/home.html", "承载情绪监测、专注度监测、多人场景跟踪、情绪日记、LLM 对话和健康建议。"],
             ["开发调试界面", "dashboard/recamera_v2_live.html", "展示实时视频、检测叠加、模式状态、DOA、云台状态和调试日志。"],
         ],

@@ -13,6 +13,7 @@ from core.device_config_store import DeviceConfigStore
 from core.device_config import bypass_proxy_for_device
 from core.event import ControlCommand
 from hardware.control_worker import HardwareControlWorker
+from hardware.recamera_client import RecameraClient
 
 
 class FakeBridgeClient:
@@ -44,6 +45,53 @@ class FakeBridgeClient:
 
 
 class ReliabilityUpgradeTests(unittest.TestCase):
+    def test_gimbal_bridge_circuit_opens_and_half_open_probe_recovers(self) -> None:
+        class TimeoutOpener:
+            def open(self, *_args, **_kwargs):
+                raise TimeoutError("bridge request timed out")
+
+        class JsonResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"connected":true,"timestamp":9999999999999}'
+
+        class SuccessOpener:
+            def open(self, *_args, **_kwargs):
+                return JsonResponse()
+
+        client = RecameraClient(base_url="http://127.0.0.1:1880", timeout_ms=50, retry=1)
+        client._dry_run = False
+        client._direct_opener = TimeoutOpener()
+        for _ in range(3):
+            self.assertIsNone(client.get_status())
+        opened = client.bridge_state()
+        self.assertEqual(opened["gimbal_bridge_status"], "timeout")
+        self.assertTrue(opened["gimbal_bridge_circuit_open"])
+        requests_at_open = client.request_count
+        self.assertIsNone(client.get_status())
+        self.assertEqual(client.request_count, requests_at_open, "open circuit must skip bridge I/O")
+
+        client._circuit_open_until = time.monotonic() - 0.01
+        client._direct_opener = SuccessOpener()
+        self.assertIsNotNone(client.get_status())
+        recovered = client.bridge_state()
+        self.assertEqual(recovered["gimbal_bridge_status"], "ok")
+        self.assertFalse(recovered["gimbal_bridge_circuit_open"])
+
+        client._direct_opener = TimeoutOpener()
+        for _ in range(3):
+            self.assertIsNone(client.get_status())
+        client._circuit_open_until = time.monotonic() - 0.01
+        self.assertIsNone(client.get_status())
+        failed_probe = client.bridge_state()
+        self.assertEqual(failed_probe["gimbal_bridge_status"], "timeout")
+        self.assertTrue(failed_probe["gimbal_bridge_circuit_open"])
+
     def test_motion_queue_keeps_only_latest_command(self) -> None:
         client = FakeBridgeClient()
         worker = HardwareControlWorker(client, telemetry_interval=10)

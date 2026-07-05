@@ -1,0 +1,193 @@
+/* Product-video theme: deliberately scoped away from meeting/control surfaces. */
+#page-home,
+#page-companion,
+#page-records,
+.meditation-dialog {
+  --x-bg: #F8F1E6;
+  --x-card: #FFFDF8;
+  --x-sticker: #FFF1C8;
+  --x-title: #4A3A2B;
+  --x-body: #6F6258;
+  --x-muted: #A49382;
+  --x-caramel: #8A6A45;
+  --x-yellow: #F7D98B;
+  --x-blue: #7D9BD6;
+  --x-sage: #A8CFA0;
+  --x-peach: #E9A77E;
+  --x-pink: #EFD6D0;
+  --x-border: #E4D8C9;
+  --x-green: #8DAE7F;
+  --ink: var(--x-title);
+  --muted: var(--x-muted);
+  --primary: var(--x-caramel);
+  --primary-deep: #6F5338;
+  --green: var(--x-sage);
+  --amber: var(--x-peach);
+  --rose: var(--x-pink);
+  --gray: var(--x-muted);
+  --line: rgba(138, 106, 69, .14);
+  --line-strong: rgba(138, 106, 69, .28);
+  color: var(--x-body);
+  background: var(--x-bg);
+}
+
+#page-home h1, #page-home h2, #page-home h3,
+#page-companion h1, #page-companion h2, #page-companion h3,
+#page-records h1, #page-records h2, #page-records h3 { color: var(--x-title); }
+
+#page-home .card,
+#page-companion .card,
+#page-records .card {
+  background: color-mix(in srgb, var(--x-card) 94%, transparent);
+  border-color: var(--x-border);
+  box-shadow: 0 8px 22px rgba(138, 106, 69, .08);
+}
+
+#page-home .btn-soft,
+#page-companion .btn-soft,
+#page-records .btn-soft,
+.meditation-dialog .btn-soft {
+  color: var(--x-caramel);
+  border-color: var(--x-border);
+  background: var(--x-card);
+}
+
+#page-home .btn-primary,
+#page-companion .btn-primary,
+#page-records .btn-primary,
+.meditation-dialog .btn-primary { background: var(--x-caramel); color: #FFFDF8; }
+
+.selfcare-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.selfcare-card { min-height: 188px; display: flex; flex-direction: column; overflow: hidden; }
+.selfcare-card:nth-child(1) { background: linear-gradient(145deg, #FFFDF8, #F2F5EE); }
+.selfcare-card:nth-child(2) { background: linear-gradient(145deg, #FFFDF8, #EFF4FC); }
+.selfcare-card:nth-child(3) { background: linear-gradient(145deg, #FFFDF8, #FFF2E9); }
+.selfcare-card:nth-child(4) { background: linear-gradient(145deg, #FFFDF8, #FAF0EE); }
+.selfcare-card__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.selfcare-source { color: var(--x-muted); font-size: 10px; white-space: nowrap; }
+.selfcare-value { margin-top: 16px; color: var(--x-title); font: 600 27px/1.15 "DM Mono", monospace; letter-spacing: -.03em; }
+.selfcare-value span { font: 400 12px/1.4 system-ui, sans-serif; color: var(--x-muted); letter-spacing: 0; }
+.selfcare-note { margin-top: 6px; color: var(--x-body); font-size: 12px; line-height: 1.55; }
+.selfcare-action { margin-top: auto; min-height: 40px; }
+.selfcare-card--meditation { cursor: pointer; }
+.selfcare-status { min-height: 20px; margin: 3px 0 10px; color: var(--x-green); font-size: 12px; text-align: center; }
+
+.xinyu-icon-slot {
+  --slot-bg: var(--x-yellow, #F7D98B);
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border-radius: 46% 54% 48% 52% / 54% 44% 56% 46%;
+  background: var(--slot-bg);
+  box-shadow: inset 0 0 0 1px rgba(138, 106, 69, .08), 0 5px 12px rgba(138, 106, 69, .09);
+}
+.xinyu-icon-slot::before,
+.xinyu-icon-slot::after { content: ""; position: absolute; display: block; }
+.xinyu-icon-slot--sm { width: 30px; height: 30px; }
+.xinyu-icon-slot--lg { width: 52px; height: 52px; }
+.xinyu-icon-slot--brand { --slot-bg: #FFF1C8; }
+.xinyu-icon-slot--brand::before { width: 18px; height: 13px; left: 13px; top: 15px; border-radius: 50% 50% 44% 56%; background: #A8CFA0; transform: rotate(-12deg); }
+.xinyu-icon-slot--brand::after { width: 8px; height: 8px; left: 20px; top: 11px; border-radius: 50%; background: #7D9BD6; }
+.xinyu-icon-slot--steps { --slot-bg: #DCEBD6; }
+.xinyu-icon-slot--steps::before { width: 10px; height: 18px; left: 11px; top: 13px; border-radius: 60% 45%; background: #8DAE7F; transform: rotate(-24deg); }
+.xinyu-icon-slot--steps::after { width: 9px; height: 16px; right: 10px; top: 10px; border-radius: 60% 45%; background: #A8CFA0; transform: rotate(20deg); }
+.xinyu-icon-slot--water { --slot-bg: #DDE8F8; }
+.xinyu-icon-slot--water::before { width: 16px; height: 21px; left: 14px; top: 10px; border-radius: 60% 45% 55% 45%; background: #7D9BD6; transform: rotate(45deg); }
+.xinyu-icon-slot--water::after { width: 5px; height: 5px; left: 21px; top: 17px; border-radius: 50%; background: #FFFDF8; opacity: .72; }
+.xinyu-icon-slot--walk { --slot-bg: #FBE2D2; }
+.xinyu-icon-slot--walk::before { width: 24px; height: 7px; left: 10px; top: 22px; border-radius: 70% 40% 50% 60%; background: #E9A77E; transform: rotate(-8deg); }
+.xinyu-icon-slot--walk::after { width: 10px; height: 13px; left: 12px; top: 12px; border-radius: 50%; background: #F1BE9F; }
+.xinyu-icon-slot--meditation { --slot-bg: #F6E2DE; }
+.xinyu-icon-slot--meditation::before { width: 24px; height: 13px; left: 10px; top: 19px; border-radius: 60% 60% 45% 45%; background: #E9A77E; }
+.xinyu-icon-slot--meditation::after { width: 11px; height: 11px; left: 17px; top: 10px; border-radius: 50%; background: #7D9BD6; }
+.xinyu-icon-slot--companion { --slot-bg: #FFF1C8; }
+.xinyu-icon-slot--companion::before { width: 22px; height: 18px; left: 11px; top: 11px; border-radius: 52% 48% 50% 46%; background: #E9A77E; }
+.xinyu-icon-slot--companion::after { width: 9px; height: 8px; left: 18px; top: 25px; background: #E9A77E; transform: rotate(45deg); }
+.xinyu-icon-slot--meeting { --slot-bg: #DDEBD9; }
+.xinyu-icon-slot--meeting::before { width: 11px; height: 11px; left: 9px; top: 10px; border-radius: 50%; background: #8DAE7F; box-shadow: 15px 2px 0 #A8CFA0; }
+.xinyu-icon-slot--meeting::after { width: 28px; height: 12px; left: 8px; bottom: 8px; border-radius: 50% 50% 38% 38%; background: #A8CFA0; }
+.xinyu-icon-slot--diary { --slot-bg: #F5DFDC; }
+.xinyu-icon-slot--diary::before { width: 21px; height: 25px; left: 11px; top: 9px; border-radius: 5px 9px 7px 5px; background: #FFFDF8; box-shadow: inset 3px 0 #E9A77E; }
+.xinyu-icon-slot--diary::after { width: 12px; height: 2px; left: 17px; top: 17px; background: #EFD6D0; box-shadow: 0 6px #EFD6D0; }
+.xinyu-icon-slot--device { --slot-bg: #E4E7F3; }
+.xinyu-icon-slot--device::before { width: 22px; height: 16px; left: 11px; top: 10px; border-radius: 8px; background: #7D9BD6; }
+.xinyu-icon-slot--device::after { width: 14px; height: 7px; left: 15px; top: 27px; border-radius: 8px 8px 3px 3px; background: #A8CFA0; }
+.xinyu-icon-slot--focus { --slot-bg: #DDE8F8; }
+.xinyu-icon-slot--focus::before { width: 23px; height: 15px; left: 10px; top: 14px; border: 3px solid #7D9BD6; border-radius: 50%; }
+.xinyu-icon-slot--focus::after { width: 7px; height: 7px; left: 19px; top: 21px; border-radius: 50%; background: #8A6A45; transform: translateY(-50%); }
+.xinyu-icon-slot--mood { --slot-bg: #FFF1C8; }
+.xinyu-icon-slot--mood::before { width: 21px; height: 21px; left: 12px; top: 11px; border-radius: 50%; background: #F7D98B; }
+.xinyu-icon-slot--mood::after { width: 13px; height: 6px; left: 16px; top: 21px; border-bottom: 2px solid #8A6A45; border-radius: 50%; }
+.xinyu-icon-slot--low { --slot-bg: #DDE8F8; }
+.xinyu-icon-slot--neutral { --slot-bg: #DCEBD6; }
+.xinyu-icon-slot--bright { --slot-bg: #FFF1C8; }
+.xinyu-icon-slot--anger { --slot-bg: #F5DFDC; }
+.xinyu-icon-slot--uneasy { --slot-bg: #E4E0F1; }
+
+.shortcut-icon { width: 44px; height: 44px; }
+.shortcut-arrow { width: 8px; height: 8px; border-top: 2px solid #A49382; border-right: 2px solid #A49382; transform: rotate(45deg); }
+.shortcut-row:hover .shortcut-arrow { transform: translateX(2px) rotate(45deg); }
+
+#page-companion .comp-signal { align-items: flex-start; }
+#page-companion .comp-care-inline { display: flex; background: #FFF5D8; border-color: #F0DCA8; }
+#page-companion .comp-focus-card { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 15px; }
+#page-companion .comp-focus-card .eyebrow { margin-bottom: 4px; }
+#page-companion .comp-focus-label { margin-top: 2px; font: 600 21px/1.35 "Noto Serif SC", serif; color: var(--x-title); }
+#page-companion .comp-focus-note { color: var(--x-body); font-size: 12px; margin-top: 5px; line-height: 1.65; }
+
+#page-records .cal-day { color: var(--x-body); }
+#page-records .cal-day.selected { background: var(--x-caramel); color: #FFFDF8; }
+#page-records .cal-day.today { box-shadow: inset 0 0 0 2px var(--x-yellow); }
+#page-records .tag-chip input:checked + span { color: #FFFDF8; border-color: var(--x-caramel); background: var(--x-caramel); }
+.mood-trend-card__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.mood-trend-card__head p { color: var(--x-muted); font-size: 11px; margin-top: 3px; }
+.mood-trend-chart { min-height: 190px; }
+.mood-trend-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.mood-trend-empty { display: grid; place-items: center; min-height: 150px; text-align: center; color: var(--x-muted); line-height: 1.7; }
+.mood-trend-demo { color: var(--x-caramel); background: var(--x-sticker); border-radius: 99px; padding: 5px 10px; font-size: 10px; }
+.mood-dot { display: inline-block; width: 13px; height: 13px; border-radius: 48% 52% 44% 56%; background: #A8CFA0; box-shadow: inset 0 0 0 2px rgba(255, 253, 248, .55); }
+.mood-dot--low { background: #7D9BD6; }
+.mood-dot--neutral { background: #A8CFA0; }
+.mood-dot--bright { background: #F7D98B; }
+.mood-dot--anger { background: #E9A77E; }
+.mood-dot--uneasy { background: #B6AED0; }
+#page-records .emotion-btn .xinyu-icon-slot { width: 38px; height: 38px; }
+#page-records .emotion-btn { color: var(--x-body); border-color: var(--x-border); background: #FFFDF8; }
+#page-records .emotion-btn[aria-checked="true"] { border-color: var(--x-caramel); background: var(--x-sticker); box-shadow: 0 0 0 2px rgba(138, 106, 69, .12); }
+
+.meditation-dialog { width: min(420px, calc(100% - 28px)); max-height: min(680px, calc(100dvh - 32px)); padding: 0; border: 0; border-radius: 28px; background: var(--x-card); box-shadow: 0 24px 70px rgba(74, 58, 43, .24); }
+.meditation-dialog::backdrop { background: rgba(74, 58, 43, .26); backdrop-filter: blur(4px); }
+.meditation-dialog__shell { padding: 24px; color: var(--x-body); }
+.meditation-dialog__head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.meditation-dialog__head h2 { color: var(--x-title); font-size: 22px; }
+.meditation-dialog__head p { color: var(--x-muted); margin-top: 5px; font-size: 12px; }
+.meditation-dialog fieldset { margin: 20px 0 0; padding: 0; border: 0; }
+.meditation-dialog legend { color: var(--x-title); font-weight: 600; margin-bottom: 10px; }
+.meditation-options { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; }
+.meditation-options label { cursor: pointer; }
+.meditation-options input { position: absolute; opacity: 0; pointer-events: none; }
+.meditation-options span { display: grid; place-items: center; min-height: 44px; padding: 8px; border: 1px solid var(--x-border); border-radius: 14px; background: #FFFDF8; color: var(--x-body); }
+.meditation-options input:checked + span { border-color: var(--x-caramel); background: var(--x-sticker); color: var(--x-title); box-shadow: 0 0 0 2px rgba(138, 106, 69, .1); }
+.meditation-options input:focus-visible + span { outline: 2px solid var(--x-blue); outline-offset: 2px; }
+.meditation-dialog__actions { display: grid; grid-template-columns: 1fr 1.5fr; gap: 10px; margin-top: 22px; }
+.meditation-dialog__close { width: 40px; height: 40px; border: 1px solid var(--x-border); border-radius: 50%; background: #FFFDF8; color: var(--x-caramel); font-size: 20px; }
+
+.bottom-nav { border-color: #E4D8C9; background: rgba(255, 253, 248, .95); }
+.bottom-nav .nav-item { color: #8D7D6E; }
+.bottom-nav .nav-item.active { color: #6F5338; background: #FFF1C8; }
+.bottom-nav .xinyu-icon-slot { width: 24px; height: 24px; box-shadow: none; }
+.bottom-nav .xinyu-icon-slot::before,
+.bottom-nav .xinyu-icon-slot::after { transform: scale(.58); transform-origin: center; }
+
+@media (max-width: 400px) {
+  .selfcare-grid { grid-template-columns: 1fr; }
+  .selfcare-card { min-height: 160px; }
+  .meditation-dialog__shell { padding: 20px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xinyu-icon-slot, .mood-trend-chart * { animation: none !important; transition: none !important; }
+}

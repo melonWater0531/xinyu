@@ -20,16 +20,19 @@ class AudioProcessingState:
 
 
 class MeetingAudioProcessor:
-    def __init__(self, sample_rate: int = 16000, vad_aggressiveness: int = 2) -> None:
+    def __init__(self, sample_rate: int = 16000, vad_aggressiveness: int = 2,
+                 enable_noise_suppression: bool = False) -> None:
         self.sample_rate = int(sample_rate)
+        self._noise_enabled = bool(enable_noise_suppression)
         self._noise_reduce = None
         self._vad = None
         self._fallback_reason = ""
 
-        try:
-            self._noise_reduce = importlib.import_module("noisereduce")
-        except Exception as e:
-            self._fallback_reason = f"noisereduce_unavailable:{type(e).__name__}"
+        if self._noise_enabled:
+            try:
+                self._noise_reduce = importlib.import_module("noisereduce")
+            except Exception as e:
+                self._fallback_reason = f"noisereduce_unavailable:{type(e).__name__}"
 
         try:
             webrtcvad = importlib.import_module("webrtcvad")
@@ -48,7 +51,7 @@ class MeetingAudioProcessor:
 
     def process(self, mono: np.ndarray) -> np.ndarray:
         audio = np.asarray(mono, dtype=np.float32)
-        if self._noise_reduce is None or audio.size == 0:
+        if not self._noise_enabled or self._noise_reduce is None or audio.size == 0:
             return audio
         try:
             cleaned = self._noise_reduce.reduce_noise(y=audio, sr=self.sample_rate, stationary=False)
@@ -87,9 +90,8 @@ class MeetingAudioProcessor:
         return {
             "noise_suppression": {
                 "available": self.noise_available,
-                "enabled": self.noise_available,
+                "enabled": self._noise_enabled and self.noise_available,
             },
             "vad_mode": "webrtcvad" if self.vad_available else "rms",
             "fallback_reason": self._fallback_reason,
         }
-

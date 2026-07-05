@@ -15,7 +15,7 @@
 | 手势交互 | reCamera SSCMA 摄像头 + MediaPipe Gesture Recognizer | Dashboard intent/toast/local feedback | Open Palm、Closed Fist、Thumb Up、Thumb Down、Victory 只映射陪伴 intent，不进入云台控制 |
 | 健康/PWA | Dashboard localStorage + 实时 emotion/attention/eye/gaze state | 本地 PWA Notification | 护眼、久坐、喝水、疲劳、低专注、情绪关心通知在前端本地治理 |
 | LLM/日记 | DeepSeek 优先；智谱 GLM-4-Flash 兜底；端点本地 fallback | Dashboard 日记、反思、会议摘要 | 无云端 API key 时返回本地温和建议，不丢失日记 |
-| TTS/语音输出 | FastAPI voice event + 浏览器 Web Speech | `/home` 朗读短句；`/control` 调试事件 | 后端不合成音频，不占用主机/ReSpeaker 输出设备 |
+| TTS/语音输出 | 智谱/OpenAI-compatible TTS + FastAPI 音频缓存 + Node-RED audio bridge；浏览器 Web Speech 作回退 | reCamera Gimbal 2002w 扬声器或浏览器 | 设备播放只走 `/recamera-control/v1/audio/*`，不进入云台控制 Event |
 | 手动云台 | Dashboard UI Event | reCamera yaw/pitch CAN 电机 | 有效 manual session 才接受 D-Pad/home |
 
 `/control` 是所有已部署功能的集合面板。每个功能卡都有独立启动和终止
@@ -79,7 +79,7 @@ FastAPI = UI Event emitter + perception/recording + runtime telemetry viewer
 | apply_command 调用点 | **仅 `main_phase3.py` control runtime** |
 | FastAPI 是否调用 apply_command | **NEVER**（注释确认，代码无调用） |
 | 是否有第二 FSM | **NO**（FastAPI 只查询 main runtime snapshot） |
-| 孤立 PD 模块 | `core/control_filter.py`（有比例增益代码，但**未被任何生产代码 import**，属于孤立遗留模块） |
+| 孤立 PD 模块 | 已归档到 `archive/legacy_20260704/core_orphans/control_filter.py`；未被任何生产代码 import |
 
 控制闭环、session 租约与设备看门狗的关键结论已合并在本节与 SOP 验收章节中。
 
@@ -141,7 +141,7 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 
 | 风险 ID | 位置 | 描述 | 级别 | 结论 |
 |---|---|---|---|---|
-| R01 | `core/control_filter.py` | 含比例增益/EMA 控制数学，有 `ControlFilter` 类 | WARNING | **孤立模块**：无任何生产代码 import，不在控制链路中 |
+| R01 | `archive/legacy_20260704/core_orphans/control_filter.py` | 含比例增益/EMA 控制数学，有 `ControlFilter` 类 | ARCHIVED | **孤立模块**：无任何生产代码 import，不在控制链路中 |
 | R02 | `hardware/recamera_client.py` | 旧 Socket.IO `widget-change` shadow transport | DELETED | 已由版本化 Node-RED HTTP bridge 替代 |
 | R03 | `tools/run_orchestrator_mvp.py` | 含 `MockGimbal.apply_command()` 调用 | OK | 开发工具，不被任何生产入口 import |
 | R04 | `recamera_fastapi.py` runtime cache | FastAPI 展示控制状态 | OK | 状态来自 main runtime snapshot，无 Orchestrator 实例 |
@@ -160,7 +160,7 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | `core/orchestrator.py` | **ACTIVE** | 唯一决策引擎；持有 FSM 实例；输出 ControlCommand |
 | `core/event.py` | **ACTIVE** | 数据类：Event、BBox、ControlCommand（均为 frozen dataclass） |
 | `core/safety_layer.py` | **ACTIVE** | ControlCommand hard gate；rate/step/range/speed 仅 allow/block |
-| `core/control_filter.py` | **ORPHAN** | 遗留比例控制平滑模块；未被生产代码 import，可删除 |
+| `archive/legacy_20260704/core_orphans/control_filter.py` | **ARCHIVED ORPHAN** | 遗留比例控制平滑模块；未被生产代码 import；仅作备用 |
 
 ### 4.2 硬件（`hardware/`）
 
@@ -205,7 +205,9 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | `services/emotion_prompt.py` | 开放词汇情绪 prompt 构建：EmotiEff + attention/eye/gaze → LLM 低频语义推理、chat/reflect 情绪注入 |
 | `services/speaker_mapper.py` | 会议说话人映射：DOA zone → 临时说话人标签；只读状态注册，提供 search plan 但不执行云台控制 |
 | `services/wake_word_service.py` | 可选 wake word 服务：`ENABLE_WAKE_WORD=true` 才尝试加载 openWakeWord；检测后广播 WebSocket 事件 |
-| `services/voice_policy.py` | 浏览器 TTS 初版策略：短句、冷却、优先级和 voice event；不做音频合成或播放 |
+| `services/voice_policy.py` | 轻量短句策略：冷却、优先级和 voice event；浏览器可回退播放 |
+| `services/zhipu_voice.py` | 智谱 ASR/Chat/TTS 语音轮次封装；TTS endpoint 可通过环境变量覆盖 |
+| `hardware/recamera_audio_client.py` | reCamera Node-RED audio bridge 客户端；只调用 `/audio/play|status|stop`，不发送云台命令 |
 
 ### 4.6 主入口
 
@@ -220,12 +222,26 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | 文件 | 路由 | 用途 |
 |---|---|---|
 | `recamera_v2_live.html` | `/control` `/v2` | PAGE 1：实时控制台（只读遥测 + FSM 可观测） |
-| `home.html` | 需将 `HOME_FILE` 指向此文件 | PAGE 2：产品 Demo（单文件 IIFE，含所有 A–E 功能） |
-| `page2_preview/index.html` | `/home` `/`（当前实际路由） | 旧版产品首页预览（不含 A–E 功能）；**待替换为 home.html** |
+| `home.html` | `/home` `/`（经 `/` 重定向） | PAGE 2：当前产品 Home；真实状态优先，WS 失败降级 polling |
 | `manifest.webmanifest` | `/manifest.webmanifest` | PWA 清单 |
 | `sw.js` | `/sw.js` | Service Worker |
 
-> **路由问题**：`recamera_fastapi.py:2233` 的 `HOME_FILE` 仍指向 `page2_preview/index.html`，导致 `/home` 不服务 `home.html`。修复：将 `HOME_FILE` 改为 `DASHBOARD_DIR / "home.html"` 并移除 `_serve_html` 中针对 `page2_preview` 的 CSS/JS 路径替换逻辑。
+历史五页录屏预览已保守归档到 `archive/legacy_20260704/dashboard_preview/`：
+`xinyu_preview.*`、`page2_preview/` 和预览截图不再作为 FastAPI 静态路由发布。
+如需恢复旧录屏页，按归档目录 README 将文件复制回原 `dashboard/` 路径。
+
+### 4.8 文件分层索引
+
+| 类别 | 文件或目录 | 说明 |
+|---|---|---|
+| 活跃前端 | `dashboard/home.html`、`dashboard/home_*.js`、`dashboard/home_selfcare.css` | `/home` 产品页与本地 PWA 交互 |
+| 活跃调试台 | `dashboard/recamera_v2_live.html`、`dashboard/tracking_overlay.js` | `/control`、`/v2` 工程控制与遥测 |
+| 活跃静态资产 | `dashboard/icons/`、`dashboard/island_cutout.png`、`dashboard/floating_island.glb`、`dashboard/vendor/three/` | PWA、产品形象和调试台 3D 依赖 |
+| Legacy 预览 | `archive/legacy_20260704/dashboard_preview/` | 旧五页录屏预览和 Page 2 数据；测试仍以 legacy contract 保护 |
+| 控制孤立模块 | `archive/legacy_20260704/core_orphans/control_filter.py` | 旧比例/EMA 控制滤波器；不在单控制平面中 |
+| 开发工具 | `proxy.py`、`recamera_demo.py`、`tools/run_orchestrator_mvp.py` | 辅助调试或演示入口，不是生产主链路 |
+| 模型资产 | `models/` | MediaPipe、ONNX、EmotiEff 等模型；不参与前端清理 |
+| 部署资产 | `deploy/node_red/`、`vendor/recamera_*` | 设备桥和厂商参考代码；不参与前端清理 |
 
 ---
 
@@ -355,7 +371,7 @@ Debounce:
 - [x] 对话会话管理：`/api/conversation/{start,stop,state,save,debug}`
 - [x] 会议说话人查询：`GET /api/meeting/speakers`
 - [x] Wake word 状态查询：`GET /api/wake_word/state`；检测事件通过 `/ws` 广播 `wake_word_detected`
-- [x] TTS voice event：`GET /api/voice/state`、`POST /api/voice/say`、`POST /api/voice/stop`；浏览器 Web Speech 负责播放
+- [x] TTS/语音交互：`GET /api/voice/state`、`POST /api/voice/say`、`POST /api/voice/stop`、`POST /api/voice/chat`、`POST /api/voice/tts`、`POST /api/voice/play`、`GET /api/voice/audio/{id}`；设备扬声器优先，浏览器回退
 - [x] 会议音频处理状态：`audio_processing.noise_suppression` 与 `vad_mode`
 - [x] LLM 反思：`/api/reflect`（情绪日记生成）
 - [x] API 快照：`/api/snapshot`（当前帧 JPEG）
@@ -388,7 +404,7 @@ DeepSeek 默认模型保留 `deepseek-v4-flash`。旧截图中“模型不存在
 
 会议 pipeline 当前只实现轻量 speaker label，不执行 pitch 搜索、唇动验证、ArcFace 重识别或重型 diarization；这些扩展暂不进入当前主链路。
 
-TTS 初版只广播 `voice_utterance` / `voice_stop` 事件，`/home` 使用浏览器 Web Speech API 播放或降级为文字/toast，`/control` 展示 voice debug。云端 TTS、主机扬声器输出、流式 TTS 和语音输入 ASR 暂不进入当前主链路。
+`/api/voice/say` 仍广播 `voice_utterance` / `voice_stop` 事件，`/home` 可用浏览器 Web Speech API 播放或降级为文字/toast。完整语音轮次使用 `/api/voice/chat`：短音频 raw body → 智谱 ASR → LLM 回复 → TTS 缓存 → reCamera Node-RED audio bridge 播放；失败时回退浏览器音频/文字。
 
 ---
 
@@ -411,7 +427,7 @@ TTS 初版只广播 `voice_utterance` / `voice_stop` 事件，`/home` 使用浏�
 
 | 模块 | 状态 | 说明 |
 |---|---|---|
-| `core/control_filter.py` | **ORPHAN** | 含 EMA + Kp 比例控制；未被任何生产文件 import；可在后续清理中删除 |
+| `archive/legacy_20260704/core_orphans/control_filter.py` | **ARCHIVED ORPHAN** | 含 EMA + Kp 比例控制；未被任何生产文件 import；作为备用保留 |
 | `tools/run_orchestrator_mvp.py` | **DEV TOOL** | 含 `MockGimbal.apply_command()`；仅用于开发测试，不在生产链路 |
 | `tools/build_function_arch_docx.py` | **DEV TOOL** | 文档生成工具；含已过时模块引用（`gimbal_mode_state.py`、`state_machine.py`），不影响运行 |
 
@@ -492,9 +508,9 @@ main_phase3 runtime snapshot ──> EventBus ──> FastAPI ──> Dashboard
 硬件职责：
 
 - **ReSpeaker XVF3800**：四麦克风 DOA/VAD、会议 USB Audio、12 颗 WS2812 实体 DOA 灯环。
-- **reCamera Gimbal 2002w**：SSCMA 摄像头、Node-RED bridge、CAN yaw/pitch 电机。
+- **reCamera Gimbal 2002w**：SSCMA 摄像头、Node-RED bridge、CAN yaw/pitch 电机、语音输出扬声器。
 - **Windows/WSL 主机**：FastAPI 感知和录音、EventBus、唯一 control runtime。
-- reCamera 自带麦克风、扬声器和补光灯不参与当前业务闭环。
+- reCamera 自带扬声器已纳入语音输出闭环：FastAPI 缓存 WAV，通过 Node-RED `/recamera-control/v1/audio/play` 触发设备端 `aplay -D <device>`；设备名由 `RECAMERA_APLAY_DEVICE` / `VOICE_APLAY_DEVICE` 或 `aplay -l` 自动探测决定。自带麦克风和补光灯仍不参与当前业务闭环。
 
 配套设备 Flow 位于 `deploy/node_red/recamera_control_bridge.json`，暴露 command、stop、status 三个版本化 endpoint。Bridge 不可达时 `--enable-control` fail closed。
 
