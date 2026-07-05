@@ -223,7 +223,7 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 |---|---|---|
 | `recamera_v2_live.html` | `/control` `/v2` | PAGE 1：实时控制台（只读遥测 + FSM 可观测） |
 | `home.html` | `/home` `/`（经 `/` 重定向） | PAGE 2：五页产品 Home；真实状态优先，WS 失败降级 polling |
-| `home_legacy.html` | `/home-old` | 上一版 Home 备用入口 |
+| `archive/dashboard_cleanup_20260705/home_legacy/home_legacy.html` | `/home-old` | 上一版 Home 备用入口 |
 | `manifest.webmanifest` | `/manifest.webmanifest` | PWA 清单 |
 | `sw.js` | `/sw.js` | Service Worker |
 
@@ -234,9 +234,10 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | 类别 | 文件或目录 | 说明 |
 |---|---|---|
 | 活跃前端 | `dashboard/home.html`、`dashboard/product_home/` | `/home` 五页产品页、真实接口闭环与本地 fallback |
-| 备用 Home | `dashboard/home_legacy.html`、`dashboard/home_legacy/` | `/home-old` 上一版 Home 备用入口 |
+| 备用 Home | `archive/dashboard_cleanup_20260705/home_legacy/` | `/home-old` 上一版 Home 备用入口，静态资源由 `/home-old-static/*` 提供 |
 | 活跃调试台 | `dashboard/recamera_v2_live.html`、`dashboard/tracking_overlay.js` | `/control`、`/v2` 工程控制与遥测 |
-| 活跃静态资产 | `dashboard/icons/`、`dashboard/island_cutout.png`、`dashboard/floating_island.glb`、`dashboard/vendor/three/` | PWA、产品形象和调试台 3D 依赖 |
+| 活跃静态资产 | `dashboard/icons/`、`dashboard/product_home/` | PWA 图标与正式产品页资源 |
+| 已归档旧资产 | `archive/dashboard_cleanup_20260705/unused_dashboard_assets/` | 旧岛图、GLB 与 Three vendor 备用归档 |
 | Legacy 预览 | `archive/legacy_20260704/dashboard_preview/` | 历史五页录屏预览和 Page 2 数据 |
 | 控制孤立模块 | `archive/legacy_20260704/core_orphans/control_filter.py` | 旧比例/EMA 控制滤波器；不在单控制平面中 |
 | 开发工具 | `proxy.py`、`recamera_demo.py`、`tools/run_orchestrator_mvp.py` | 辅助调试或演示入口，不是生产主链路 |

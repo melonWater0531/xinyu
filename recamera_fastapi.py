@@ -68,6 +68,7 @@ logger = get_logger(__name__)
 
 # Configuration
 DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
+ARCHIVE_DIR = Path(__file__).resolve().parent / "archive"
 HTML_FILE = DASHBOARD_DIR / "recamera_v2_live.html"
 
 @dataclass
@@ -2341,8 +2342,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve dashboard static files (GLB models, etc.)
+# Serve active dashboard assets and archived backup Home assets.
 app.mount("/static", StaticFiles(directory=str(DASHBOARD_DIR)), name="static")
+LEGACY_HOME_DIR = ARCHIVE_DIR / "dashboard_cleanup_20260705" / "home_legacy"
+app.mount("/home-old-static", StaticFiles(directory=str(LEGACY_HOME_DIR)), name="home_old_static")
 
 
 # State push loop
@@ -4432,7 +4435,7 @@ async def health():
 # PAGE 2 = User product home                                -> / , /home
 # BACKUP = Previous Home product page                       -> /home-old
 HOME_FILE = DASHBOARD_DIR / "home.html"
-LEGACY_HOME_FILE = DASHBOARD_DIR / "home_legacy.html"
+LEGACY_HOME_FILE = LEGACY_HOME_DIR / "home_legacy.html"
 _NOCACHE = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache", "Expires": "0"}
 

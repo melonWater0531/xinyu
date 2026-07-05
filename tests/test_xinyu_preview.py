@@ -102,7 +102,7 @@ class XinyuProductHomeTests(unittest.TestCase):
         legacy_body = legacy.body.decode("utf-8")
         self.assertIn("/static/product_home/home.js", product_body)
         self.assertIn("xy-voice-record", product_body)
-        self.assertIn("/static/home_legacy/home_selfcare.js", legacy_body)
+        self.assertIn("/home-old-static/home_selfcare.js", legacy_body)
         self.assertIn("xinyu-icon-slot", legacy_body)
 
     def test_sop_documents_product_home_and_backup(self) -> None:
