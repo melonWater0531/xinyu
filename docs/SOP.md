@@ -126,8 +126,11 @@ usbipd.exe detach --busid <BUSID>
 
 **状态验证（双轴电机就绪后才返回 200，否则 503）：**
 
+访问 reCamera 局域网地址时默认绕过代理，避免代理截获或等待超时。
+
 ```bash
-curl "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/status"
+curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
+  "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/status"
 ```
 
 期望响应包含 `connected=true`、真实 `yaw/pitch`、双轴 speed 和 `source=motor_readback`。
@@ -135,11 +138,13 @@ curl "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/status"
 **可选冒烟测试（确认电机响应后立即 stop）：**
 
 ```bash
-curl -X POST "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/command" \
+curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
+  -X POST "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/command" \
   -H 'Content-Type: application/json' \
   -d '{"mode":"absolute","yaw":180,"pitch":90,"yaw_speed":180,"pitch_speed":180}'
 
-curl -X POST "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/stop" \
+curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
+  -X POST "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/stop" \
   -H 'Content-Type: application/json' -d '{"stop":true}'
 ```
 
@@ -829,7 +834,7 @@ ss -lntp | grep 8765
 
 1. `main_phase3.py` 是否带 `--enable-control`。
 2. 设备地址和 1880 端口是否可达（`nc -zv "$RECAMERA_DEVICE_IP" 1880`）。
-3. Node-RED bridge 是否已部署并返回 `connected=true`（见 1.3 节验证命令）。
+3. Node-RED bridge 是否已部署并返回 `connected=true`（优先使用 1.3 节带 `--noproxy` 的验证命令）。
 4. SafetyLayer 是否因 rate limit、范围或 safe mode 拦截。
 5. 控制运行时日志是否出现命令应用失败。
 
