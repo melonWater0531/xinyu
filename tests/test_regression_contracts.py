@@ -667,6 +667,49 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "audio_missing")
 
+    async def test_voice_test_tone_generates_audio_without_zhipu_key(self) -> None:
+        old_key = os.environ.pop("ZHIPU_API_KEY", None)
+        try:
+            result = await api.api_voice_test_tone({"play": False})
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["provider"], "local_test_tone")
+            path = Path(result["path"])
+            self.assertTrue(path.is_file())
+            self.assertEqual(path.read_bytes()[:4], b"RIFF")
+            self.assertTrue(result["audio_url"].startswith("/api/voice/audio/"))
+        finally:
+            if old_key is not None:
+                os.environ["ZHIPU_API_KEY"] = old_key
+
+    async def test_voice_playback_status_reports_unreachable_bridge(self) -> None:
+        class FakeAudioClient:
+            def state(self):
+                return {"configured": True, "last_error": "timeout", "last_result": {}}
+
+            def status(self):
+                return {"ok": False, "state": "unreachable", "error": "timeout"}
+
+        old_client = api._voice_audio_client
+        try:
+            api._voice_audio_client = FakeAudioClient()
+            result = await api.api_voice_playback_status()
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["state"], "unreachable")
+            self.assertEqual(result["playback"]["last_error"], "timeout")
+        finally:
+            api._voice_audio_client = old_client
+
+    async def test_voice_control_routes_registered(self) -> None:
+        route_paths = {getattr(route, "path", "") for route in api.app.routes}
+        for path in (
+            "/api/voice/playback/status",
+            "/api/voice/test_tone",
+            "/api/voice/chat",
+            "/api/voice/tts",
+            "/api/voice/play",
+        ):
+            self.assertIn(path, route_paths)
+
     async def test_doa_direction_endpoint_persists_and_returns_handedness(self) -> None:
         calib = Path(api.__file__).resolve().parent / "runtime" / "doa_calibration.json"
         old_text = calib.read_text(encoding="utf-8") if calib.is_file() else None

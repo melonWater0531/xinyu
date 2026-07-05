@@ -105,6 +105,14 @@ button,input,select{font:inherit}
   background:#0e1522;color:#d9e6ff;padding:10px;font-size:12px;line-height:1.55
 }
 .notice{border-left:3px solid var(--accent);background:var(--accent-soft);padding:10px 12px;border-radius:8px;color:#24436f;font-size:13px;line-height:1.55}
+.voice-panel{grid-column:1 / -1}
+.voice-actions{display:grid;grid-template-columns:minmax(180px,1fr) 150px 150px;gap:8px;align-items:center}
+.voice-actions input,.voice-actions select{min-height:38px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);padding:7px 10px;min-width:0}
+.voice-button-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.voice-status-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0}
+.voice-status-grid .kv{border:1px solid var(--line);border-radius:8px;background:var(--panel-soft);padding:9px 10px}
+.voice-status-grid .kv:first-child{border-top:1px solid var(--line);padding-top:9px}
+.voice-result{min-height:44px;border:1px solid var(--line);border-radius:8px;background:#fff;padding:10px 12px;font-size:13px;line-height:1.55;color:#334764}
 .bars{display:grid;gap:6px}
 .prob-row{display:grid;grid-template-columns:58px minmax(0,1fr) 40px;gap:8px;align-items:center;font-size:12px}
 .prob-track{height:8px;border-radius:999px;background:#e3e8f1;overflow:hidden}
@@ -157,6 +165,7 @@ button,input,select{font:inherit}
   .video-wrap{min-height:0}
   .workflow-strip{grid-template-columns:1fr}
   .turn{grid-template-columns:72px minmax(0,1fr)}.turn-time{grid-column:2;text-align:left}
+  .voice-actions,.voice-status-grid{grid-template-columns:1fr}
 }
 </style>
 </head>
@@ -405,6 +414,7 @@ button,input,select{font:inherit}
             <div class="metric"><div class="label">Intent</div><div class="value small" id="gestureIntent">--</div></div>
             <div class="metric"><div class="label">Stable</div><div class="value" id="gestureStable">--</div></div>
           </div>
+          <div class="kv"><span>Closed Fist stop</span><span id="gestureFistStop">未触发</span></div>
           <div class="log mono" id="gestureLog" style="margin-top:12px"></div>
         </section>
       </div>
@@ -443,13 +453,41 @@ button,input,select{font:inherit}
           <div class="kv"><span>会议摘要</span><span id="llmMeeting">--</span></div>
           <div class="log mono" id="llmLog" style="margin-top:12px"></div>
         </section>
-        <section class="card">
-          <h2>Voice Debug</h2>
-          <div class="kv"><span>Engine</span><span id="voiceEngine">--</span></div>
-          <div class="kv"><span>状态</span><span id="voiceStateText">--</span></div>
-          <div class="kv"><span>Last reason</span><span id="voiceReason">--</span></div>
-          <div class="kv"><span>Last text</span><span id="voiceText">--</span></div>
-          <div class="controls" style="margin-top:10px"><input id="voiceTestText" value="小屿语音测试。" maxlength="80" style="flex:1;min-width:180px"><button class="btn" onclick="voiceSayTest()">测试朗读</button><button class="btn danger" onclick="voiceStopTest()">停止</button></div>
+        <section class="card voice-panel">
+          <div class="card-head"><h2>Voice / Speaker Loop</h2><span class="pill" id="voiceLoopState">等待验证</span></div>
+          <div class="voice-actions">
+            <input id="voiceTestText" value="小屿语音测试。" maxlength="120" aria-label="语音测试文本">
+            <select id="voicePreset" aria-label="TTS 声线 preset">
+              <option value="neutral_natural">中性自然声</option>
+              <option value="gentle_female">温柔女声</option>
+              <option value="meeting_prompt">会议提示声</option>
+            </select>
+            <select id="voiceTarget" aria-label="播放目标">
+              <option value="recamera_speaker">reCamera Speaker</option>
+              <option value="browser">Browser</option>
+            </select>
+          </div>
+          <div class="voice-button-row">
+            <button class="btn" onclick="voiceSayTest()">浏览器事件</button>
+            <button class="btn primary" onclick="voiceTtsTest()">智谱 TTS 播放</button>
+            <button class="btn" onclick="voiceToneTest()">reCamera 测试音</button>
+            <button class="btn" id="voiceRecordBtn" onclick="voiceRecordTest()">录音上传</button>
+            <button class="btn" onclick="voiceRefreshBridge()">刷新 bridge</button>
+            <button class="btn danger" onclick="voiceStopTest()">停止</button>
+          </div>
+          <div class="voice-status-grid">
+            <div class="kv"><span>Engine</span><span id="voiceEngine">--</span></div>
+            <div class="kv"><span>Voice State</span><span id="voiceStateText">--</span></div>
+            <div class="kv"><span>Zhipu TTS</span><span id="voiceZhipuStatus">--</span></div>
+            <div class="kv"><span>Target</span><span id="voiceTargetState">--</span></div>
+            <div class="kv"><span>Playback</span><span id="voicePlaybackState">--</span></div>
+            <div class="kv"><span>Audio ID</span><span id="voiceAudioId">--</span></div>
+            <div class="kv"><span>Bridge</span><span id="voiceBridgeState">--</span></div>
+            <div class="kv"><span>Last reason</span><span id="voiceReason">--</span></div>
+            <div class="kv"><span>Last text</span><span id="voiceText">--</span></div>
+            <div class="kv"><span>Last error</span><span id="voiceError">--</span></div>
+          </div>
+          <div class="voice-result" id="voiceResult">按顺序验证：刷新 bridge → reCamera 测试音 → 智谱 TTS 播放 → 录音上传。</div>
           <div class="log mono" id="voiceLog" style="margin-top:12px"></div>
         </section>
       </div>
@@ -514,6 +552,7 @@ if(controlChannel)controlChannel.onmessage=ev=>{
   if(m.type==='released'){remoteControlOwner=false}
 };
 let meetingStarting=false,meetingCompleting=false;
+let voiceRecording=false,voiceRecorder=null,voiceChunks=[],voiceStatusTimer=null;
 const featureActive={
   single_face_analysis:false,
   multi_sound_yaw:false,
@@ -550,6 +589,30 @@ function handleVoiceDebugEvent(msg){
   const el=$('voiceLog'); if(el)el.innerHTML=line+'<br>'+el.innerHTML.slice(0,2000);
   return true;
 }
+function renderVoiceState(voice={}){
+  const playback=voice.playback||{},bridge=playback.bridge||{},zhipu=playback.zhipu||{};
+  const last=playback.last_result||{};
+  const bridgeLast=bridge.last_result||last||{};
+  const playbackState=playback.state||bridgeLast.state||'idle';
+  const audioId=playback.audio_id||bridgeLast.audio_id||last.audio_id||'';
+  $('voiceEngine').textContent=voice.engine||'browser_speech';
+  $('voiceLoopState').textContent=playbackState;
+  $('voiceStateText')&&($('voiceStateText').textContent=`${voice.enabled===false?'disabled':'enabled'} / ${voice.available===false?'unavailable':'available'} / ${voice.speaking?'speaking':'idle'} / q=${voice.queue_len||0}`);
+  $('voiceZhipuStatus').textContent=zhipu.configured?`${zhipu.tts_model||'glm-tts'} / ${zhipu.tts_format||'wav'}`:'未配置';
+  $('voiceTargetState').textContent=playback.target||voiceTarget();
+  $('voicePlaybackState').textContent=playbackState;
+  $('voiceAudioId').textContent=audioId||'--';
+  $('voiceBridgeState').textContent=bridge.configured===false?'未配置':(bridgeLast.state||bridgeLast.bridge_state||'--');
+  $('voiceReason').textContent=voice.last_reason||'--';
+  $('voiceText').textContent=voice.last_utterance||'--';
+  $('voiceError').textContent=playback.last_error||bridge.last_error||bridgeLast.error||'--';
+  if(['saving','playing'].includes(String(playbackState)))voiceScheduleStatus();
+}
+function recentClosedFistStop(voice={}){
+  const events=Array.isArray(voice.recent_events)?voice.recent_events:[];
+  const hit=events.slice().reverse().find(ev=>String(ev.type||'')==='voice_stop'&&String(ev.reason||'')==='closed_fist');
+  return hit?fmtClock(hit.time):'未触发';
+}
 function setConn(kind,text){$('wsDot').className='dot '+(kind==='on'?'on':kind==='warn'?'warn':'');$('wsText').textContent=text}
 function fmtTime(sec){sec=Math.max(0,Number(sec)||0);const m=Math.floor(sec/60),s=Math.floor(sec%60);return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`}
 function num(v,suffix='',d=0){return v==null||!Number.isFinite(Number(v))?'--':(d?Number(v).toFixed(d):Math.round(Number(v)))+suffix}
@@ -573,14 +636,137 @@ async function apiPost(path,body={},opts={}){
     clearTimeout(timer);
   }
 }
+async function apiGet(path,opts={}){
+  const timeoutMs=Number(opts.timeoutMs||opts.timeout||6000);
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),timeoutMs);
+  try{
+    const r=await fetch(path,{cache:'no-store',signal:ctrl.signal});
+    return await r.json();
+  }catch(e){
+    const msg=e.name==='AbortError'?`request timed out after ${timeoutMs}ms`:e.message;
+    if(!opts.silent)log(`API error ${path}: ${msg}`);
+    return {ok:false,error:msg,reason:msg};
+  }finally{
+    clearTimeout(timer);
+  }
+}
+function voiceStep(msg){
+  const line=nowLine(msg);
+  const el=$('voiceLog'); if(el)el.innerHTML=line+'<br>'+el.innerHTML.slice(0,4000);
+  const res=$('voiceResult'); if(res)res.textContent=msg;
+}
+function voiceTarget(){return $('voiceTarget')?.value||'recamera_speaker'}
+function voicePreset(){return $('voicePreset')?.value||'neutral_natural'}
+function voiceRenderResult(label,r){
+  const play=r?.playback||{};
+  const nestedState=(play&&typeof play.state==='object')?play.state:null;
+  const pb=nestedState||r?.state?.playback||play||{};
+  const stateText=(nestedState?.state)||(typeof play.state==='string'?play.state:'')||pb.state||'';
+  const audioId=r?.id||r?.audio_id||pb.audio_id||play.audio_id||'';
+  const url=r?.audio_url||'';
+  const bridge=r?.bridge||play.bridge||pb.last_result||{};
+  const ok=r&&r.ok!==false;
+  const parts=[label,ok?'ok':'failed'];
+  if(audioId)parts.push(`audio=${audioId}`);
+  if(url)parts.push(`url=${url}`);
+  if(stateText||bridge.state)parts.push(`state=${stateText||bridge.state}`);
+  if(r?.error||pb.last_error)parts.push(`error=${r.error||pb.last_error}`);
+  voiceStep(parts.join(' · '));
+  if(url&&(voiceTarget()==='browser'||r?.fallback==='browser'||stateText==='fallback_browser')){
+    try{new Audio(url).play().catch(()=>{});}catch(e){}
+  }
+  voiceScheduleStatus();
+}
+function voiceScheduleStatus(){
+  clearTimeout(voiceStatusTimer);
+  voiceStatusTimer=setTimeout(voiceRefreshBridge,900);
+}
 async function voiceSayTest(){
   const text=($('voiceTestText')?.value||'小屿语音测试。').trim();
   const r=await apiPost('/api/voice/say',{text,reason:'manual',source:'control',interrupt:true,force:true});
-  log(r&&r.ok?'Voice test event sent':'Voice test failed');
+  voiceRenderResult('voice_event',r);
 }
 async function voiceStopTest(){
   const r=await apiPost('/api/voice/stop',{reason:'control'});
-  log(r&&r.ok?'Voice stop event sent':'Voice stop failed');
+  voiceRenderResult('voice_stop',r);
+}
+async function voiceTtsTest(){
+  const text=($('voiceTestText')?.value||'小屿语音测试。').trim();
+  voiceStep('tts_requested -> waiting');
+  const r=await apiPost('/api/voice/tts',{text,preset:voicePreset(),target:voiceTarget(),play:true,format:'wav'},{timeoutMs:65000});
+  voiceRenderResult('tts_generated -> audio_cached -> playback_requested',r);
+}
+async function voiceToneTest(){
+  voiceStep('test_tone_generated -> waiting');
+  const r=await apiPost('/api/voice/test_tone',{target:voiceTarget(),play:true,duration_sec:0.7,frequency_hz:880},{timeoutMs:12000});
+  voiceRenderResult('test_tone -> audio_cached -> playback_requested',r);
+}
+async function voiceRefreshBridge(){
+  const r=await apiGet('/api/voice/playback/status',{timeoutMs:5000,silent:true});
+  const stateText=r.state||r.playback?.state||'unknown';
+  const err=r.error||r.playback?.last_error||r.bridge?.error||'';
+  voiceStep(`bridge_status -> ${stateText}${err?' · '+err:''}`);
+  if(state&&state.voice){
+    state.voice.playback={...(state.voice.playback||{}),...(r.playback||{}),last_result:r.bridge||r.playback?.last_result||{}};
+    renderVoiceState(state.voice);
+  }
+  return r;
+}
+async function apiVoiceChatBlob(blob){
+  const qs=new URLSearchParams({target:voiceTarget(),preset:voicePreset(),user_name:'control'});
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),70000);
+  try{
+    const r=await fetch(`/api/voice/chat?${qs}`,{method:'POST',headers:{'Content-Type':blob.type||'audio/webm'},body:blob,signal:ctrl.signal});
+    return await r.json();
+  }catch(e){
+    return {ok:false,error:e.name==='AbortError'?'voice chat timed out':e.message};
+  }finally{
+    clearTimeout(timer);
+  }
+}
+async function voiceRecordTest(){
+  const btn=$('voiceRecordBtn');
+  if(voiceRecording&&voiceRecorder){
+    try{voiceRecorder.stop();}catch(e){}
+    return;
+  }
+  if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){
+    voiceStep('record_unavailable -> browser does not support MediaRecorder');
+    return;
+  }
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    voiceChunks=[];
+    voiceRecorder=new MediaRecorder(stream);
+    voiceRecording=true;
+    if(btn)btn.textContent='停止录音';
+    voiceStep('recording -> speak now');
+    voiceRecorder.ondataavailable=e=>{if(e.data&&e.data.size)voiceChunks.push(e.data)};
+    voiceRecorder.onstop=async()=>{
+      stream.getTracks().forEach(t=>t.stop());
+      voiceRecording=false;voiceRecorder=null;
+      if(btn)btn.textContent='录音上传';
+      const blob=new Blob(voiceChunks,{type:voiceChunks[0]?.type||'audio/webm'});
+      voiceChunks=[];
+      if(!blob.size){voiceStep('record_failed -> empty audio');return}
+      voiceStep('audio_uploaded -> asr_chat_tts waiting');
+      const r=await apiVoiceChatBlob(blob);
+      const summary=[r.ok===false?'voice_chat_failed':'voice_chat_ok'];
+      if(r.transcript)summary.push(`transcript=${r.transcript}`);
+      if(r.reply)summary.push(`reply=${r.reply}`);
+      if(r.audio_url)summary.push(`audio=${r.audio_url}`);
+      if(r.error)summary.push(`error=${r.error}`);
+      voiceRenderResult(summary.join(' · '),r);
+    };
+    voiceRecorder.start();
+    setTimeout(()=>{if(voiceRecording&&voiceRecorder){try{voiceRecorder.stop();}catch(e){}}},4200);
+  }catch(e){
+    voiceRecording=false;voiceRecorder=null;
+    if(btn)btn.textContent='录音上传';
+    voiceStep(`record_failed -> ${e.message}`);
+  }
 }
 function adoptSession(result,page){
   if(remoteControlOwner){log('另一个页面正在控制云台，请先在该页面终止功能');return false}
@@ -952,6 +1138,7 @@ function renderState(s){
   $('gestureName').textContent=gesture.name||'--';
   $('gestureIntent').textContent=gesture.intent_ready?gesture.intent:(gesture.intent||'--');
   $('gestureStable').textContent=gesture.stable_frames!=null?gesture.stable_frames:'--';
+  $('gestureFistStop').textContent=recentClosedFistStop(voice);
   $('healthModeText').textContent=featureActive.health_pwa?'运行中':'未激活';
   $('healthAttention').textContent=att.score!=null?`${Math.round(att.score)}/100 ${att.state||''}`:'--';
   $('healthEye').textContent=eye.perclos!=null?`PERCLOS ${Number(eye.perclos).toFixed(3)}`:'--';
@@ -960,11 +1147,8 @@ function renderState(s){
   $('llmConfigured').textContent=s.chat?.configured?'DeepSeek 已配置':'fallback 可用';
   $('llmEmotion').textContent=$('emoVal').textContent;
   $('llmMeeting').textContent=conv.stats?`${conv.stats.turns||0} turns`:'--';
-  $('voiceEngine').textContent=voice.engine||'browser_speech';
-  $('voiceStateText').textContent=`${voice.enabled===false?'disabled':'enabled'} / ${voice.available===false?'unavailable':'available'} / ${voice.speaking?'speaking':'idle'} / q=${voice.queue_len||0}`;
-  $('voiceReason').textContent=voice.last_reason||'--';
-  $('voiceText').textContent=voice.last_utterance||'--';
-  if(Array.isArray(voice.recent_events)&&voice.recent_events.length){
+  renderVoiceState(voice);
+  if(Array.isArray(voice.recent_events)&&voice.recent_events.length&&!$('voiceLog').innerHTML.trim()){
     $('voiceLog').innerHTML=voice.recent_events.slice().reverse().map(ev=>`${fmtClock(ev.time)} ${ev.type||'voice'} ${ev.reason||''} ${ev.text||ev.display_text||ev.why||''}`).join('<br>');
   }
   updateFeatureLocks();

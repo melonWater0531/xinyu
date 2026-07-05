@@ -80,3 +80,10 @@ Playback payload contract:
 The reCamera Gimbal hardware guide documents the speaker path as WAV playback
 with `sudo aplay -D hw:1,0 /home/recamera/test.wav`; keep generated files at
 16 kHz / 16-bit WAV for the first closed-loop version.
+
+After importing the supplement, open `/control` and use **Voice / Speaker Loop**:
+
+1. Click **刷新 bridge** and confirm the state is `idle`.
+2. Click **reCamera 测试音**; the device should play a short tone.
+3. Refresh status and confirm the state reaches `done` or reports a clear
+   `error/last_error`.

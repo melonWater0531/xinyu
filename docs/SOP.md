@@ -739,6 +739,14 @@ curl -X POST http://localhost:8001/api/voice/tts \
   -H 'Content-Type: application/json' \
   -d '{"text":"小屿语音测试。","preset":"neutral_natural","play":true}'
 
+# 不依赖智谱 key 的本地测试音，用来单独验 reCamera 扬声器
+curl -X POST http://localhost:8001/api/voice/test_tone \
+  -H 'Content-Type: application/json' \
+  -d '{"target":"recamera_speaker","play":true}'
+
+# 主动刷新 Node-RED audio bridge 状态
+curl http://localhost:8001/api/voice/playback/status
+
 # 播放已缓存音频到 reCamera 扬声器或浏览器
 curl -X POST http://localhost:8001/api/voice/play \
   -H 'Content-Type: application/json' \
@@ -746,6 +754,8 @@ curl -X POST http://localhost:8001/api/voice/play \
 ```
 
 `/api/voice/chat` 返回 `{transcript, reply, audio_url, playback_target, providers}`。默认 `VOICE_PLAYBACK_TARGET=recamera_speaker`：FastAPI 生成 WAV 后通过 Node-RED `/recamera-control/v1/audio/play` 传到设备，由 reCamera 执行 `aplay -D hw:1,0`。失败时 `/api/voice/state.playback` 会记录原因，前端回退浏览器音频/文字反馈。
+
+`/control` 的 **Voice / Speaker Loop** 卡片可以完成集中验收：先点"刷新 bridge"，再点"reCamera 测试音"确认设备出声；配置智谱 key 后点"智谱 TTS 播放"验证声线；最后用"录音上传"验证 ASR→Chat→TTS→播放闭环。
 
 声线不写死，先用三组 preset 做实测：
 
@@ -842,7 +852,7 @@ Session 和心跳：
 14. 调用 `POST /api/emotion/infer`：无人脸时返回 `provider=local,label=暂未观察到,intensity=0`；有人脸且云端可用时返回开放词汇标签、强度和解释；云端不可用时仍返回本地 fallback。
 15. `/home` 点击"语音"或做 Open Palm：录入短音频 → `/api/voice/chat` 返回 transcript/reply；有 TTS 时 `audio_url` 可播放。
 16. Closed Fist 单次稳定握拳即调用 `/api/voice/stop` 并收起当前提醒；不再要求二次握拳确认。
-17. `/control` 的 Voice Debug 可调用 `/api/voice/say` 和 `/api/voice/stop`，最近 voice event 可见；`/api/voice/state.playback` 可见设备扬声器播放状态。
+17. `/control` 的 Voice / Speaker Loop 可验证：浏览器事件、智谱 TTS、reCamera 测试音、audio bridge status、录音上传 `/api/voice/chat`、停止播放；`/api/voice/state.playback` 可见设备扬声器播放状态。
 
 周报：
 

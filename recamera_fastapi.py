@@ -30,6 +30,7 @@ import sys
 import threading
 import time
 import uuid
+import wave
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -1027,6 +1028,45 @@ async def _play_voice_audio(audio_id: str, target: str = "", reason: str = "api"
         return {"ok": ok, "target": "recamera_speaker", "audio_url": meta["audio_url"], "bridge": result, "state": _voice_playback}
     _voice_playback.update({"state": "unsupported_target", "last_error": target, "last_result": {}})
     return {"ok": False, "error": "unsupported_target", "target": target, "state": _voice_playback}
+
+
+async def _voice_playback_status() -> dict:
+    playback = dict(_voice_playback)
+    client = _ensure_voice_audio_client()
+    if client is None:
+        playback.update({"bridge_state": "unconfigured", "bridge_error": "audio_client_unavailable"})
+        return {"ok": False, "state": "unconfigured", "error": "audio_client_unavailable", "playback": playback}
+    status = await asyncio.to_thread(client.status)
+    ok = bool(status.get("ok", True)) and str(status.get("state", "")) not in {"unconfigured", "unreachable", "error"}
+    bridge_state = str(status.get("state") or ("ready" if ok else "unreachable"))
+    if status:
+        _voice_playback.update({
+            "state": bridge_state,
+            "last_error": str(status.get("error") or status.get("last_error") or ""),
+            "last_result": status,
+            "updated_at": time.time(),
+        })
+    playback = dict(_voice_playback)
+    playback["bridge"] = client.state()
+    return {"ok": ok, "state": bridge_state, "bridge": status, "playback": playback}
+
+
+def _write_test_tone_wav(path: Path, duration_sec: float = 0.7, frequency_hz: float = 880.0, volume: float = 0.22) -> None:
+    sample_rate = 16000
+    total = max(1, int(sample_rate * max(0.1, min(3.0, float(duration_sec)))))
+    amp = int(32767 * max(0.01, min(0.9, float(volume))))
+    frames = bytearray()
+    for i in range(total):
+        # Short raised-cosine fade avoids a click on the device speaker.
+        edge = min(i / max(1, sample_rate // 40), (total - i - 1) / max(1, sample_rate // 40), 1.0)
+        val = int(amp * max(0.0, edge) * np.sin(2 * np.pi * float(frequency_hz) * i / sample_rate))
+        frames.extend(struct.pack("<h", val))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(bytes(frames))
 
 
 def _voice_state() -> dict:
@@ -3090,6 +3130,40 @@ async def api_voice_say(payload: dict = Body(default={})):
 async def api_voice_stop(payload: dict = Body(default={})):
     payload = payload or {}
     return await _emit_voice_stop(str(payload.get("reason") or "api"))
+
+
+@app.get("/api/voice/playback/status")
+async def api_voice_playback_status():
+    return await _voice_playback_status()
+
+
+@app.post("/api/voice/test_tone")
+async def api_voice_test_tone(payload: dict = Body(default={})):
+    payload = payload or {}
+    audio_id = f"tone_{uuid.uuid4().hex[:12]}"
+    out_path = _voice_audio_root / f"{audio_id}.wav"
+    _write_test_tone_wav(
+        out_path,
+        duration_sec=float(payload.get("duration_sec", 0.7) or 0.7),
+        frequency_hz=float(payload.get("frequency_hz", 880.0) or 880.0),
+        volume=float(payload.get("volume", 0.22) or 0.22),
+    )
+    meta = _register_voice_audio(
+        str(out_path),
+        text="control test tone",
+        content_type="audio/wav",
+        provider="local_test_tone",
+    )
+    play_result = {}
+    if bool(payload.get("play", False)):
+        play_result = await _play_voice_audio(meta["id"], str(payload.get("target") or ""), reason="test_tone")
+    return {
+        "ok": True,
+        **meta,
+        "providers": {"tts": {"ok": True, "provider": "local_test_tone", "format": "wav", "sample_rate": 16000}},
+        "playback": play_result,
+        "state": _voice_state(),
+    }
 
 
 @app.post("/api/voice/tts")
