@@ -651,6 +651,43 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             if old_key is not None:
                 os.environ["ZHIPU_API_KEY"] = old_key
 
+    async def test_voice_tts_degrades_without_zhipu_key(self) -> None:
+        old_key = os.environ.pop("ZHIPU_API_KEY", None)
+        try:
+            result = await api.api_voice_tts({"text": "测试一句话", "play": False})
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error"], "unconfigured")
+            self.assertIn("playback", result["state"])
+        finally:
+            if old_key is not None:
+                os.environ["ZHIPU_API_KEY"] = old_key
+
+    async def test_voice_play_missing_audio_reports_error(self) -> None:
+        result = await api.api_voice_play({"audio_id": "missing_audio_for_test", "target": "browser"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "audio_missing")
+
+    async def test_doa_direction_endpoint_persists_and_returns_handedness(self) -> None:
+        calib = Path(api.__file__).resolve().parent / "runtime" / "doa_calibration.json"
+        old_text = calib.read_text(encoding="utf-8") if calib.is_file() else None
+        old_ui_sid = api._ui_session_id
+        try:
+            api._ui_session_id = ""
+            result = await api.api_control_doa_direction({"doa_direction": -1})
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["doa_direction"], -1)
+            saved = calib.read_text(encoding="utf-8")
+            self.assertIn('"doa_direction": -1', saved)
+        finally:
+            api._ui_session_id = old_ui_sid
+            if old_text is None:
+                try:
+                    calib.unlink()
+                except FileNotFoundError:
+                    pass
+            else:
+                calib.write_text(old_text, encoding="utf-8")
+
 
 class AttentionScoringTests(unittest.TestCase):
     def test_update_raw_does_not_apply_orientation_stability_weights_again(self) -> None:

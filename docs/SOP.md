@@ -123,6 +123,9 @@ usbipd.exe detach --busid <BUSID>
 | `/recamera-control/v1/command` | POST | 双轴绝对/相对运动命令 |
 | `/recamera-control/v1/stop` | POST | 紧急停止 |
 | `/recamera-control/v1/calibrate` | POST | 执行 `gimbal cali`（撤销 lease） |
+| `/recamera-control/v1/audio/play` | POST | 可选语音闭环：保存 WAV 并用 `aplay -D hw:1,0` 播放 |
+| `/recamera-control/v1/audio/status` | GET | 可选语音闭环：返回 `idle/playing/done/error/stopped` |
+| `/recamera-control/v1/audio/stop` | POST | 可选语音闭环：停止当前 `aplay` |
 
 **状态验证（双轴电机就绪后才返回 200，否则 503）：**
 
@@ -150,6 +153,17 @@ curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
 
 Bridge 不可达时真实控制 fail closed，不会静默降级为 dry-run。
 
+**可选扬声器验证（语音闭环）：**
+
+Seeed 官方硬件说明确认 reCamera Gimbal 2002 系列有 Mic/Speaker，WAV 播放命令为 `sudo aplay -D hw:1,0 /home/recamera/test.wav`，默认 16 bit / 16 kHz。Node-RED audio bridge 部署后用同样的 `--noproxy` 规则验证：
+
+```bash
+curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
+  "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/audio/status"
+```
+
+FastAPI 语音播放的闭环标准是：TTS 生成成功 → 音频传到 reCamera → 设备端 `aplay` 启动成功 → `/audio/status` 返回 `playing/done/error` → `/api/voice/state` 可见最后一次播放状态。
+
 ---
 
 ### 1.4 环境变量速查
@@ -165,10 +179,11 @@ Bridge 不可达时真实控制 fail closed，不会静默降级为 dry-run。
 | `ZHIPU_API_KEY` | `sk-xxx` | 启用智谱 GLM-4-Flash 兜底和 GLM-ASR 云端转写 |
 | `ENABLE_WAKE_WORD` | `true` | 可选启用 wake word；默认关闭，缺少 openWakeWord 时不影响 FastAPI |
 | `ENABLE_TTS_VOICE` | `false` | 可选关闭浏览器 TTS voice event；默认开启，不需要云端 TTS key |
+| `VOICE_PLAYBACK_TARGET` | `recamera_speaker` | 语音交互播放目标；可设 `browser` 回退验收 |
 
 **可选覆盖（有合理默认值，通常无需设置）：**
 
-`DEEPSEEK_API_URL` / `DEEPSEEK_MODEL` / `DEEPSEEK_MAX_TOKENS` / `ASR_PROVIDER` / `ENABLE_WAKE_WORD` / `ENABLE_TTS_VOICE` / `RECAMERA_WHISPER_MODEL` / `RECAMERA_DOA_HOST` / `RECAMERA_DOA_PORT` / `RECAMERA_DOA_SPEECH_HOLD`
+`DEEPSEEK_API_URL` / `DEEPSEEK_MODEL` / `DEEPSEEK_MAX_TOKENS` / `ASR_PROVIDER` / `ENABLE_WAKE_WORD` / `ENABLE_TTS_VOICE` / `ZHIPU_TTS_URL` / `ZHIPU_TTS_MODEL` / `ZHIPU_TTS_VOICE` / `ZHIPU_TTS_SPEED` / `ZHIPU_TTS_VOLUME` / `ZHIPU_TTS_FORMAT` / `VOICE_PLAYBACK_TARGET` / `RECAMERA_WHISPER_MODEL` / `RECAMERA_DOA_HOST` / `RECAMERA_DOA_PORT` / `RECAMERA_DOA_SPEECH_HOLD`
 
 完整变量说明见第四章 4.4 节。
 
@@ -385,6 +400,13 @@ ASR 默认优先使用智谱 GLM-ASR（需要 `ZHIPU_API_KEY`）；云端不可�
 | `DEEPSEEK_MODEL` | 项目默认模型 | 模型名称 |
 | `DEEPSEEK_MAX_TOKENS` | `600` | 单次输出上限 |
 | `ZHIPU_API_KEY` | 空 | 智谱 GLM-4-Flash LLM 兜底；GLM-ASR 云端转写 |
+| `ZHIPU_TTS_URL` | `https://open.bigmodel.cn/api/paas/v4/audio/speech` | 智谱/OpenAI-compatible TTS endpoint；不可用时回退浏览器文字/音频 |
+| `ZHIPU_TTS_MODEL` | `glm-tts` | TTS 模型名 |
+| `ZHIPU_TTS_VOICE` | 空 | 最终声线由实测后确定；payload 可临时覆盖 |
+| `ZHIPU_TTS_SPEED` | 空 | TTS 语速，可由 payload/preset 覆盖 |
+| `ZHIPU_TTS_VOLUME` | 空 | TTS 音量，可由 payload/preset 覆盖 |
+| `ZHIPU_TTS_FORMAT` | `wav` | 第一版使用 WAV，匹配 reCamera `aplay` |
+| `VOICE_PLAYBACK_TARGET` | `recamera_speaker` | `recamera_speaker` 优先；失败回退浏览器；也可直接设 `browser` |
 | `ASR_PROVIDER` | `zhipu` | `zhipu` 优先云端 ASR；`local` 强制本地 whisper |
 | `ENABLE_WAKE_WORD` | `false` | `true` 时启动可选 openWakeWord 服务；缺依赖或模型时 state 显示 unavailable |
 | `ENABLE_TTS_VOICE` | `true` | 后端是否广播 voice event；前端仍可本地静音 |
@@ -395,7 +417,7 @@ ASR 默认优先使用智谱 GLM-ASR（需要 `ZHIPU_API_KEY`）；云端不可�
 | `RECAMERA_AUDIO_DEVICE` | 系统默认 | 会议录音设备索引（来自 1.2 第 5 步） |
 | `RECAMERA_WHISPER_MODEL` | `Systran/faster-whisper-tiny` | 本地 whisper fallback 模型 |
 
-LLM 路由顺序为 DeepSeek → 智谱 GLM-4-Flash → 端点本地 fallback。云端 LLM 未配置或调用失败时，相关接口回退到本地轻量逻辑，不影响视频和基础感知。ASR 路由顺序为智谱 GLM-ASR → 本地 `faster-whisper`；全部失败时 `/api/meeting/summarize` 返回 `asr_empty`。Wake word 默认关闭；即使 `ENABLE_WAKE_WORD=true` 且 openWakeWord 缺失，FastAPI 仍应启动，`/api/wake_word/state` 返回 unavailable。TTS 初版不在后端合成音频，只广播 voice event，由浏览器 Web Speech 播放或降级为文字/toast。
+LLM 路由顺序为 DeepSeek → 智谱 GLM-4-Flash → 端点本地 fallback。云端 LLM 未配置或调用失败时，相关接口回退到本地轻量逻辑，不影响视频和基础感知。ASR 路由顺序为智谱 GLM-ASR → 本地 `faster-whisper`；全部失败时 `/api/meeting/summarize` 返回 `asr_empty`。Wake word 默认关闭；即使 `ENABLE_WAKE_WORD=true` 且 openWakeWord 缺失，FastAPI 仍应启动，`/api/wake_word/state` 返回 unavailable。`/api/voice/chat` 第一版走智谱 ASR → LLM → TTS；TTS 或 reCamera 扬声器不可用时回退浏览器播放/文字反馈。
 
 ---
 
@@ -573,6 +595,28 @@ respeaker.led.hardware = true   # USB 模式才有
 
 完整闭环还应同时确认 `control.active_feature=multi_sound_yaw`、`gimbal.source=motor_readback` 和 yaw 数值变化。
 
+### 6.3 DOA 方向校准
+
+当前公式以 DOA `0°` 为摄像头正前方、`90°` 为摄像头右侧：
+
+```text
+yaw = 180 + signed(DOA + offset) * doa_direction
+```
+
+校准顺序：
+
+1. 正对摄像头说话，点击 `/home` 会议区"对准我"，或调用 `POST /api/control/doa_calibrate`，写入 `doa_offset_deg`。
+2. 站在摄像头右侧说话，确认 yaw readback 是否向右侧目标转动。
+3. 如果实机表现反向，写入 `doa_direction=-1`：
+
+```bash
+curl -X POST http://localhost:8001/api/control/doa_direction \
+  -H 'Content-Type: application/json' \
+  -d '{"doa_direction":-1}'
+```
+
+4. 再次右侧说话确认 yaw 方向。不要硬改全局公式；镜像安装只改 `doa_direction`。
+
 ---
 
 ## 7. API 与 EventBus 速查
@@ -669,7 +713,7 @@ curl http://localhost:8001/api/meeting/speakers
 
 `/api/meeting/speakers` 返回当前会议 session 内通过 DOA zone 注册的说话人列表。当前实现只做非阻塞辅助标注，后续完整搜索、唇动验证和重识别见 `docs/FUTURE_MEETING_PIPELINE_UPGRADES.md`。
 
-### 7.7 TTS Voice Event
+### 7.7 语音交互与 reCamera 扬声器闭环
 
 ```bash
 curl http://localhost:8001/api/voice/state
@@ -682,7 +726,36 @@ curl -X POST http://localhost:8001/api/voice/stop \
   -H 'Content-Type: application/json' -d '{"reason":"curl"}'
 ```
 
-`/api/voice/say` 不合成音频，只广播 `voice_utterance` WebSocket 事件。`/home` 收到后用浏览器 Web Speech 朗读；浏览器不支持或用户关闭语音时，仍显示文字和 toast。会议开始/停止、会议摘要完成/失败、wake word detected 会触发短句提示，不朗读会议原文。后续云端 TTS、主机扬声器和语音输入见 `docs/FUTURE_TTS_VOICE_UPGRADES.md`。
+`/api/voice/say` 仍是轻量 voice event，主要用于会议开始/停止、摘要完成/失败和 wake word detected 等短提示。完整语音交互使用以下新接口：
+
+```bash
+# 上传一段短音频：raw body，Content-Type 可为 audio/webm 或 audio/wav
+curl -X POST "http://localhost:8001/api/voice/chat?user_name=lintong" \
+  -H 'Content-Type: audio/wav' \
+  --data-binary @/path/to/short.wav
+
+# 仅合成 TTS，可选择 play=true 立即播放
+curl -X POST http://localhost:8001/api/voice/tts \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"小屿语音测试。","preset":"neutral_natural","play":true}'
+
+# 播放已缓存音频到 reCamera 扬声器或浏览器
+curl -X POST http://localhost:8001/api/voice/play \
+  -H 'Content-Type: application/json' \
+  -d '{"audio_id":"reply_xxx","target":"recamera_speaker"}'
+```
+
+`/api/voice/chat` 返回 `{transcript, reply, audio_url, playback_target, providers}`。默认 `VOICE_PLAYBACK_TARGET=recamera_speaker`：FastAPI 生成 WAV 后通过 Node-RED `/recamera-control/v1/audio/play` 传到设备，由 reCamera 执行 `aplay -D hw:1,0`。失败时 `/api/voice/state.playback` 会记录原因，前端回退浏览器音频/文字反馈。
+
+声线不写死，先用三组 preset 做实测：
+
+| preset | 用途 |
+|---|---|
+| `gentle_female` | 温柔女声；陪伴、日记回应、情绪安抚 |
+| `neutral_natural` | 中性自然声；默认对话 |
+| `meeting_prompt` | 会议提示声；短促克制的状态提示 |
+
+最终声线由实测后确定，落到 `ZHIPU_TTS_VOICE`、`ZHIPU_TTS_SPEED`、`ZHIPU_TTS_VOLUME` 或请求 payload 覆盖。
 
 ### 7.8 EventBus 端口
 
@@ -767,12 +840,13 @@ Session 和心跳：
 12. 修改昵称 → 发起聊天 → payload 包含 `user_name`；`emotion` 字段为中文（如"快乐"）。
 13. DevTools 模拟限速超过 10s → 应出现降级提示，不出现未捕获异常；无云端 key 时 `/api/chat` 返回 `source=template`。
 14. 调用 `POST /api/emotion/infer`：无人脸时返回 `provider=local,label=暂未观察到,intensity=0`；有人脸且云端可用时返回开放词汇标签、强度和解释；云端不可用时仍返回本地 fallback。
-15. `/home` 开启语音后，聊天回复出现朗读按钮并自动朗读；关闭语音后不播放但保留文字。
-16. `/control` 的 Voice Debug 可调用 `/api/voice/say` 和 `/api/voice/stop`，最近 voice event 可见。
+15. `/home` 点击"语音"或做 Open Palm：录入短音频 → `/api/voice/chat` 返回 transcript/reply；有 TTS 时 `audio_url` 可播放。
+16. Closed Fist 单次稳定握拳即调用 `/api/voice/stop` 并收起当前提醒；不再要求二次握拳确认。
+17. `/control` 的 Voice Debug 可调用 `/api/voice/say` 和 `/api/voice/stop`，最近 voice event 可见；`/api/voice/state.playback` 可见设备扬声器播放状态。
 
 周报：
 
-17. 点击"让小屿写周报" → 请求 `/api/chat`；文本更新到页面；`xinyu_weekly_reports` 有新条目。
+18. 点击"让小屿写周报" → 请求 `/api/chat`；文本更新到页面；`xinyu_weekly_reports` 有新条目。
 18. 切换到其他标签再回来 → 周报文本从 localStorage 重新渲染（非空白或旧文案）。
 
 存储：

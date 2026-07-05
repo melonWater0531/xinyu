@@ -146,7 +146,7 @@ Dashboard UI Event
 | 手势 | intent | 当前动作 |
 |---|---|---|
 | Open Palm / 张手 | `summon_xinyu` | 显示“我在听”并在聊天区加入陪伴回应 |
-| Closed Fist / 握拳 | `pause_or_mute` | 收起当前提醒；当前版本没有 TTS 可静音 |
+| Closed Fist / 握拳 | `pause_or_mute` | 单次稳定握拳即停止当前语音播放/监听并收起提醒 |
 | Thumb Up / 点赞 | `feedback_positive` | 在 localStorage 记录“有帮助”反馈 |
 | Thumb Down / 点踩 | `feedback_negative` | 在 localStorage 记录“无帮助”反馈 |
 | Victory / 剪刀手 | `capture_positive_moment` | 生成积极瞬间日记草稿，等待用户确认 |
@@ -204,7 +204,7 @@ Dashboard UI Event
 
 | 功能 | 状态 | 当前决定 |
 |---|---|---|
-| TTS 语音输出 | 未部署 | 后续评估，不纳入本轮 |
+| TTS 语音输出 | 第一版已部署 | 智谱/OpenAI-compatible TTS → FastAPI 缓存 → reCamera audio bridge；失败回退浏览器 |
 | 说话人分离与声纹-人脸绑定 | 未部署 | 难度和隐私成本高，暂缓 |
 | 跌倒/姿态异常检测 | 未部署（暂不计划） | 当前产品不走安防/告警路线 |
 | VLM 场景理解 | 未部署 | 可做手动实验，不接实时控制 |
@@ -213,7 +213,7 @@ Dashboard UI Event
 | 云台手势控制 | 未部署（暂不计划） | A 版明确只做陪伴交互 |
 | ntfy / Telegram 推送 | 未部署（暂不计划） | 第一版只做 PWA 本地通知 |
 | MQTT / Home Assistant | 未部署（暂不计划） | 当前系统计划不包含 MQTT |
-| 停留时长专注指标 | 未部署 | 可作为后续低中难度增强 |
+| 停留时长专注指标 | 已部署（后台聚合） | 记录 `face_visible_sec/focused_visible_sec/away_sec` 并进入 LLM 总结，不在前端单独显示 |
 | 事件自动截图 | 部分部署 | 有 `/api/snapshot`，未接自动事件策略 |
 | 跨帧人数统计 | 部分部署 | 有当前帧人数，未做专门滑动窗口统计 |
 | 噪声抑制 | 未部署 | 可提升 VAD/ASR，尚未接入 |

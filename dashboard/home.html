@@ -293,9 +293,11 @@
     .chat-bubble { max-width: 85%; padding: 10px 13px; border-radius: 14px 14px 14px 4px; background: rgba(255,255,255,.7); border: 1px solid var(--line); font-size: 13px; line-height: 1.65; }
     .chat-bubble.user { justify-self: end; border-radius: 14px 14px 4px 14px; background: rgba(139,115,85,.1); border-color: rgba(139,115,85,.2); }
     .chat-bubble[data-type="care"] { border-left: 3px solid var(--amber); }
-    .chat-compose { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 8px; }
+    .chat-compose { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; margin-top: 8px; }
     .chat-compose input { min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: rgba(255,255,255,.7); }
     .chat-compose button { min-width: 60px; border: 0; border-radius: var(--radius-md); background: var(--primary); color: white; font-weight: 500; }
+    .chat-compose .voice-btn { background: rgba(255,255,255,.75); color: var(--ink); border: 1px solid var(--line); }
+    #diary-reply-compose { grid-template-columns: 1fr auto; }
 
     /* ── Tab 3: Meeting ── */
     .mtg-transcript { max-height: 260px; overflow-y: auto; display: grid; gap: 8px; padding: 4px 0; }
@@ -607,6 +609,7 @@
           </div>
           <div class="chat-compose">
             <input id="comp-chat-input" maxlength="180" aria-label="想和小屿说的话" placeholder="说说现在的感受……" autocomplete="off">
+            <button class="voice-btn" type="button" id="comp-chat-voice" title="录一小段语音">语音</button>
             <button type="button" id="comp-chat-send">发送</button>
           </div>
         </article>
@@ -985,6 +988,7 @@
       state:null, connected:false, currentPage:"home",
       companionSid:"", companionStartedAt:0, focusTickTimer:0, companionHbTimer:0, meetingHbTimer:0,
       meetingSid:"", meetingActive:false, meetingStartedAt:0, meetingElapsedTimer:0,
+      voiceRecording:false, voiceMediaRecorder:null, voiceChunks:[],
       lastGestureAt:null, lastCareShownAt:0,
       diaryEditKey:"", diaryChosenEmotion:"",
       calCursor:startOfMonth(new Date()), selectedDayKey:"",
@@ -1213,6 +1217,25 @@
           headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),
         });
         const body=await res.json().catch(()=>({}));
+        App.connected=true; return body;
+      }finally{clearTimeout(tid);}
+    }
+
+    async function apiVoiceChat(blob,timeoutMs=60000){
+      const ctrl=new AbortController();
+      const tid=setTimeout(()=>ctrl.abort(),timeoutMs);
+      const qs=new URLSearchParams({
+        context:hasSinglePerson()?`${currentEmotionInfo().zh}，${focusInfo(currentAttentionScore(),true).label}`:"",
+        user_name:getUserName(),
+      });
+      try{
+        const res=await fetch(`/api/voice/chat?${qs}`,{
+          method:"POST",signal:ctrl.signal,
+          headers:{"Content-Type":blob.type||"audio/webm"},
+          body:blob,
+        });
+        const body=await res.json().catch(()=>({}));
+        if(!res.ok||body.ok===false)throw Object.assign(new Error(body.error||body.reason||"语音暂不可用"),body);
         App.connected=true; return body;
       }finally{clearTimeout(tid);}
     }
@@ -1446,8 +1469,8 @@
       $("comp-care-inline")?.classList.add("visible");
       const gest=App.state?.gesture||{};
       if(gest.pending_confirm&&GESTURE_LABELS[gest.pending_confirm]){
-        setText("comp-gesture-state",`再做一次确认（${Math.ceil(gest.confirm_remaining||0)}s）`);
-        setText("comp-gesture-copy","松开手，再握拳一次即可确认。");
+        setText("comp-gesture-state",`等待确认（${Math.ceil(gest.confirm_remaining||0)}s）`);
+        setText("comp-gesture-copy","保持当前交互，等待下一步确认。");
       }else if((gest.intent_confirmed||gest.intent_ready)&&gest.intent&&GESTURE_LABELS[gest.intent]){
         setText("comp-gesture-state",GESTURE_LABELS[gest.intent]);
         setText("comp-gesture-copy","已识别到手势意图。");
@@ -1962,16 +1985,17 @@
       const at=g.updated_at||g.intent;
       if(at===App.lastGestureAt)return;
       App.lastGestureAt=at;
-      // Two-stage intent: stage 1 (intent_ready) only prompts for confirmation
-      if(g.intent==="pause_or_mute"&&!g.intent_confirmed){
-        showToast("再握拳一次，确认暂停");
-        return;
-      }
       if(g.intent==="summon_xinyu"){
         if(App.currentPage==="companion"){
           $("comp-chat-input")?.focus();
           appendCompanionBubble("assistant","我在听。你可以慢慢说，也可以先写一点。");
         }
+        toggleVoiceCapture().catch(()=>{});
+      }
+      if(g.intent==="pause_or_mute"){
+        stopBrowserVoice();
+        apiPost("/api/voice/stop",{reason:"closed_fist"},5000).catch(()=>{});
+        $("care-bubble")?.classList.remove("visible");
       }
       if(g.intent==="capture_positive_moment"){
         const n=$("diary-note");
@@ -2163,6 +2187,72 @@
       return d;
     }
 
+    function stopBrowserVoice(){
+      try{window.speechSynthesis?.cancel();}catch{}
+      try{window.XinyuVoiceAudio?.pause();window.XinyuVoiceAudio.currentTime=0;}catch{}
+    }
+
+    function playVoiceFallback(url){
+      if(!url)return;
+      try{
+        stopBrowserVoice();
+        const audio=new Audio(url);
+        window.XinyuVoiceAudio=audio;
+        audio.play().catch(()=>{});
+      }catch{}
+    }
+
+    async function toggleVoiceCapture(){
+      const btn=$("comp-chat-voice");
+      if(App.voiceRecording&&App.voiceMediaRecorder){
+        try{App.voiceMediaRecorder.stop();}catch{}
+        return;
+      }
+      if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){
+        showToast("当前浏览器不支持语音录入");
+        return;
+      }
+      const thread=$("comp-chat-thread");
+      try{
+        const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+        App.voiceChunks=[];
+        const rec=new MediaRecorder(stream);
+        App.voiceMediaRecorder=rec;App.voiceRecording=true;
+        if(btn){btn.textContent="停止";btn.disabled=false;}
+        const pend=document.createElement("div");pend.className="chat-bubble";pend.textContent="我在听。";
+        if(thread){thread.append(pend);thread.scrollTop=thread.scrollHeight;}
+        rec.ondataavailable=e=>{if(e.data&&e.data.size)App.voiceChunks.push(e.data);};
+        rec.onstop=async()=>{
+          stream.getTracks().forEach(t=>t.stop());
+          App.voiceRecording=false;App.voiceMediaRecorder=null;
+          if(btn)btn.textContent="语音";
+          const blob=new Blob(App.voiceChunks,{type:rec.mimeType||"audio/webm"});
+          App.voiceChunks=[];
+          if(!blob.size){pend.textContent="没有录到声音。";return;}
+          pend.textContent="小屿正在听这段话……";
+          try{
+            const data=await apiVoiceChat(blob);
+            if(data.transcript)appendCompanionBubble("user",data.transcript);
+            const reply=data.reply||"我听到了。";
+            pend.textContent=reply;saveChatMsg("assistant",reply);
+            const pb=data.playback||{};
+            if(data.audio_url&&(!pb.ok||pb.target==="browser"||pb.state?.state==="fallback_browser")){
+              playVoiceFallback(data.audio_url);
+            }
+          }catch(e){
+            pend.textContent=e.message||"语音暂时没听清，可以换文字说给我。";
+          }
+          if(thread)thread.scrollTop=thread.scrollHeight;
+        };
+        rec.start();
+        setTimeout(()=>{if(App.voiceRecording&&App.voiceMediaRecorder===rec){try{rec.stop();}catch{}}},4000);
+      }catch(e){
+        App.voiceRecording=false;App.voiceMediaRecorder=null;
+        if(btn)btn.textContent="语音";
+        showToast(e?.message||"无法打开麦克风");
+      }
+    }
+
     async function apiChatStream(body,onDelta){
       // SSE streaming via ReadableStream; throws on transport failure
       const res=await fetch("/api/chat/stream",{
@@ -2300,6 +2390,7 @@
       setInterval(()=>{if(App.currentPage==="home")renderHome();},15000);
 
       $("comp-chat-send")?.addEventListener("click",sendCompanionChat);
+      $("comp-chat-voice")?.addEventListener("click",()=>toggleVoiceCapture());
       $("comp-chat-input")?.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendCompanionChat();}});
 
       $("mtg-toggle")?.addEventListener("click",toggleMeeting);

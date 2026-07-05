@@ -15,7 +15,7 @@
 | 手势交互 | reCamera SSCMA 摄像头 + MediaPipe Gesture Recognizer | Dashboard intent/toast/local feedback | Open Palm、Closed Fist、Thumb Up、Thumb Down、Victory 只映射陪伴 intent，不进入云台控制 |
 | 健康/PWA | Dashboard localStorage + 实时 emotion/attention/eye/gaze state | 本地 PWA Notification | 护眼、久坐、喝水、疲劳、低专注、情绪关心通知在前端本地治理 |
 | LLM/日记 | DeepSeek 优先；智谱 GLM-4-Flash 兜底；端点本地 fallback | Dashboard 日记、反思、会议摘要 | 无云端 API key 时返回本地温和建议，不丢失日记 |
-| TTS/语音输出 | FastAPI voice event + 浏览器 Web Speech | `/home` 朗读短句；`/control` 调试事件 | 后端不合成音频，不占用主机/ReSpeaker 输出设备 |
+| TTS/语音输出 | 智谱/OpenAI-compatible TTS + FastAPI 音频缓存 + Node-RED audio bridge；浏览器 Web Speech 作回退 | reCamera Gimbal 2002w 扬声器或浏览器 | 设备播放只走 `/recamera-control/v1/audio/*`，不进入云台控制 Event |
 | 手动云台 | Dashboard UI Event | reCamera yaw/pitch CAN 电机 | 有效 manual session 才接受 D-Pad/home |
 
 `/control` 是所有已部署功能的集合面板。每个功能卡都有独立启动和终止
@@ -205,7 +205,9 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | `services/emotion_prompt.py` | 开放词汇情绪 prompt 构建：EmotiEff + attention/eye/gaze → LLM 低频语义推理、chat/reflect 情绪注入 |
 | `services/speaker_mapper.py` | 会议说话人映射：DOA zone → 临时说话人标签；只读状态注册，提供 search plan 但不执行云台控制 |
 | `services/wake_word_service.py` | 可选 wake word 服务：`ENABLE_WAKE_WORD=true` 才尝试加载 openWakeWord；检测后广播 WebSocket 事件 |
-| `services/voice_policy.py` | 浏览器 TTS 初版策略：短句、冷却、优先级和 voice event；不做音频合成或播放 |
+| `services/voice_policy.py` | 轻量短句策略：冷却、优先级和 voice event；浏览器可回退播放 |
+| `services/zhipu_voice.py` | 智谱 ASR/Chat/TTS 语音轮次封装；TTS endpoint 可通过环境变量覆盖 |
+| `hardware/recamera_audio_client.py` | reCamera Node-RED audio bridge 客户端；只调用 `/audio/play|status|stop`，不发送云台命令 |
 
 ### 4.6 主入口
 
@@ -369,7 +371,7 @@ Debounce:
 - [x] 对话会话管理：`/api/conversation/{start,stop,state,save,debug}`
 - [x] 会议说话人查询：`GET /api/meeting/speakers`
 - [x] Wake word 状态查询：`GET /api/wake_word/state`；检测事件通过 `/ws` 广播 `wake_word_detected`
-- [x] TTS voice event：`GET /api/voice/state`、`POST /api/voice/say`、`POST /api/voice/stop`；浏览器 Web Speech 负责播放
+- [x] TTS/语音交互：`GET /api/voice/state`、`POST /api/voice/say`、`POST /api/voice/stop`、`POST /api/voice/chat`、`POST /api/voice/tts`、`POST /api/voice/play`、`GET /api/voice/audio/{id}`；设备扬声器优先，浏览器回退
 - [x] 会议音频处理状态：`audio_processing.noise_suppression` 与 `vad_mode`
 - [x] LLM 反思：`/api/reflect`（情绪日记生成）
 - [x] API 快照：`/api/snapshot`（当前帧 JPEG）
@@ -402,7 +404,7 @@ DeepSeek 默认模型保留 `deepseek-v4-flash`。旧截图中“模型不存在
 
 会议 pipeline 当前只实现轻量 speaker label，不执行 pitch 搜索、唇动验证、ArcFace 重识别或重型 diarization。暂未执行功能和后续落地路径见 `docs/FUTURE_MEETING_PIPELINE_UPGRADES.md`。
 
-TTS 初版只广播 `voice_utterance` / `voice_stop` 事件，`/home` 使用浏览器 Web Speech API 播放或降级为文字/toast，`/control` 展示 voice debug。云端 TTS、主机扬声器输出、流式 TTS 和语音输入 ASR 见 `docs/FUTURE_TTS_VOICE_UPGRADES.md`。
+`/api/voice/say` 仍广播 `voice_utterance` / `voice_stop` 事件，`/home` 可用浏览器 Web Speech API 播放或降级为文字/toast。完整语音轮次使用 `/api/voice/chat`：短音频 raw body → 智谱 ASR → LLM 回复 → TTS 缓存 → reCamera Node-RED audio bridge 播放；失败时回退浏览器音频/文字。
 
 ---
 
@@ -506,9 +508,9 @@ main_phase3 runtime snapshot ──> EventBus ──> FastAPI ──> Dashboard
 硬件职责：
 
 - **ReSpeaker XVF3800**：四麦克风 DOA/VAD、会议 USB Audio、12 颗 WS2812 实体 DOA 灯环。
-- **reCamera Gimbal 2002w**：SSCMA 摄像头、Node-RED bridge、CAN yaw/pitch 电机。
+- **reCamera Gimbal 2002w**：SSCMA 摄像头、Node-RED bridge、CAN yaw/pitch 电机、语音输出扬声器。
 - **Windows/WSL 主机**：FastAPI 感知和录音、EventBus、唯一 control runtime。
-- reCamera 自带麦克风、扬声器和补光灯不参与当前业务闭环。
+- reCamera 自带扬声器已纳入语音输出闭环：FastAPI 缓存 WAV，通过 Node-RED `/recamera-control/v1/audio/play` 触发设备端 `aplay -D hw:1,0`；自带麦克风和补光灯仍不参与当前业务闭环。
 
 配套设备 Flow 位于 `deploy/node_red/recamera_control_bridge.json`，暴露 command、stop、status 三个版本化 endpoint。Bridge 不可达时 `--enable-control` fail closed。
 

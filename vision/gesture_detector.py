@@ -24,8 +24,9 @@ INTENTS = {
 }
 
 
-# Intents that require a second confirmation gesture within the confirm window
-CONFIRM_INTENTS = {"pause_or_mute"}
+# Intents that require a second confirmation gesture within the confirm window.
+# Closed_Fist/pause_or_mute is intentionally single-shot; cooldown prevents spam.
+CONFIRM_INTENTS = set()
 CONFIRM_WINDOW_SEC = 4.0
 
 
@@ -221,4 +222,3 @@ class GestureDetector:
             confirm_remaining=max(0.0, CONFIRM_WINDOW_SEC - (now - self._pending_confirm_at)) if self._pending_confirm else 0.0,
             intent_confirmed=confirmed,
         ).as_dict()
-

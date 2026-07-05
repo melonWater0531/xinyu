@@ -355,6 +355,25 @@ try:
     from services.voice_policy import voice_policy
 except Exception:
     voice_policy = None
+try:
+    from services.zhipu_voice import zhipu_voice
+except Exception:
+    zhipu_voice = None
+try:
+    from hardware.recamera_audio_client import RecameraAudioClient
+except Exception:
+    RecameraAudioClient = None
+_voice_audio_client = None
+_voice_audio_root = Path(__file__).resolve().parent / "runtime" / "voice_audio"
+_voice_audio_cache: dict[str, dict] = {}
+_voice_playback = {
+    "target": os.environ.get("VOICE_PLAYBACK_TARGET", "recamera_speaker"),
+    "state": "idle",
+    "audio_id": "",
+    "last_error": "",
+    "last_result": {},
+    "updated_at": 0.0,
+}
 # Single/multi tracking mode — UI state only (no hardware binding)
 _tracking_mode: str = "single"
 _single_track_active: bool = False
@@ -945,7 +964,78 @@ def _wake_word_state() -> dict:
     return _wake_word_service.state()
 
 
+def _ensure_voice_audio_client():
+    global _voice_audio_client
+    if _voice_audio_client is None and RecameraAudioClient is not None:
+        _voice_audio_client = RecameraAudioClient()
+    return _voice_audio_client
+
+
+def _voice_audio_meta(audio_id: str) -> Optional[dict]:
+    meta = _voice_audio_cache.get(str(audio_id or ""))
+    if not meta:
+        return None
+    path = Path(str(meta.get("path") or ""))
+    if not path.is_file():
+        return None
+    return meta
+
+
+def _register_voice_audio(path: str, text: str = "", content_type: str = "audio/wav", provider: str = "") -> dict:
+    audio_id = Path(path).stem
+    meta = {
+        "id": audio_id,
+        "path": str(path),
+        "text": text,
+        "content_type": content_type or "audio/wav",
+        "provider": provider,
+        "created_at": time.time(),
+        "audio_url": f"/api/voice/audio/{audio_id}",
+    }
+    _voice_audio_cache[audio_id] = meta
+    return meta
+
+
+async def _play_voice_audio(audio_id: str, target: str = "", reason: str = "api") -> dict:
+    target = str(target or os.environ.get("VOICE_PLAYBACK_TARGET", _voice_playback.get("target") or "recamera_speaker"))
+    meta = _voice_audio_meta(audio_id)
+    _voice_playback.update({"target": target, "audio_id": str(audio_id or ""), "updated_at": time.time()})
+    if not meta:
+        _voice_playback.update({"state": "error", "last_error": "audio_missing", "last_result": {}})
+        return {"ok": False, "error": "audio_missing", "state": _voice_playback}
+    if target == "browser":
+        _voice_playback.update({"state": "browser", "last_error": "", "last_result": {"target": "browser"}})
+        return {"ok": True, "target": "browser", "audio_url": meta["audio_url"], "state": _voice_playback}
+    if target == "recamera_speaker":
+        client = _ensure_voice_audio_client()
+        if client is None:
+            _voice_playback.update({"state": "fallback_browser", "last_error": "audio_client_unavailable", "last_result": {}})
+            return {"ok": False, "fallback": "browser", "error": "audio_client_unavailable", "state": _voice_playback}
+        result = await asyncio.to_thread(
+            client.play,
+            str(meta["path"]),
+            str(meta["id"]),
+            str(meta.get("content_type") or "audio/wav"),
+        )
+        ok = bool(result.get("ok", result.get("accepted", False)))
+        _voice_playback.update({
+            "state": str(result.get("state") or ("playing" if ok else "fallback_browser")),
+            "last_error": "" if ok else str(result.get("error") or result.get("reason") or "play_failed"),
+            "last_result": result,
+            "updated_at": time.time(),
+        })
+        return {"ok": ok, "target": "recamera_speaker", "audio_url": meta["audio_url"], "bridge": result, "state": _voice_playback}
+    _voice_playback.update({"state": "unsupported_target", "last_error": target, "last_result": {}})
+    return {"ok": False, "error": "unsupported_target", "target": target, "state": _voice_playback}
+
+
 def _voice_state() -> dict:
+    playback = dict(_voice_playback)
+    client = _ensure_voice_audio_client()
+    if client is not None:
+        playback["bridge"] = client.state()
+    if zhipu_voice is not None:
+        playback["zhipu"] = zhipu_voice.status()
     if voice_policy is None:
         return {
             "enabled": False,
@@ -955,11 +1045,16 @@ def _voice_state() -> dict:
             "last_utterance": "",
             "last_reason": "",
             "engine": "browser_speech",
+            "playback": playback,
             "cooldowns": {},
             "recent_events": [],
             "error": "voice_policy_unavailable",
         }
-    return voice_policy.state()
+    state = voice_policy.state()
+    state["engine"] = "zhipu_tts+recamera_speaker" if playback.get("state") in {"playing", "done"} else state.get("engine", "browser_speech")
+    state["playback"] = playback
+    state["audio_cache_size"] = len(_voice_audio_cache)
+    return state
 
 
 async def _emit_voice(
@@ -1010,9 +1105,19 @@ async def _emit_voice_reason(
 async def _emit_voice_stop(reason: str = "manual") -> dict:
     if voice_policy is None:
         return {"ok": False, "reason": "voice_policy_unavailable"}
+    client = _ensure_voice_audio_client()
+    audio_result = {}
+    if client is not None:
+        audio_result = await asyncio.to_thread(client.stop, reason)
+        _voice_playback.update({
+            "state": "stopped",
+            "last_error": "" if audio_result.get("ok", True) else str(audio_result.get("error") or ""),
+            "last_result": audio_result,
+            "updated_at": time.time(),
+        })
     event = voice_policy.stop_event(reason=reason)
     await ws_mgr.broadcast(event)
-    return {"ok": True, "event": event, "state": _voice_state()}
+    return {"ok": True, "event": event, "audio": audio_result, "state": _voice_state()}
 
 
 def _pause_wake_word() -> None:
@@ -1515,6 +1620,7 @@ def _zhipu_health_components() -> dict:
         import services.cloud_asr as cloud_asr_module
         llm_status = llm_router.router.status().get("zhipu", {})
         asr = cloud_asr_module.cloud_asr
+        voice = zhipu_voice
         key = os.environ.get("ZHIPU_API_KEY", "")
         configured = bool(key)
         key_len = len(key) if key else 0
@@ -1555,12 +1661,27 @@ def _zhipu_health_components() -> dict:
                     {"auth": "智谱 Key 无效或 ASR 权限不足", "quota": "智谱 ASR 额度不足或被限流", "timeout": "智谱 ASR 请求超时", "network": "访问智谱 ASR 网络异常", "bad_response": "智谱 ASR 响应异常", "local_missing": "本地 ASR fallback 缺依赖"}.get(asr_error, "")
                 ),
             },
+            "zhipu_tts": {
+                "status": _status(str(getattr(voice, "last_tts_error", "") or "")) if voice is not None else "offline",
+                "configured": configured and voice is not None,
+                "key_len": key_len,
+                "model": os.environ.get("ZHIPU_TTS_MODEL", "glm-tts"),
+                "format": os.environ.get("ZHIPU_TTS_FORMAT", "wav"),
+                "last_error": str(getattr(voice, "last_tts_error", "") or "") if voice is not None else "voice_service_unavailable",
+                "last_success_at": float(getattr(voice, "last_tts_success_at", 0.0) or 0.0) if voice is not None else 0.0,
+                "actionable_reason": (
+                    "设置 ZHIPU_API_KEY 后可启用智谱 TTS"
+                    if not configured else
+                    {"auth": "智谱 Key 无效或 TTS 权限不足", "quota": "智谱 TTS 额度不足或被限流", "timeout": "智谱 TTS 请求超时", "network": "访问智谱 TTS 网络异常", "bad_response": "智谱 TTS 响应异常", "unconfigured": "缺少 ZHIPU_API_KEY"}.get(str(getattr(voice, "last_tts_error", "") or ""), "")
+                ),
+            },
         }
     except Exception as exc:
         reason = str(exc)[:160]
         return {
             "zhipu_llm": {"status": "degraded", "configured": False, "last_error": reason, "last_success_at": 0.0, "actionable_reason": reason},
             "zhipu_asr": {"status": "degraded", "configured": False, "last_error": reason, "last_success_at": 0.0, "actionable_reason": reason},
+            "zhipu_tts": {"status": "degraded", "configured": False, "last_error": reason, "last_success_at": 0.0, "actionable_reason": reason},
         }
 
 
@@ -2970,6 +3091,117 @@ async def api_voice_stop(payload: dict = Body(default={})):
     payload = payload or {}
     return await _emit_voice_stop(str(payload.get("reason") or "api"))
 
+
+@app.post("/api/voice/tts")
+async def api_voice_tts(payload: dict = Body(default={})):
+    payload = payload or {}
+    text = str(payload.get("text") or "")
+    if not text.strip():
+        return {"ok": False, "error": "empty_text", "state": _voice_state()}
+    if zhipu_voice is None:
+        return {"ok": False, "error": "zhipu_voice_unavailable", "state": _voice_state()}
+    audio_id = f"tts_{uuid.uuid4().hex[:12]}"
+    fmt = str(payload.get("format") or os.environ.get("ZHIPU_TTS_FORMAT", "wav") or "wav").lower()
+    suffix = "wav" if fmt == "wav" else fmt
+    out_path = _voice_audio_root / f"{audio_id}.{suffix}"
+    result = await zhipu_voice.tts(text, str(out_path), payload)
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("error", "tts_failed"), "providers": {"tts": result}, "state": _voice_state()}
+    meta = _register_voice_audio(
+        str(out_path),
+        text=text,
+        content_type=str(result.get("content_type") or "audio/wav"),
+        provider=str(result.get("provider") or "zhipu"),
+    )
+    play_result = {}
+    if bool(payload.get("play", False)):
+        play_result = await _play_voice_audio(meta["id"], str(payload.get("target") or ""), reason="tts")
+    return {"ok": True, **meta, "providers": {"tts": result}, "playback": play_result, "state": _voice_state()}
+
+
+@app.post("/api/voice/play")
+async def api_voice_play(payload: dict = Body(default={})):
+    payload = payload or {}
+    audio_id = str(payload.get("audio_id") or payload.get("id") or "")
+    target = str(payload.get("target") or "")
+    return await _play_voice_audio(audio_id, target=target, reason=str(payload.get("reason") or "api"))
+
+
+@app.get("/api/voice/audio/{audio_id}")
+async def api_voice_audio(audio_id: str):
+    meta = _voice_audio_meta(audio_id)
+    if not meta:
+        return JSONResponse({"ok": False, "error": "audio_missing"}, status_code=404)
+    return FileResponse(str(meta["path"]), media_type=str(meta.get("content_type") or "audio/wav"), filename=Path(str(meta["path"])).name)
+
+
+@app.post("/api/voice/chat")
+async def api_voice_chat(
+    request: Request,
+    context: str = "",
+    user_name: str = "",
+    target: str = "",
+    preset: str = "",
+):
+    if zhipu_voice is None:
+        return {"ok": False, "error": "zhipu_voice_unavailable", "state": _voice_state()}
+    upload_id = f"voice_{uuid.uuid4().hex[:12]}"
+    content_type = str(request.headers.get("content-type") or "audio/webm").split(";")[0]
+    suffix = ".wav" if "wav" in content_type else ".webm" if "webm" in content_type else ".audio"
+    in_path = _voice_audio_root / "uploads" / f"{upload_id}{suffix}"
+    in_path.parent.mkdir(parents=True, exist_ok=True)
+    raw = await request.body()
+    if not raw:
+        return {"ok": False, "error": "empty_audio", "state": _voice_state()}
+    in_path.write_bytes(raw)
+
+    asr = await zhipu_voice.transcribe(str(in_path))
+    transcript = str(asr.get("text") or "").strip()
+    if not transcript:
+        return {"ok": False, "error": "asr_empty", "transcript": "", "providers": {"asr": asr}, "state": _voice_state()}
+    chat = await zhipu_voice.chat(transcript, context=context, user_name=user_name)
+    reply = str(chat.get("text") or "").strip()
+    tts_options = {"preset": preset, "format": os.environ.get("ZHIPU_TTS_FORMAT", "wav")}
+    audio_id = f"reply_{uuid.uuid4().hex[:12]}"
+    out_path = _voice_audio_root / f"{audio_id}.wav"
+    tts = await zhipu_voice.tts(reply, str(out_path), tts_options)
+    audio_url = ""
+    playback = {}
+    if tts.get("ok"):
+        meta = _register_voice_audio(
+            str(out_path),
+            text=reply,
+            content_type=str(tts.get("content_type") or "audio/wav"),
+            provider=str(tts.get("provider") or "zhipu"),
+        )
+        audio_url = meta["audio_url"]
+        playback = await _play_voice_audio(meta["id"], target=target or "", reason="voice_chat")
+    else:
+        _voice_playback.update({
+            "state": "fallback_browser",
+            "audio_id": "",
+            "last_error": str(tts.get("error") or "tts_failed"),
+            "last_result": tts,
+            "updated_at": time.time(),
+        })
+    await ws_mgr.broadcast({
+        "type": "voice_chat_reply",
+        "transcript": transcript,
+        "reply": reply,
+        "audio_url": audio_url,
+        "playback_target": playback.get("target") or os.environ.get("VOICE_PLAYBACK_TARGET", "recamera_speaker"),
+    })
+    return {
+        "ok": True,
+        "transcript": transcript,
+        "reply": reply,
+        "audio_url": audio_url,
+        "playback_target": playback.get("target") or os.environ.get("VOICE_PLAYBACK_TARGET", "recamera_speaker"),
+        "providers": {"asr": asr, "chat": chat, "tts": tts},
+        "playback": playback,
+        "state": _voice_state(),
+    }
+
 # NOTE: removed /api/auto_align (gimbal yaw/pitch search + face-tracking start).
 
 _last_snapshot = None  # cache last good frame
@@ -3372,13 +3604,20 @@ async def api_control_doa_calibrate(payload: dict = Body(default={})):
     offset = max(-180.0, min(180.0, offset))
     calib_path = Path(__file__).resolve().parent / "runtime" / "doa_calibration.json"
     try:
+        existing = {}
+        if calib_path.is_file():
+            try:
+                existing = json.loads(calib_path.read_text(encoding="utf-8"))
+            except Exception:
+                existing = {}
         calib_path.parent.mkdir(parents=True, exist_ok=True)
-        calib_path.write_text(json.dumps({
+        existing.update({
             "doa_offset_deg": round(offset, 1),
             "measured_doa_median": round(median, 1),
             "samples": len(samples),
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        }, ensure_ascii=False), encoding="utf-8")
+        })
+        calib_path.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
     except OSError as exc:
         logger.warning("DOA calibration persist failed: %s", str(exc)[:80])
     # Apply live to the running control session (if any)
@@ -3390,6 +3629,37 @@ async def api_control_doa_calibrate(payload: dict = Body(default={})):
         })
     return {"ok": True, "doa_offset_deg": round(offset, 1),
             "measured_doa_median": round(median, 1), "samples": len(samples)}
+
+
+@app.post("/api/control/doa_direction")
+async def api_control_doa_direction(payload: dict = Body(default={})):
+    """Flip or set DOA handedness after the right-side speech validation step."""
+    direction_raw = payload.get("doa_direction", payload.get("direction", 1))
+    direction = -1 if float(direction_raw) < 0 else 1
+    calib_path = Path(__file__).resolve().parent / "runtime" / "doa_calibration.json"
+    data = {}
+    try:
+        if calib_path.is_file():
+            data = json.loads(calib_path.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    data.update({
+        "doa_direction": direction,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "direction_note": "DOA 0 front, 90 camera-right; use -1 if right-side speech moves yaw left.",
+    })
+    try:
+        calib_path.parent.mkdir(parents=True, exist_ok=True)
+        calib_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("DOA direction persist failed: %s", str(exc)[:80])
+    session_id = str(payload.get("session_id", "") or _ui_session_id)
+    if session_id:
+        await _emit_ui_event("control_config", {
+            "session_id": session_id,
+            "doa_direction": direction,
+        })
+    return {"ok": True, "doa_direction": direction}
 
 
 @app.post("/api/gimbal/home")
@@ -3504,9 +3774,17 @@ async def api_llm_reflect(payload: dict = Body(default={})):
     elif mode == "report":
         total_min = payload.get("total_min", 0)
         focused_pct = payload.get("focused_pct", 0)
+        day_summary = payload.get("day_summary") or {}
+        face_visible_sec = day_summary.get("face_visible_sec", 0)
+        focused_visible_sec = day_summary.get("focused_visible_sec", 0)
+        away_sec = day_summary.get("away_sec", 0)
         messages = [
             {"role": "system", "content": "你是温柔的陪伴助手小屿，用中文写一段简短的一日陪伴总结（80字以内），语气温暖不评判。"},
-            {"role": "user", "content": f"今天陪伴时长约 {total_min} 分钟，专注时间占比 {focused_pct}%，主要情绪是 {emotion}，专注均分 {attn}。请写一段总结。"},
+            {"role": "user", "content": (
+                f"今天陪伴时长约 {total_min} 分钟，专注时间占比 {focused_pct}%，主要情绪是 {emotion}，专注均分 {attn}。"
+                f"后台观察：可见 {face_visible_sec} 秒、可见且较专注 {focused_visible_sec} 秒、离开/未见 {away_sec} 秒。"
+                "请自然总结，不要像秒表一样逐项报数。"
+            )},
         ]
         result = await _cloud_llm_complete(messages, max_tokens=200)
         text = str(result.get("text") or "")
