@@ -32,6 +32,31 @@ class ControlPageResilienceTests(unittest.TestCase):
         self.assertIn(heartbeat["runtime"]["hardware_io"]["queue_state"], {"pending", "executing", "idle"})
         runner._hardware_worker.close()
 
+    def test_multi_audio_event_produces_session_bound_yaw_command(self) -> None:
+        runner = main_phase3.Phase3Runner(enable_control=False, max_cycles=0)
+        try:
+            start = runner.process_event(Event.make("ui", "feature_start", "test", payload={
+                "feature": "multi_sound_yaw", "session_id": "multi-audio", "lease_ms": 5000,
+            }))
+            self.assertTrue(start["accepted"])
+            event = Event.make("audio", "speech_detected", "test", payload={
+                "doa_deg": 90.0,
+                "speech": True,
+                "session_id": "multi-audio",
+                "vad_confidence": 0.8,
+                "lip_motion": False,
+            })
+            first = runner.process_event(event)
+            self.assertFalse(first["applied"])
+            runner._orchestrator._doa_candidate_since -= 0.6
+            result = runner.process_event(event)
+            self.assertIsNotNone(result["command"])
+            self.assertEqual(result["command"]["reason"], "audio_coarse")
+            self.assertEqual(result["command"]["session_id"], "multi-audio")
+            self.assertAlmostEqual(result["command"]["yaw"], 270.0)
+        finally:
+            runner._hardware_worker.close()
+
     def test_lease_windows_allow_a_missed_heartbeat(self) -> None:
         self.assertEqual(recamera_fastapi.CONTROL_LEASE_MS, 5000)
         self.assertEqual(main_phase3.DEVICE_LEASE_MS, 5000)

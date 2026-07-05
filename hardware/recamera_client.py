@@ -256,12 +256,22 @@ class RecameraClient:
                 time.sleep(0.05)
         self._record_failure(failure_kind, last_error or "bridge request failed")
         now = time.monotonic()
-        if self._consecutive_fails == 1 or now - self._last_failure_log_at >= 5.0:
+        is_status_poll = method == "GET" and path == "status"
+        should_warn = (
+            not is_status_poll
+            and self._consecutive_fails == 1
+        ) or self._consecutive_fails >= CIRCUIT_FAILURE_THRESHOLD
+        if should_warn and now - self._last_failure_log_at >= 5.0:
             logger.warning(
                 "gimbal bridge request failed: %s %s (%s); consecutive=%d",
                 method, path, last_error[:120], self._consecutive_fails,
             )
             self._last_failure_log_at = now
+        elif is_status_poll:
+            logger.debug(
+                "gimbal bridge status poll failed: %s %s (%s); consecutive=%d",
+                method, path, last_error[:120], self._consecutive_fails,
+            )
         return None
 
     def _allow_request(self) -> bool:

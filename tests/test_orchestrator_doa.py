@@ -56,6 +56,48 @@ class TestDoaToYaw:
         # audio_coarse must update the yaw baseline used by fine tracking
         assert orch._yaw_target == pytest.approx(240.0)
 
+    def test_dict_speech_event_returns_yaw_command(self):
+        orch = make_orchestrator()
+        event = {
+            "type": "audio:speech_detected",
+            "doa_deg": 90.0,
+            "speech": True,
+            "session_id": SESSION,
+            "vad_confidence": 0.8,
+        }
+        assert orch.handle_event(event) is None
+        orch._doa_candidate_since -= 0.6
+        command = orch.handle_event(event)
+        assert command is not None
+        assert command.reason == "audio_coarse"
+        assert command.yaw == pytest.approx(270.0)
+        assert command.session_id == SESSION
+
+    def test_lip_motion_false_does_not_block_respeaker_doa(self):
+        orch = make_orchestrator()
+        event = Event.make("audio", "speech_detected", "test", payload={
+            "doa_deg": 50.0,
+            "speech": True,
+            "session_id": SESSION,
+            "vad_confidence": 0.82,
+            "lip_motion": False,
+        })
+        assert orch.handle_event(event) is None
+        orch._doa_candidate_since -= 0.6
+        command = orch.handle_event(event)
+        assert command is not None
+        assert command.reason == "audio_coarse"
+        assert command.yaw == pytest.approx(230.0)
+        assert orch._command_suppressed_reason == "weak_lip_motion"
+
+    def test_doa_candidate_tolerates_threshold_jitter(self):
+        orch = make_orchestrator()
+        assert orch.handle_event(audio_event(90.0)) is None
+        orch._doa_candidate_since -= 0.6
+        command = orch.handle_event(audio_event(103.0))
+        assert command is not None
+        assert command.reason == "audio_coarse"
+
     def test_jitter_within_dedupe_no_extra_commands(self):
         orch = make_orchestrator()
         drive_audio(orch, 60.0)

@@ -129,10 +129,10 @@ usbipd.exe detach --busid <BUSID>
 
 **状态验证（双轴电机就绪后才返回 200，否则 503）：**
 
-访问 reCamera 局域网地址时默认绕过代理，避免代理截获或等待超时。
+访问 reCamera 局域网地址时必须绕过桌面代理，避免 Clash/系统代理截获请求后等待超时。不要依赖 `no_proxy=192.168.*` 这类通配符；`curl` 和 Python/urllib 对通配符支持不一致。现场验证优先使用 `--noproxy "*"`，启动 Python 进程前则设置精确 IP 的 `no_proxy/NO_PROXY`。`hardware/recamera_client.py` 已使用 `ProxyHandler({})` 对 gimbal bridge 请求禁用代理，但 shell 命令、浏览器和其他工具仍需显式绕过。
 
 ```bash
-curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
+curl -q --noproxy "*" -sS -i --max-time 3 \
   "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/status"
 ```
 
@@ -141,12 +141,12 @@ curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
 **可选冒烟测试（确认电机响应后立即 stop）：**
 
 ```bash
-curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
+curl -q --noproxy "*" -sS -i --max-time 3 \
   -X POST "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/command" \
   -H 'Content-Type: application/json' \
   -d '{"mode":"absolute","yaw":180,"pitch":90,"yaw_speed":180,"pitch_speed":180}'
 
-curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
+curl -q --noproxy "*" -sS -i --max-time 3 \
   -X POST "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/stop" \
   -H 'Content-Type: application/json' -d '{"stop":true}'
 ```
@@ -158,7 +158,7 @@ Bridge 不可达时真实控制 fail closed，不会静默降级为 dry-run。
 Seeed 官方硬件说明确认 reCamera Gimbal 2002 系列有 Mic/Speaker，WAV 播放命令为 `sudo aplay -D hw:1,0 /home/recamera/test.wav`，默认 16 bit / 16 kHz。Node-RED audio bridge 部署后用同样的 `--noproxy` 规则验证：
 
 ```bash
-curl -q --noproxy "$RECAMERA_DEVICE_IP" -sS -i --max-time 3 \
+curl -q --noproxy "*" -sS -i --max-time 3 \
   "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/audio/status"
 ```
 
@@ -208,6 +208,8 @@ FastAPI 语音播放的闭环标准是：TTS 生成成功 → 音频传到 reCam
 ```bash
 cd ~/recamera_multimodal
 export RECAMERA_DEVICE_IP=<RECAMERA_IP>
+export no_proxy="127.0.0.1,localhost,$RECAMERA_DEVICE_IP"
+export NO_PROXY="$no_proxy"
 export RECAMERA_DOA_SOURCE=usb
 export RECAMERA_AUDIO_DEVICE=<AUDIO_DEVICE_INDEX>
 export DEEPSEEK_API_KEY=sk-xxx          # 可选；LLM 首选
@@ -224,6 +226,8 @@ python3 recamera_fastapi.py --device-ip "$RECAMERA_DEVICE_IP"
 ```bash
 cd ~/recamera_multimodal
 export RECAMERA_DEVICE_IP=<RECAMERA_IP>
+export no_proxy="127.0.0.1,localhost,$RECAMERA_DEVICE_IP"
+export NO_PROXY="$no_proxy"
 
 python3 main_phase3.py \
   --enable-control \
@@ -915,7 +919,28 @@ ss -lntp | grep 8765
 
 确认 `main_phase3.py` 带 `--manual-control`，且 FastAPI 与控制运行时使用同一主机的 `127.0.0.1:8765`。若修改端口，当前 FastAPI EventBusClient 默认仍使用 8765，需同步修改。
 
-### 9.4 控制事件 accepted 但云台不动
+### 9.4 局域网请求被代理截获
+
+如果 `curl -v` 输出里出现以下信号，说明请求去了本机代理而不是 reCamera：
+
+```text
+Uses proxy env variable http_proxy == 'http://127.0.0.1:7897'
+Trying 127.0.0.1:7897...
+```
+
+处理方式：
+
+```bash
+export no_proxy="127.0.0.1,localhost,$RECAMERA_DEVICE_IP"
+export NO_PROXY="$no_proxy"
+
+curl -q --noproxy "*" -sS -i --max-time 3 \
+  "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/status"
+```
+
+不要只写 `no_proxy=192.168.*`；不同工具对 `*` 通配符支持不一致。`hardware/recamera_client.py` 的 gimbal bridge 请求已在代码层禁用代理，但启动环境仍建议设置精确 IP，方便 curl、Node-RED 验证和其他工具保持一致。
+
+### 9.5 控制事件 accepted 但云台不动
 
 依次检查：
 
