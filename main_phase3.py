@@ -35,7 +35,10 @@ DEVICE_LEASE_MS = 5000
 # isolated in its worker, so a 1.2 s readback boundary avoids false disconnects
 # without blocking EventBus or video processing.
 DEVICE_REQUEST_TIMEOUT_MS = int(os.environ.get("RECAMERA_GIMBAL_STATUS_TIMEOUT_MS", "1200") or "1200")
-DEVICE_MOTION_TIMEOUT_MS = 800
+# session/stop routes through an exec-based motor-stop command on the bridge
+# (Node-RED shells out "gimbal stop 1; gimbal stop 2"); measured latency on
+# real hardware is consistently 1.0-2.1s, so 800ms was cutting it too close.
+DEVICE_MOTION_TIMEOUT_MS = int(os.environ.get("RECAMERA_GIMBAL_MOTION_TIMEOUT_MS", "2500") or "2500")
 DEVICE_REQUEST_RETRY = 1
 
 _global_hw_client: Optional[RecameraClient] = None
