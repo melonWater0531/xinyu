@@ -77,6 +77,20 @@ class ControlPageResilienceTests(unittest.TestCase):
         self.assertIn("State render error", page)
         self.assertIn("tracking_overlay.js?v=20260703-1", page)
 
+    def test_control_page_exposes_announce_voice_tests(self) -> None:
+        page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
+        self.assertIn("voiceAnnounceTest", page)
+        self.assertIn("/api/voice/announce/test", page)
+        for reason in (
+            "sedentary",
+            "eye_fatigue",
+            "meeting_start",
+            "meeting_stop",
+            "meeting_summary_ok",
+            "meeting_summary_error",
+        ):
+            self.assertIn(f"voiceAnnounceTest('{reason}')", page)
+
     def test_unified_meeting_page_has_complete_dom_contract(self) -> None:
         page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
         ids = re.findall(r'\bid="([^"]+)"', page)

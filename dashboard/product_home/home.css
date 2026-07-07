@@ -24,9 +24,9 @@
 }
 
 .xinyu-preview-page * { box-sizing: border-box; }
-.xinyu-preview-page button, .xinyu-preview-page input { font: inherit; color: inherit; }
+.xinyu-preview-page button, .xinyu-preview-page input, .xinyu-preview-page select { font: inherit; color: inherit; }
 .xinyu-preview-page button { cursor: pointer; }
-.xinyu-preview-page button:focus-visible, .xinyu-preview-page input:focus-visible { outline: 2px solid var(--xy-blue); outline-offset: 3px; }
+.xinyu-preview-page button:focus-visible, .xinyu-preview-page input:focus-visible, .xinyu-preview-page select:focus-visible { outline: 2px solid var(--xy-blue); outline-offset: 3px; }
 .xy-symbols { position: fixed; width: 0; height: 0; overflow: hidden; }
 .xinyu-preview-page svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .xinyu-preview-page h1, .xinyu-preview-page h2, .xinyu-preview-page p { margin: 0; }
@@ -161,6 +161,22 @@
 .xy-device-card h2 { margin: 4px 0 10px; font-size: 20px; font-weight: 600; }
 .xy-device-card > div:first-child > p:last-child { margin-top: 12px; display: flex; align-items: center; gap: 6px; color: var(--xy-text-muted); font-size: 12px; }
 .xy-device-card > div:first-child > p:last-child svg { width: 17px; }
+.xy-announce-card { margin-top: 22px; padding: 18px; border: 1px solid var(--xy-border); border-radius: 28px; background: rgba(255,253,248,.82); box-shadow: 0 8px 24px var(--xy-shadow); }
+.xy-announce-head { display: grid; grid-template-columns: 44px minmax(0, 1fr) 52px; gap: 12px; align-items: center; }
+.xy-announce-head h2 { margin-top: 2px; font-size: 18px; line-height: 24px; font-weight: 620; }
+.xy-announce-head p:last-child { margin-top: 3px; color: var(--xy-text-muted); font-size: 12px; line-height: 18px; }
+.xy-switch { position: relative; width: 52px; height: 32px; display: inline-flex; align-items: center; }
+.xy-switch input { position: absolute; inset: 0; opacity: 0; }
+.xy-switch span { width: 52px; height: 32px; border-radius: 999px; background: #E7DCCF; transition: background .2s ease; }
+.xy-switch span::after { content: ""; position: absolute; left: 4px; top: 4px; width: 24px; height: 24px; border-radius: 50%; background: var(--xy-surface); box-shadow: 0 3px 8px rgba(95,69,42,.16); transition: transform .2s ease; }
+.xy-switch input:checked + span { background: var(--xy-sage); }
+.xy-switch input:checked + span::after { transform: translateX(20px); }
+.xy-announce-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 18px; }
+.xy-announce-grid label { min-width: 0; display: grid; gap: 7px; color: var(--xy-text-muted); font-size: 12px; }
+.xy-announce-grid select { width: 100%; min-height: 42px; padding: 0 12px; border: 1px solid var(--xy-border); border-radius: 16px; color: var(--xy-text); background: var(--xy-surface-warm); }
+.xy-announce-toggles { display: grid; gap: 10px; margin-top: 14px; }
+.xy-announce-toggles label { min-height: 38px; display: flex; align-items: center; gap: 9px; color: var(--xy-text-secondary); font-size: 13px; }
+.xy-announce-toggles input { width: 18px; height: 18px; accent-color: var(--xy-caramel); }
 .xy-settings { margin-top: 28px; }
 .xy-settings button { min-height: 66px; font-size: 14px; }
 .xy-settings .xy-icon-badge { width: 40px; height: 40px; border-radius: 14px; }
@@ -181,6 +197,7 @@
 @media (max-width: 370px) {
   .xy-page { padding-left: 18px; padding-right: 18px; }
   .xy-mini-states { grid-template-columns: 1fr; }
+  .xy-announce-grid { grid-template-columns: 1fr; }
   .xy-hero-copy { max-width: 82%; }
   .xy-assistant-note { width: 250px; }
 }

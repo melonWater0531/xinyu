@@ -104,6 +104,17 @@
       <section class="xy-page" data-page="mine" aria-labelledby="xy-mine-title" hidden>
         <header class="xy-profile-head"><div class="xy-avatar" aria-hidden="true"><svg><use href="#xy-user"/></svg></div><div><h1 id="xy-mine-title">蛋挞</h1><p>愿你被温柔以待</p></div></header>
         <article class="xy-device-card"><div><p class="xy-label">设备状态</p><h2>心屿设备</h2><span class="xy-online" id="xy-device-online"><i></i>同步中</span><p id="xy-device-summary"><svg><use href="#xy-activity"/></svg>正在读取设备状态</p><p id="xy-voice-summary">语音状态同步中</p></div></article>
+        <section class="xy-announce-card" aria-labelledby="xy-announce-title">
+          <div class="xy-announce-head"><span class="xy-icon-badge xy-amber"><svg><use href="#xy-bell"/></svg></span><div><p class="xy-label">语音播报</p><h2 id="xy-announce-title">语音播报模式</h2><p id="xy-announce-status">正在读取播报设置</p></div><label class="xy-switch"><input id="xy-announce-enabled" type="checkbox"><span></span></label></div>
+          <div class="xy-announce-grid">
+            <label for="xy-sedentary-minutes"><span>久坐提醒</span><select id="xy-sedentary-minutes"><option value="30">30 分钟</option><option value="45">45 分钟</option><option value="60">60 分钟</option><option value="90">90 分钟</option></select></label>
+            <label for="xy-snooze-minutes"><span>稍后提醒</span><select id="xy-snooze-minutes"><option value="5">5 分钟</option><option value="10">10 分钟</option><option value="15">15 分钟</option><option value="30">30 分钟</option></select></label>
+          </div>
+          <div class="xy-announce-toggles">
+            <label><input id="xy-eye-fatigue-enabled" type="checkbox"><span>眼疲劳提醒</span></label>
+            <label><input id="xy-meeting-status-enabled" type="checkbox"><span>会议状态提醒</span></label>
+          </div>
+        </section>
         <div class="xy-settings">
           <button type="button" data-toast="提醒设置为温和模式"><span class="xy-icon-badge xy-amber"><svg><use href="#xy-bell"/></svg></span><span>提醒设置</span><svg><use href="#xy-chevron"/></svg></button>
           <button type="button" data-toast="小屿设置入口已准备好"><span class="xy-icon-badge xy-blue"><svg><use href="#xy-smile"/></svg></span><span>小屿设置</span><svg><use href="#xy-chevron"/></svg></button>

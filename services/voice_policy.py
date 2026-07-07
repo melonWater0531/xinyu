@@ -23,6 +23,8 @@ DEFAULT_COOLDOWNS = {
     "meeting_summary_error": 8,
     "low_focus": 30 * 60,
     "fatigue": 45 * 60,
+    "sedentary": 45 * 60,
+    "eye_fatigue": 45 * 60,
     "emotion_care": 60 * 60,
 }
 
@@ -133,6 +135,8 @@ class VoicePolicy:
             "meeting_summary_error": "这段声音太短或不够清楚，我还没有整理出来。",
             "low_focus": "注意力有点散，要不要先做十分钟轻专注？",
             "fatigue": "眼睛可能有点累，我们先看远一点，休息一分钟。",
+            "sedentary": "你已经坐了挺久了，起来走两分钟，回来我还在。",
+            "eye_fatigue": "眼睛可能有点累，我们先看远一点，休息一分钟。",
             "emotion_care": "我在这儿。可以先把最想被理解的一件事说出来。",
         }.get(reason, fallback)
 
@@ -153,4 +157,3 @@ class VoicePolicy:
 
 
 voice_policy = VoicePolicy()
-

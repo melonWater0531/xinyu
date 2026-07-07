@@ -476,6 +476,14 @@ button,input,select{font:inherit}
             <button class="btn" onclick="voiceRefreshBridge()">刷新 bridge</button>
             <button class="btn danger" onclick="voiceStopTest()">停止</button>
           </div>
+          <div class="voice-button-row">
+            <button class="btn" onclick="voiceAnnounceTest('sedentary')">久坐提醒</button>
+            <button class="btn" onclick="voiceAnnounceTest('eye_fatigue')">眼疲劳提醒</button>
+            <button class="btn" onclick="voiceAnnounceTest('meeting_start')">会议开始</button>
+            <button class="btn" onclick="voiceAnnounceTest('meeting_stop')">会议结束</button>
+            <button class="btn" onclick="voiceAnnounceTest('meeting_summary_ok')">摘要完成</button>
+            <button class="btn" onclick="voiceAnnounceTest('meeting_summary_error')">摘要失败</button>
+          </div>
           <div class="voice-status-grid">
             <div class="kv"><span>Engine</span><span id="voiceEngine">--</span></div>
             <div class="kv"><span>Voice State</span><span id="voiceStateText">--</span></div>
@@ -702,6 +710,11 @@ async function voiceToneTest(){
   voiceStep('test_tone_generated -> waiting');
   const r=await apiPost('/api/voice/test_tone',{target:voiceTarget(),play:true,duration_sec:0.7,frequency_hz:880},{timeoutMs:12000});
   voiceRenderResult('test_tone -> audio_cached -> playback_requested',r);
+}
+async function voiceAnnounceTest(reason){
+  voiceStep(`announce_${reason} -> waiting`);
+  const r=await apiPost('/api/voice/announce/test',{reason,target:voiceTarget(),preset:voicePreset(),force:true},{timeoutMs:65000});
+  voiceRenderResult(`announce_${reason} -> playback_requested`,r);
 }
 async function voiceRefreshBridge(){
   const r=await apiGet('/api/voice/playback/status',{timeoutMs:5000,silent:true});

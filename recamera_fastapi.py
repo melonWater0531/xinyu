@@ -382,6 +382,25 @@ _voice_playback = {
     "last_result": {},
     "updated_at": 0.0,
 }
+_voice_announce_settings_path = Path(__file__).resolve().parent / "runtime" / "voice_announce_settings.json"
+_VOICE_ANNOUNCE_DEFAULTS = {
+    "enabled": False,
+    "sedentary_minutes": 45,
+    "snooze_minutes": 10,
+    "eye_fatigue_enabled": True,
+    "meeting_status_enabled": True,
+    "target": "recamera_speaker",
+}
+_voice_announce_settings = dict(_VOICE_ANNOUNCE_DEFAULTS)
+_voice_announce_runtime = {
+    "presence_since": 0.0,
+    "away_since": 0.0,
+    "fatigue_since": 0.0,
+    "last_triggered": {},
+    "last_reason": "",
+    "last_triggered_at": 0.0,
+    "pending": set(),
+}
 # Single/multi tracking mode — UI state only (no hardware binding)
 _tracking_mode: str = "single"
 _single_track_active: bool = False
@@ -1062,6 +1081,255 @@ def _normalize_voice_target(target: str = "") -> str:
     return normalized or "recamera_speaker"
 
 
+def _coerce_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return bool(default)
+
+
+def _coerce_int_range(value, default: int, low: int, high: int) -> int:
+    try:
+        return max(low, min(high, int(float(value))))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _sanitize_voice_announce_settings(data: dict | None = None) -> dict:
+    raw = {**_VOICE_ANNOUNCE_DEFAULTS, **(data or {})}
+    return {
+        "enabled": _coerce_bool(raw.get("enabled"), _VOICE_ANNOUNCE_DEFAULTS["enabled"]),
+        "sedentary_minutes": _coerce_int_range(raw.get("sedentary_minutes"), 45, 5, 240),
+        "snooze_minutes": _coerce_int_range(raw.get("snooze_minutes"), 10, 1, 120),
+        "eye_fatigue_enabled": _coerce_bool(raw.get("eye_fatigue_enabled"), True),
+        "meeting_status_enabled": _coerce_bool(raw.get("meeting_status_enabled"), True),
+        "target": _normalize_voice_target(str(raw.get("target") or "recamera_speaker")),
+    }
+
+
+def _load_voice_announce_settings() -> dict:
+    global _voice_announce_settings
+    data = {}
+    try:
+        if _voice_announce_settings_path.is_file():
+            data = json.loads(_voice_announce_settings_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Voice announce settings load failed: %s", str(exc)[:100])
+    _voice_announce_settings = _sanitize_voice_announce_settings(data)
+    return dict(_voice_announce_settings)
+
+
+def _save_voice_announce_settings(settings: dict) -> None:
+    _voice_announce_settings_path.parent.mkdir(parents=True, exist_ok=True)
+    _voice_announce_settings_path.write_text(
+        json.dumps(settings, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _voice_announce_state() -> dict:
+    return dict(_voice_announce_settings)
+
+
+def _update_voice_announce_settings(payload: dict | None = None) -> dict:
+    global _voice_announce_settings
+    merged = {**_voice_announce_settings, **(payload or {})}
+    _voice_announce_settings = _sanitize_voice_announce_settings(merged)
+    _save_voice_announce_settings(_voice_announce_settings)
+    return dict(_voice_announce_settings)
+
+
+def _voice_announce_text(reason: str, fallback: str = "") -> str:
+    reason = str(reason or "").strip()
+    texts = {
+        "sedentary": "你已经坐了挺久了，起来走两分钟，回来我还在。",
+        "eye_fatigue": "眼睛可能有点累，我们先看远一点，休息一分钟。",
+        "meeting_start": "会议记录已开始，我会整理可用的发言片段。",
+        "meeting_stop": "会议记录已结束，可以让我整理摘要。",
+        "meeting_summary_ok": "会议整理好了，重点已经放在记录里。",
+        "meeting_summary_error": "这段声音太短或不够清楚，我还没有整理出来。",
+    }
+    if reason in texts:
+        return texts[reason]
+    if voice_policy is not None:
+        return voice_policy.short_text_for(reason, fallback)
+    return fallback
+
+
+async def _announce_voice_reason(
+    reason: str,
+    *,
+    text: str = "",
+    force: bool = False,
+    source: str = "announce",
+    priority: str = "normal",
+    interrupt: bool = False,
+    target: str = "",
+    preset: str = "",
+) -> dict:
+    reason = str(reason or "").strip()
+    if not reason:
+        return {"ok": False, "error": "reason_required", "state": _voice_state()}
+    settings = _voice_announce_state()
+    if not force and not settings.get("enabled"):
+        return {"ok": False, "reason": "disabled", "settings": settings, "state": _voice_state()}
+    if not force:
+        if reason == "eye_fatigue" and not settings.get("eye_fatigue_enabled", True):
+            return {"ok": False, "reason": "eye_fatigue_disabled", "settings": settings, "state": _voice_state()}
+        if reason.startswith("meeting_") and not settings.get("meeting_status_enabled", True):
+            return {"ok": False, "reason": "meeting_status_disabled", "settings": settings, "state": _voice_state()}
+    if voice_policy is None:
+        return {"ok": False, "error": "voice_policy_unavailable", "state": _voice_state()}
+    if zhipu_voice is None:
+        return {"ok": False, "error": "zhipu_voice_unavailable", "state": _voice_state()}
+
+    speak_text = text.strip() or _voice_announce_text(reason)
+    utterance = voice_policy.build(
+        speak_text,
+        reason=reason,
+        priority=priority,
+        interrupt=interrupt,
+        source=source,
+        force=force,
+    )
+    if utterance is None:
+        return {"ok": False, "reason": "suppressed", "settings": settings, "state": _voice_state()}
+
+    event = utterance.to_event()
+    await ws_mgr.broadcast(event)
+    audio_id = f"announce_{reason}_{uuid.uuid4().hex[:10]}"
+    out_path = _voice_audio_root / f"{audio_id}.wav"
+    tts_options = {
+        "preset": preset or ("meeting_prompt" if reason.startswith("meeting_") else "neutral_natural"),
+        "format": os.environ.get("ZHIPU_TTS_FORMAT", "wav"),
+    }
+    tts = await zhipu_voice.tts(utterance.text, str(out_path), tts_options)
+    if not tts.get("ok"):
+        _voice_playback.update({
+            "state": "fallback_browser",
+            "audio_id": "",
+            "last_error": str(tts.get("error") or "tts_failed"),
+            "last_result": tts,
+            "updated_at": time.time(),
+        })
+        return {
+            "ok": False,
+            "error": str(tts.get("error") or "tts_failed"),
+            "event": event,
+            "providers": {"tts": tts},
+            "state": _voice_state(),
+        }
+    meta = _register_voice_audio(
+        str(out_path),
+        text=utterance.text,
+        content_type=str(tts.get("content_type") or "audio/wav"),
+        provider=str(tts.get("provider") or "zhipu"),
+    )
+    playback = await _play_voice_audio(meta["id"], target=target or settings.get("target") or "", reason=reason)
+    return {
+        "ok": bool(playback.get("ok")),
+        **meta,
+        "reason": reason,
+        "event": event,
+        "providers": {"tts": tts},
+        "playback": playback,
+        "settings": settings,
+        "state": _voice_state(),
+    }
+
+
+def _voice_announce_cooldown_s(reason: str, settings: dict | None = None) -> float:
+    settings = settings or _voice_announce_state()
+    if reason in {"sedentary", "eye_fatigue"}:
+        return max(60.0, float(settings.get("snooze_minutes", 10) or 10) * 60.0)
+    return 5.0
+
+
+def _voice_announce_cooldown_ready(reason: str, now: float, settings: dict | None = None) -> bool:
+    last = dict(_voice_announce_runtime.get("last_triggered") or {}).get(reason, 0.0)
+    return now - float(last or 0.0) >= _voice_announce_cooldown_s(reason, settings)
+
+
+def _mark_voice_announce_triggered(reason: str, now: float) -> None:
+    last = dict(_voice_announce_runtime.get("last_triggered") or {})
+    last[reason] = now
+    _voice_announce_runtime["last_triggered"] = last
+    _voice_announce_runtime["last_reason"] = reason
+    _voice_announce_runtime["last_triggered_at"] = now
+
+
+def _evaluate_voice_announce_triggers(has_face: bool, eye_metrics: dict | None = None, now: float | None = None) -> list[str]:
+    now = time.monotonic() if now is None else float(now)
+    settings = _voice_announce_state()
+    if not settings.get("enabled"):
+        _voice_announce_runtime["away_since"] = now if not has_face else 0.0
+        return []
+
+    reasons: list[str] = []
+    if has_face:
+        if not _voice_announce_runtime.get("presence_since"):
+            _voice_announce_runtime["presence_since"] = now
+        _voice_announce_runtime["away_since"] = 0.0
+    else:
+        if not _voice_announce_runtime.get("away_since"):
+            _voice_announce_runtime["away_since"] = now
+        if now - float(_voice_announce_runtime.get("away_since") or now) >= 120.0:
+            _voice_announce_runtime["presence_since"] = 0.0
+            _voice_announce_runtime["fatigue_since"] = 0.0
+        return reasons
+
+    sedentary_after_s = max(60.0, float(settings.get("sedentary_minutes", 45) or 45) * 60.0)
+    if (
+        now - float(_voice_announce_runtime.get("presence_since") or now) >= sedentary_after_s
+        and _voice_announce_cooldown_ready("sedentary", now, settings)
+    ):
+        reasons.append("sedentary")
+        _mark_voice_announce_triggered("sedentary", now)
+
+    fatigue_enabled = bool(settings.get("eye_fatigue_enabled", True))
+    fatigue_level = str((eye_metrics or {}).get("fatigue_level") or "").lower()
+    perclos = float((eye_metrics or {}).get("perclos") or 0.0)
+    focus_score = int(float((eye_metrics or {}).get("focus_score") or 100))
+    fatigue_hit = fatigue_enabled and (fatigue_level in {"drowsy", "severe"} or perclos >= 0.25 or focus_score <= 35)
+    if fatigue_hit:
+        if not _voice_announce_runtime.get("fatigue_since"):
+            _voice_announce_runtime["fatigue_since"] = now
+        if (
+            now - float(_voice_announce_runtime.get("fatigue_since") or now) >= 60.0
+            and _voice_announce_cooldown_ready("eye_fatigue", now, settings)
+        ):
+            reasons.append("eye_fatigue")
+            _mark_voice_announce_triggered("eye_fatigue", now)
+    else:
+        _voice_announce_runtime["fatigue_since"] = 0.0
+    return reasons
+
+
+def _schedule_voice_announce(reason: str, source: str = "auto_announce") -> None:
+    pending = _voice_announce_runtime.setdefault("pending", set())
+    if reason in pending:
+        return
+
+    async def _run() -> None:
+        try:
+            await _announce_voice_reason(reason, source=source, force=False)
+        finally:
+            pending.discard(reason)
+
+    pending.add(reason)
+    loop = _current_running_loop()
+    if loop and not loop.is_closed():
+        loop.create_task(_run())
+
+
 async def _play_voice_audio(audio_id: str, target: str = "", reason: str = "api") -> dict:
     target = _normalize_voice_target(target)
     meta = _voice_audio_meta(audio_id)
@@ -1151,6 +1419,7 @@ def _voice_state() -> dict:
             "last_reason": "",
             "engine": "browser_speech",
             "playback": playback,
+            "announce": _voice_announce_state(),
             "cooldowns": {},
             "recent_events": [],
             "error": "voice_policy_unavailable",
@@ -1158,6 +1427,7 @@ def _voice_state() -> dict:
     state = voice_policy.state()
     state["engine"] = "zhipu_tts+recamera_speaker" if playback.get("state") in {"playing", "done"} else state.get("engine", "browser_speech")
     state["playback"] = playback
+    state["announce"] = _voice_announce_state()
     state["audio_cache_size"] = len(_voice_audio_cache)
     return state
 
@@ -2226,6 +2496,8 @@ async def lifespan(app: FastAPI):
     if app_config and not app_config.device_ip and stored_ip:
         app_config.device_ip = stored_ip
 
+    _load_voice_announce_settings()
+
     # Start video client only when a device address is configured. FastAPI can
     # still run as UI/telemetry viewer without a reCamera address.
     if app_config.device_ip:
@@ -2826,15 +3098,18 @@ async def state_push_loop():
             try:
                 from services.day_aggregator import day_aggregator
                 emo_r = _emotieff_result or {}
+                has_face_now = bool(_attn_result.get("has_face"))
                 day_aggregator.update(
                     emotion=str(emo_r.get("emotion") or "") if not emo_r.get("low_confidence") else "",
                     confidence=float(emo_r.get("confidence") or 0.0),
                     valence=emo_r.get("valence"),
-                    attention=_attn_result.get("score") if _attn_result.get("has_face") else None,
+                    attention=_attn_result.get("score") if has_face_now else None,
                     fatigue_level=str((_eye_metrics or {}).get("fatigue_level") or ""),
                     intervention_active=bool((_proactive_intervention or {}).get("active")),
-                    has_face=bool(_attn_result.get("has_face")),
+                    has_face=has_face_now,
                 )
+                for reason in _evaluate_voice_announce_triggers(has_face_now, _eye_metrics):
+                    _schedule_voice_announce(reason)
             except Exception as e:
                 logger.debug("day aggregator error: %s", str(e)[:80])
 
@@ -3107,6 +3382,7 @@ async def api_conversation_start(payload: dict = None):
             )
     else:
         _meeting_report["status"] = "recording_disabled"
+    _schedule_voice_announce("meeting_start", source="conversation_start")
     return {
         "success": True,
         "recording_success": bool(_conversation_recorder and _conversation_recorder.active),
@@ -3123,12 +3399,7 @@ async def api_conversation_stop(payload: dict = None):
     await _stop_conversation_recording_async(finalize=bool(payload.get("finalize", True)))
     _resume_wake_word()
     session_result = await _stop_feature(str(payload.get("session_id", ""))) if payload.get("session_id") else {}
-    await _emit_voice_reason(
-        "meeting_stop",
-        priority="normal",
-        interrupt=False,
-        source="conversation_stop",
-    )
+    _schedule_voice_announce("meeting_stop", source="conversation_stop")
     return {"success": True, "state": _conversation_state(), **session_result}
 
 
@@ -3174,6 +3445,32 @@ async def api_wake_word_state():
 @app.get("/api/voice/state")
 async def api_voice_state():
     return _voice_state()
+
+
+@app.get("/api/voice/announce/settings")
+async def api_voice_announce_settings():
+    return {"ok": True, "settings": _load_voice_announce_settings(), "state": _voice_state()}
+
+
+@app.post("/api/voice/announce/settings")
+async def api_voice_announce_settings_update(payload: dict = Body(default={})):
+    settings = _update_voice_announce_settings(payload or {})
+    return {"ok": True, "settings": settings, "state": _voice_state()}
+
+
+@app.post("/api/voice/announce/test")
+async def api_voice_announce_test(payload: dict = Body(default={})):
+    payload = payload or {}
+    return await _announce_voice_reason(
+        str(payload.get("reason") or ""),
+        text=str(payload.get("text") or ""),
+        force=bool(payload.get("force", True)),
+        source=str(payload.get("source") or "control_test"),
+        priority=str(payload.get("priority") or "normal"),
+        interrupt=bool(payload.get("interrupt", False)),
+        target=str(payload.get("target") or ""),
+        preset=str(payload.get("preset") or ""),
+    )
 
 
 @app.post("/api/voice/say")
@@ -4260,24 +4557,14 @@ async def _meeting_summarize_impl(payload: dict) -> dict:
         **_meeting_report, "status": "summarizing", "error": "", "progress": 5,
     }
     if recorder is None:
-        await _emit_voice_reason(
-            "meeting_summary_error",
-            priority="normal",
-            interrupt=False,
-            source="meeting_summarize",
-        )
+        _schedule_voice_announce("meeting_summary_error", source="meeting_summarize")
         _meeting_report.update({"status": "error", "error": "录音未启动，请先开启多人会议"})
         return {"ok": False, "error_code": "recording_not_started", "error": _meeting_report["error"]}
 
     session_state = recorder.state()
     turns = session_state.get("timeline", [])
     if not turns:
-        await _emit_voice_reason(
-            "meeting_summary_error",
-            priority="normal",
-            interrupt=False,
-            source="meeting_summarize",
-        )
+        _schedule_voice_announce("meeting_summary_error", source="meeting_summarize")
         _meeting_report.update({"status": "error", "error": "本次无录音片段，请先录到语音片段"})
         return {"ok": False, "error_code": "no_segments", "error": _meeting_report["error"]}
 
@@ -4355,12 +4642,7 @@ async def _meeting_summarize_impl(payload: dict) -> dict:
             recorder.set_transcript(str(turn.get("id") or ""), text)
 
     if not transcripts:
-        await _emit_voice_reason(
-            "meeting_summary_error",
-            priority="normal",
-            interrupt=False,
-            source="meeting_summarize",
-        )
+        _schedule_voice_announce("meeting_summary_error", source="meeting_summarize")
         _meeting_report.update({
             "status": "error",
             "error": "转写结果为空（ASR 未配置、依赖缺失或语音过短）",
@@ -4421,12 +4703,7 @@ async def _meeting_summarize_impl(payload: dict) -> dict:
         minutes_text = raw[:800] if raw else "本次会议记录整理完成。"
         summary_text = minutes_text[:40]
 
-    await _emit_voice_reason(
-        "meeting_summary_ok",
-        priority="normal",
-        interrupt=False,
-        source="meeting_summarize",
-    )
+    _schedule_voice_announce("meeting_summary_ok", source="meeting_summarize")
     _meeting_report = {
         "status": "ready",
         "minutes": minutes_text,

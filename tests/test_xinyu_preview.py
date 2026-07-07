@@ -62,6 +62,7 @@ class XinyuProductHomeTests(unittest.TestCase):
             'apiJSON("/api/voice/stop"',
             'apiJSON("/api/system/health"',
             'apiJSON("/api/voice/state"',
+            'apiJSON("/api/voice/announce/settings"',
             'new WebSocket(`${scheme}://${location.host}/ws`)',
             'apiJSON("/api/state"',
         ):
@@ -81,9 +82,14 @@ class XinyuProductHomeTests(unittest.TestCase):
             "xy-device-online",
             "xy-device-summary",
             "xy-voice-summary",
+            "xy-announce-enabled",
+            "xy-sedentary-minutes",
+            "xy-snooze-minutes",
+            "xy-eye-fatigue-enabled",
+            "xy-meeting-status-enabled",
         ):
             self.assertIn(expected, ids)
-        for phrase in ("MediaRecorder", "getUserMedia", "startMeeting", "completeMeeting", "refreshDeviceState"):
+        for phrase in ("MediaRecorder", "getUserMedia", "startMeeting", "completeMeeting", "refreshDeviceState", "saveAnnounceSettings"):
             self.assertIn(phrase, self.js)
 
     def test_seed_and_meeting_summary_contract(self) -> None:

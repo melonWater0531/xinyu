@@ -860,10 +860,167 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
         finally:
             api._voice_audio_client = old_client
 
+    async def test_voice_announce_settings_persist_and_are_sanitized(self) -> None:
+        settings_path = api._voice_announce_settings_path
+        old_text = settings_path.read_text(encoding="utf-8") if settings_path.is_file() else None
+        old_settings = dict(api._voice_announce_settings)
+        try:
+            if settings_path.is_file():
+                settings_path.unlink()
+            api._voice_announce_settings = dict(api._VOICE_ANNOUNCE_DEFAULTS)
+            default_result = await api.api_voice_announce_settings()
+            self.assertTrue(default_result["ok"])
+            self.assertEqual(default_result["settings"]["sedentary_minutes"], 45)
+
+            updated = await api.api_voice_announce_settings_update({
+                "enabled": "true",
+                "sedentary_minutes": 999,
+                "snooze_minutes": 0,
+                "target": "device",
+                "eye_fatigue_enabled": "false",
+            })
+            self.assertTrue(updated["settings"]["enabled"])
+            self.assertEqual(updated["settings"]["sedentary_minutes"], 240)
+            self.assertEqual(updated["settings"]["snooze_minutes"], 1)
+            self.assertEqual(updated["settings"]["target"], "recamera_speaker")
+            self.assertFalse(updated["settings"]["eye_fatigue_enabled"])
+            api._voice_announce_settings = dict(api._VOICE_ANNOUNCE_DEFAULTS)
+            reloaded = api._load_voice_announce_settings()
+            self.assertEqual(reloaded["sedentary_minutes"], 240)
+            self.assertIn("announce", (await api.api_voice_state()))
+        finally:
+            api._voice_announce_settings = old_settings
+            if old_text is None:
+                try:
+                    settings_path.unlink()
+                except FileNotFoundError:
+                    pass
+            else:
+                settings_path.parent.mkdir(parents=True, exist_ok=True)
+                settings_path.write_text(old_text, encoding="utf-8")
+
+    async def test_voice_announce_test_force_uses_tts_and_recamera_target(self) -> None:
+        class FakeZhipuVoice:
+            async def tts(self, text, out_path, options=None):
+                Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(out_path).write_bytes(b"RIFF....WAVEfmt ")
+                return {
+                    "ok": True,
+                    "path": out_path,
+                    "provider": "fake",
+                    "content_type": "audio/wav",
+                    "format": "wav",
+                    "model": "fake-tts",
+                }
+
+            def status(self):
+                return {"configured": True, "tts_model": "fake-tts", "tts_format": "wav"}
+
+        class FakeAudioClient:
+            def __init__(self):
+                self.calls = []
+
+            def play(self, audio_path, audio_id="", content_type="audio/wav"):
+                self.calls.append((audio_path, audio_id, content_type))
+                return {"ok": True, "state": "done", "audio_id": audio_id}
+
+            def state(self):
+                return {"configured": True, "last_error": "", "last_result": {}}
+
+        old_zhipu = api.zhipu_voice
+        old_client = api._voice_audio_client
+        old_settings = dict(api._voice_announce_settings)
+        fake_client = FakeAudioClient()
+        try:
+            api.zhipu_voice = FakeZhipuVoice()
+            api._voice_audio_client = fake_client
+            api._voice_announce_settings = {**api._VOICE_ANNOUNCE_DEFAULTS, "enabled": False}
+            result = await api.api_voice_announce_test({"reason": "sedentary", "force": True})
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["reason"], "sedentary")
+            self.assertEqual(result["text"], "你已经坐了挺久了，起来走两分钟，回来我还在。")
+            self.assertEqual(result["playback"]["target"], "recamera_speaker")
+            self.assertEqual(result["playback"]["bridge"]["state"], "done")
+            self.assertTrue(fake_client.calls)
+        finally:
+            api.zhipu_voice = old_zhipu
+            api._voice_audio_client = old_client
+            api._voice_announce_settings = old_settings
+
+    async def test_voice_announce_test_reports_bad_reason_and_tts_error(self) -> None:
+        old_key = os.environ.pop("ZHIPU_API_KEY", None)
+        try:
+            missing = await api.api_voice_announce_test({"reason": "", "force": True})
+            self.assertFalse(missing["ok"])
+            self.assertEqual(missing["error"], "reason_required")
+            result = await api.api_voice_announce_test({"reason": "eye_fatigue", "force": True})
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error"], "unconfigured")
+            self.assertIn("providers", result)
+        finally:
+            if old_key is not None:
+                os.environ["ZHIPU_API_KEY"] = old_key
+
+    async def test_voice_announce_auto_triggers_sedentary_and_fatigue(self) -> None:
+        old_settings = dict(api._voice_announce_settings)
+        old_runtime = dict(api._voice_announce_runtime)
+        old_pending = set(api._voice_announce_runtime.get("pending") or set())
+        try:
+            api._voice_announce_settings = {
+                **api._VOICE_ANNOUNCE_DEFAULTS,
+                "enabled": True,
+                "sedentary_minutes": 45,
+                "snooze_minutes": 10,
+            }
+            api._voice_announce_runtime.update({
+                "presence_since": 0.0,
+                "away_since": 0.0,
+                "fatigue_since": 0.0,
+                "last_triggered": {},
+                "pending": set(),
+            })
+            self.assertEqual(api._evaluate_voice_announce_triggers(True, {}, now=1000.0), [])
+            self.assertEqual(api._evaluate_voice_announce_triggers(True, {}, now=1000.0 + 45 * 60 + 1), ["sedentary"])
+            self.assertEqual(api._evaluate_voice_announce_triggers(True, {}, now=1000.0 + 45 * 60 + 20), [])
+
+            api._evaluate_voice_announce_triggers(False, {}, now=5000.0)
+            api._evaluate_voice_announce_triggers(False, {}, now=5121.0)
+            self.assertEqual(api._voice_announce_runtime["presence_since"], 0.0)
+
+            self.assertEqual(api._evaluate_voice_announce_triggers(True, {"fatigue_level": "drowsy"}, now=6000.0), [])
+            self.assertEqual(api._evaluate_voice_announce_triggers(True, {"fatigue_level": "drowsy"}, now=6061.0), ["eye_fatigue"])
+        finally:
+            api._voice_announce_settings = old_settings
+            api._voice_announce_runtime.clear()
+            api._voice_announce_runtime.update(old_runtime)
+            api._voice_announce_runtime["pending"] = old_pending
+
+    async def test_meeting_status_announcements_are_scheduled(self) -> None:
+        old_schedule = api._schedule_voice_announce
+        old_recorder = api._conversation_recorder
+        old_requested = api._conversation_recording_requested
+        scheduled = []
+        try:
+            api._schedule_voice_announce = lambda reason, source="auto_announce": scheduled.append((reason, source))
+            api._conversation_recorder = None
+            await api.api_conversation_start({"save_audio": False})
+            await api.api_conversation_stop({})
+            result = await api.api_meeting_summarize({})
+            self.assertFalse(result["ok"])
+            self.assertIn(("meeting_start", "conversation_start"), scheduled)
+            self.assertIn(("meeting_stop", "conversation_stop"), scheduled)
+            self.assertIn(("meeting_summary_error", "meeting_summarize"), scheduled)
+        finally:
+            api._schedule_voice_announce = old_schedule
+            api._conversation_recorder = old_recorder
+            api._conversation_recording_requested = old_requested
+
     async def test_voice_control_routes_registered(self) -> None:
         route_paths = {getattr(route, "path", "") for route in api.app.routes}
         for path in (
             "/api/voice/playback/status",
+            "/api/voice/announce/settings",
+            "/api/voice/announce/test",
             "/api/voice/test_tone",
             "/api/voice/chat",
             "/api/voice/tts",

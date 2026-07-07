@@ -13,6 +13,7 @@
   let liveState = null;
   let systemHealth = null;
   let voiceState = null;
+  let announceSettings = null;
   let ws = null;
   let pollTimer = 0;
   let mediaRecorder = null;
@@ -154,6 +155,17 @@
   function setText(id, value) {
     const el = document.getElementById(id);
     if (el) el.textContent = value == null ? "" : String(value);
+  }
+
+  function announceDefaults() {
+    return {
+      enabled: false,
+      sedentary_minutes: 45,
+      snooze_minutes: 10,
+      eye_fatigue_enabled: true,
+      meeting_status_enabled: true,
+      target: "recamera_speaker",
+    };
   }
 
   function goTo(page) {
@@ -643,6 +655,54 @@
     $$("[data-week]", container).forEach((button) => button.addEventListener("click", () => openWeeklyReportModal(button.dataset.week)));
   }
 
+  function renderAnnounceSettings() {
+    const settings = {...announceDefaults(), ...(announceSettings || voiceState?.announce || {})};
+    const enabled = $("#xy-announce-enabled");
+    const sedentary = $("#xy-sedentary-minutes");
+    const snooze = $("#xy-snooze-minutes");
+    const eye = $("#xy-eye-fatigue-enabled");
+    const meeting = $("#xy-meeting-status-enabled");
+    if (enabled) enabled.checked = Boolean(settings.enabled);
+    if (sedentary) sedentary.value = String(settings.sedentary_minutes || 45);
+    if (snooze) snooze.value = String(settings.snooze_minutes || 10);
+    if (eye) eye.checked = settings.eye_fatigue_enabled !== false;
+    if (meeting) meeting.checked = settings.meeting_status_enabled !== false;
+    const playback = voiceState?.playback || {};
+    const bridge = playback.bridge || {};
+    const zhipu = playback.zhipu || {};
+    const voiceReady = zhipu.configured === false ? "TTS 未配置" : bridge.configured === false ? "扬声器未配置" : "reCamera 扬声器";
+    setText("xy-announce-status", `${settings.enabled ? "已开启" : "已关闭"} · ${voiceReady}`);
+  }
+
+  function collectAnnounceSettings() {
+    const current = {...announceDefaults(), ...(announceSettings || {})};
+    return {
+      ...current,
+      enabled: Boolean($("#xy-announce-enabled")?.checked),
+      sedentary_minutes: Number($("#xy-sedentary-minutes")?.value || current.sedentary_minutes),
+      snooze_minutes: Number($("#xy-snooze-minutes")?.value || current.snooze_minutes),
+      eye_fatigue_enabled: Boolean($("#xy-eye-fatigue-enabled")?.checked),
+      meeting_status_enabled: Boolean($("#xy-meeting-status-enabled")?.checked),
+      target: "recamera_speaker",
+    };
+  }
+
+  async function saveAnnounceSettings() {
+    const next = collectAnnounceSettings();
+    announceSettings = next;
+    renderAnnounceSettings();
+    try {
+      const response = await apiJSON("/api/voice/announce/settings", {method: "POST", body: next, timeoutMs: 6000});
+      announceSettings = response.settings || next;
+      voiceState = response.state || voiceState;
+      renderDevice();
+      showToast(announceSettings.enabled ? "语音播报已开启" : "语音播报已关闭");
+    } catch (_error) {
+      setText("xy-announce-status", "设置暂未保存，请稍后再试");
+      showToast("语音播报设置暂不可用");
+    }
+  }
+
   function shiftMonth(delta) {
     const [year, month] = state.calendarMonth.split("-").map(Number);
     const next = new Date(year, month - 1 + delta, 1);
@@ -666,6 +726,13 @@
     } catch (_error) {
       voiceState = null;
     }
+    try {
+      const announce = await apiJSON("/api/voice/announce/settings", {timeoutMs: 6000});
+      announceSettings = announce.settings || voiceState?.announce || announceSettings;
+      voiceState = announce.state || voiceState;
+    } catch (_error) {
+      announceSettings = voiceState?.announce || announceSettings;
+    }
     renderDevice();
   }
 
@@ -682,10 +749,15 @@
     setText("xy-device-summary", totalCount ? `设备状态 ${readyCount}/${totalCount} 项可用` : "正在等待设备同步");
     const playback = voiceState?.playback || {};
     setText("xy-voice-summary", playback.state ? `语音播放：${playback.state}` : "语音可用时会自动播放小屿回应");
+    renderAnnounceSettings();
   }
 
   function applyLiveState(snapshot) {
     liveState = snapshot;
+    if (stateData().voice) {
+      voiceState = stateData().voice;
+      announceSettings = voiceState.announce || announceSettings;
+    }
     renderHome();
     renderMeeting();
     renderDevice();
@@ -801,6 +873,11 @@
     $("#xy-meeting-complete")?.addEventListener("click", completeMeeting);
     $("#xy-voice-record")?.addEventListener("click", toggleVoiceRecording);
     $("#xy-voice-stop")?.addEventListener("click", () => stopVoice("home_button"));
+    $("#xy-announce-enabled")?.addEventListener("change", saveAnnounceSettings);
+    $("#xy-sedentary-minutes")?.addEventListener("change", saveAnnounceSettings);
+    $("#xy-snooze-minutes")?.addEventListener("change", saveAnnounceSettings);
+    $("#xy-eye-fatigue-enabled")?.addEventListener("change", saveAnnounceSettings);
+    $("#xy-meeting-status-enabled")?.addEventListener("change", saveAnnounceSettings);
     $$("[data-meeting-detail]").forEach((button) => button.addEventListener("click", openMeetingDetail));
     $("#xy-calendar-prev")?.addEventListener("click", () => shiftMonth(-1));
     $("#xy-calendar-next")?.addEventListener("click", () => shiftMonth(1));
