@@ -4289,35 +4289,70 @@ async def _meeting_summarize_impl(payload: dict) -> dict:
     session_state = recorder.state()
     turns = session_state.get("timeline", turns)
 
-    total_turns = max(1, len(turns))
-    asr_sem = asyncio.Semaphore(_MEETING_ASR_CONCURRENCY)
-    done_count = 0
-
-    async def _transcribe_turn(turn):
-        nonlocal done_count
-        wav = turn.get("wav_path", "")
-        text = None
-        if wav and _Path(wav).exists():
-            text = str(turn.get("text") or "").strip()
-            if not text:
-                async with asr_sem:
-                    text = await _cloud_asr.transcribe(wav)
-        done_count += 1
-        _meeting_report["progress"] = min(65, 10 + int(55 * done_count / total_turns))
-        return text
-
-    turn_texts = await asyncio.gather(*(_transcribe_turn(t) for t in turns))
-
+    transcript_provider = "segment_asr"
+    whisperx_report = {}
     transcripts = []
-    for turn, text in zip(turns, turn_texts):
-        if text is None:  # no wav file for this turn
-            continue
-        if text:
-            speaker = str(turn.get("speaker_label") or "未知说话人")
-            start = float(turn.get("start", 0.0) or 0.0)
-            end = float(turn.get("end", start) or start)
-            transcripts.append(f"[{start:.1f}-{end:.1f}s][{speaker}] {text}")
-        recorder.set_transcript(str(turn.get("id") or ""), text)
+    if os.getenv("MEETING_FINAL_TRANSCRIBER", "whisperx").strip().lower() not in {
+        "off", "false", "0", "segment", "segment_asr",
+    }:
+        try:
+            from services.whisperx_final import transcribe_meeting_turns
+
+            _meeting_report["progress"] = 15
+            wx_result = await transcribe_meeting_turns(turns)
+            if wx_result.ok and wx_result.transcript.strip():
+                transcript_provider = "whisperx"
+                transcripts = list(wx_result.lines or [])
+                whisperx_report = {
+                    "provider": "whisperx",
+                    "duration_seconds": wx_result.duration_seconds,
+                    "input_wav": wx_result.input_wav,
+                    "output_json": wx_result.output_json,
+                    "segments": len(wx_result.segments or []),
+                }
+                _meeting_report["progress"] = 65
+            else:
+                whisperx_report = {
+                    "provider": "whisperx",
+                    "ok": False,
+                    "error": wx_result.error,
+                }
+        except Exception as exc:
+            whisperx_report = {
+                "provider": "whisperx",
+                "ok": False,
+                "error": str(exc)[:160],
+            }
+
+    if not transcripts:
+        total_turns = max(1, len(turns))
+        asr_sem = asyncio.Semaphore(_MEETING_ASR_CONCURRENCY)
+        done_count = 0
+
+        async def _transcribe_turn(turn):
+            nonlocal done_count
+            wav = turn.get("wav_path", "")
+            text = None
+            if wav and _Path(wav).exists():
+                text = str(turn.get("text") or "").strip()
+                if not text:
+                    async with asr_sem:
+                        text = await _cloud_asr.transcribe(wav)
+            done_count += 1
+            _meeting_report["progress"] = min(65, 10 + int(55 * done_count / total_turns))
+            return text
+
+        turn_texts = await asyncio.gather(*(_transcribe_turn(t) for t in turns))
+
+        for turn, text in zip(turns, turn_texts):
+            if text is None:  # no wav file for this turn
+                continue
+            if text:
+                speaker = str(turn.get("speaker_label") or "未知说话人")
+                start = float(turn.get("start", 0.0) or 0.0)
+                end = float(turn.get("end", start) or start)
+                transcripts.append(f"[{start:.1f}-{end:.1f}s][{speaker}] {text}")
+            recorder.set_transcript(str(turn.get("id") or ""), text)
 
     if not transcripts:
         await _emit_voice_reason(
@@ -4403,6 +4438,8 @@ async def _meeting_summarize_impl(payload: dict) -> dict:
         "error": "",
         "progress": 100,
         "structured": parsed if 'parsed' in locals() and isinstance(parsed, dict) else {},
+        "transcript_provider": transcript_provider,
+        "whisperx": whisperx_report,
     }
     report_path = recorder.save_report(_meeting_report)
     if report_path:
@@ -4417,6 +4454,8 @@ async def _meeting_summarize_impl(payload: dict) -> dict:
         "duration_min": duration_min,
         "report_path": report_path,
         "structured": _meeting_report.get("structured", {}),
+        "transcript_provider": transcript_provider,
+        "whisperx": whisperx_report,
     }
 
 

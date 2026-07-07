@@ -12,6 +12,7 @@ import recamera_fastapi as api
 from audio.conversation_recorder import ConversationRecorder
 from services.emotion_prompt import build_emotion_context
 import services.llm_router as llm_router
+import services.whisperx_final as whisperx_final
 from services.speaker_mapper import SpeakerMapper
 from vision.attention_engine import AttentionConfig, ScoringModule
 
@@ -450,6 +451,86 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
         finally:
             api._conversation_recorder = old_recorder
             api._deepseek_chat = old_chat
+
+    def test_whisperx_final_formats_segments_with_existing_speaker_labels(self) -> None:
+        turns = [
+            {"start": 0.0, "end": 3.0, "speaker_label": "说话人A"},
+            {"start": 3.0, "end": 6.0, "speaker_label": "说话人B"},
+        ]
+        segments = [
+            {"start": 0.2, "end": 2.5, "text": "讨论书画展安排。"},
+            {"start": 3.2, "end": 5.5, "text": "确认场地预约。"},
+        ]
+        lines = whisperx_final.format_transcript_segments(segments, turns)
+        self.assertEqual(lines[0], "[0.2-2.5s][说话人A] 讨论书画展安排。")
+        self.assertEqual(lines[1], "[3.2-5.5s][说话人B] 确认场地预约。")
+
+    async def test_meeting_summarize_prefers_whisperx_final_transcript(self) -> None:
+        class FakeRecorder:
+            def __init__(self, turns):
+                self._turns = turns
+                self.active = False
+
+            def state(self):
+                return {"timeline": self._turns, "stats": {"duration": 60}}
+
+            def set_transcript(self, turn_id, text, confidence=0.0):
+                raise AssertionError("segment ASR fallback should not run")
+
+            def save_report(self, report):
+                self.report = dict(report)
+                return "/tmp/meeting_report.json"
+
+        old_recorder = api._conversation_recorder
+        old_chat = api._deepseek_chat
+        old_ensure = api._ensure_asr_worker
+        old_transcribe = whisperx_final.transcribe_meeting_turns
+        captured = {}
+
+        async def fake_chat(messages, max_tokens=None):
+            captured["user"] = messages[-1]["content"]
+            return '{"diary":"会议整理完成。","summary":"完成整理"}'
+
+        async def fake_whisperx(_turns):
+            return whisperx_final.WhisperXFinalResult(
+                ok=True,
+                transcript="[0.0-2.0s][说话人A] WhisperX最终转写。",
+                lines=["[0.0-2.0s][说话人A] WhisperX最终转写。"],
+                segments=[{"start": 0.0, "end": 2.0, "text": "WhisperX最终转写。"}],
+                input_wav="/tmp/final.wav",
+                output_json="/tmp/whisperx.json",
+                duration_seconds=1.2,
+            )
+
+        with tempfile.TemporaryDirectory() as td:
+            session = Path(td) / "session_20260707_130000"
+            seg_dir = session / "audio" / "segments"
+            seg_dir.mkdir(parents=True)
+            wav_path = seg_dir / "seg_000001.wav"
+            wav_path.write_bytes(b"placeholder")
+            try:
+                api._conversation_recorder = FakeRecorder([{
+                    "id": "turn_1",
+                    "wav_path": str(wav_path),
+                    "speaker_label": "说话人A",
+                    "start": 0.0,
+                    "end": 2.0,
+                }])
+                api._deepseek_chat = fake_chat
+                api._ensure_asr_worker = lambda: None
+                whisperx_final.transcribe_meeting_turns = fake_whisperx
+
+                result = await api.api_meeting_summarize({})
+            finally:
+                api._conversation_recorder = old_recorder
+                api._deepseek_chat = old_chat
+                api._ensure_asr_worker = old_ensure
+                whisperx_final.transcribe_meeting_turns = old_transcribe
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["transcript_provider"], "whisperx")
+        self.assertIn("WhisperX最终转写", result["transcript"])
+        self.assertIn("WhisperX最终转写", captured["user"])
 
     async def test_meeting_complete_submits_background_stop_and_summary(self) -> None:
         old_stop = api.api_multi_track_stop
