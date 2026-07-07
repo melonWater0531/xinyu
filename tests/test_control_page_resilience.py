@@ -7,7 +7,7 @@ from pathlib import Path
 
 import main_phase3
 import recamera_fastapi
-from core.event import Event
+from core.event import BBox, Event
 from core.event_bus import EventBusClient
 
 
@@ -54,6 +54,35 @@ class ControlPageResilienceTests(unittest.TestCase):
             self.assertEqual(result["command"]["reason"], "audio_coarse")
             self.assertEqual(result["command"]["session_id"], "multi-audio")
             self.assertAlmostEqual(result["command"]["yaw"], 270.0)
+        finally:
+            runner._hardware_worker.close()
+
+    def test_local_single_vision_uses_structured_observation(self) -> None:
+        runner = main_phase3.Phase3Runner(enable_control=False, max_cycles=0)
+        try:
+            start = runner.process_event(Event.make("ui", "feature_start", "test", payload={
+                "feature": "single_face_analysis", "session_id": "single-local", "lease_ms": 5000,
+            }))
+            self.assertTrue(start["accepted"])
+            runner._last_frame_size = {"width": 1280, "height": 720}
+            runner._last_face_tracks = [{
+                "track_id": 4,
+                "cx": 0.90,
+                "cy": 0.70,
+                "bbox": [1040, 430, 1220, 620],
+                "confidence": 0.95,
+                "lost_frames": 0,
+            }]
+            box = BBox(1040, 430, 1220, 620, class_name="face", confidence=0.95)
+            self.assertIsNone(runner._handle_vision_event([box]))
+            runner._last_face_tracks = [dict(runner._last_face_tracks[0])]
+            self.assertIsNone(runner._handle_vision_event([box]))
+            runner._last_face_tracks = [dict(runner._last_face_tracks[0])]
+            runner._handle_vision_event([box])
+            self.assertEqual(runner._last_event.name, "observation")
+            self.assertEqual(runner._last_event.payload["faces"][0]["track_id"], 4)
+            self.assertEqual(runner._orchestrator.locked_track_id, 4)
+            self.assertTrue(runner._orchestrator.runtime_state()["command_sent"])
         finally:
             runner._hardware_worker.close()
 

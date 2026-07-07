@@ -5,6 +5,7 @@ import tempfile
 import asyncio
 import time
 import os
+from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
@@ -55,10 +56,67 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             "tracking_config_error",
         ):
             self.assertIn(field, runtime)
+        self.assertIn("perception_diagnostics", runtime)
+        for field in (
+            "video_connected", "face_tracker_available", "latest_face_count",
+            "latest_person_count", "observation_faces", "observation_persons",
+            "last_publish_ok", "last_publish_error",
+        ):
+            self.assertIn(field, runtime["perception_diagnostics"])
 
         root = Path(api.__file__).resolve().parent
         self.assertTrue((root / "config" / "tracking_control.json").exists())
         self.assertTrue((root / "docs" / "tracking_tuning_sop.md").exists())
+
+    def test_perception_diagnostics_track_observation_candidates(self) -> None:
+        class FakeVideo:
+            connected = True
+            fps = 12.5
+            last_frame_age_ms = 42
+            resolution = [1280, 720]
+            boxes = [[640, 360, 300, 500, 88, 0]]
+
+        old_video = api.video_client
+        old_persons = list(api._latest_pose_persons)
+        old_diag = dict(api._perception_diag)
+        old_observation_id = api._observation_id
+        old_runtime = dict(api._runtime_cache)
+        try:
+            api.video_client = FakeVideo()
+            api._latest_pose_persons[:] = [
+                SimpleNamespace(
+                    _track_id=7,
+                    _lost_frames=0,
+                    _source="face_tracker_v2",
+                    _is_primary=True,
+                    bbox=(100, 80, 220, 260),
+                    conf=0.93,
+                    face_center=(160, 140),
+                    face_conf=0.93,
+                    keypoints=[],
+                )
+            ]
+            api._runtime_cache = {
+                **api._runtime_cache,
+                "active_feature": "single_face_analysis",
+                "session_id": "diag-session",
+            }
+            payload = api._build_vision_observation()
+            diag = api._perception_diagnostics()
+            self.assertEqual(payload["session_id"], "diag-session")
+            self.assertEqual(len(payload["faces"]), 1)
+            self.assertEqual(len(payload["persons"]), 1)
+            self.assertEqual(diag["latest_face_count"], 1)
+            self.assertEqual(diag["latest_person_count"], 1)
+            self.assertEqual(diag["observation_faces"], 1)
+            self.assertEqual(diag["observation_persons"], 1)
+            self.assertIn("face_tracker_v2", diag["latest_sources"])
+        finally:
+            api.video_client = old_video
+            api._latest_pose_persons[:] = old_persons
+            api._perception_diag = old_diag
+            api._observation_id = old_observation_id
+            api._runtime_cache = old_runtime
 
     def test_voice_target_enum_accepts_recamera_aliases(self) -> None:
         self.assertEqual(api._normalize_voice_target("recamera_speaker"), "recamera_speaker")

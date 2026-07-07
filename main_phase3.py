@@ -169,6 +169,9 @@ class Phase3Runner:
         self._running = True
         self._frame_id = 0
         self._last_control_tick_at = 0.0
+        self._observation_id = 0
+        self._last_face_tracks: list[dict] = []
+        self._last_frame_size = {"width": 1920, "height": 1080}
 
         global _global_hw_client
         _global_hw_client = self._hw
@@ -219,6 +222,7 @@ class Phase3Runner:
 
     def _get_face_bboxes(self) -> List[BBox]:
         """Return face BBoxes from FaceTrackerV2 (Stage 1/2 signal)."""
+        self._last_face_tracks = []
         if self._face_tracker is None:
             return []
         jpeg_bytes = getattr(self._vision, "get_jpeg_bytes", lambda: None)()
@@ -230,7 +234,20 @@ class Phase3Runner:
             frame_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
             if frame_bgr is None:
                 return []
+            self._last_frame_size = {"width": int(frame_bgr.shape[1]), "height": int(frame_bgr.shape[0])}
             tracks = self._face_tracker.update(frame_bgr)
+            self._last_face_tracks = [
+                {
+                    "track_id": int(t["id"]),
+                    "cx": float(t["face_center"][0]) / max(1, int(frame_bgr.shape[1])),
+                    "cy": float(t["face_center"][1]) / max(1, int(frame_bgr.shape[0])),
+                    "bbox": [float(v) for v in t["bbox"]],
+                    "confidence": float(t["confidence"]),
+                    "lost_frames": int(t.get("lost_frames", 0) or 0),
+                }
+                for t in tracks
+                if float(t["confidence"]) >= self._face_conf_thresh
+            ]
             return [
                 BBox(
                     x1=int(t["bbox"][0]), y1=int(t["bbox"][1]),
@@ -344,21 +361,34 @@ class Phase3Runner:
             }
 
     def _handle_vision_event(self, bboxes: List[BBox]) -> Optional[ControlCommand]:
-        if bboxes:
-            primary = bboxes[0]
-            event = Event.make(
-                "vision",
-                "target_detected",
-                "main_phase3",
-                payload={
-                    "cx": primary.center_x / self._orchestrator.frame_width,
-                    "cy": primary.center_y / self._orchestrator.frame_height,
-                    "conf": primary.confidence,
-                    "class_name": primary.class_name,
-                },
-            )
-        else:
-            event = Event.make("vision", "target_lost", "main_phase3", payload={"conf": 0.0})
+        self._observation_id += 1
+        width = max(1, int(self._last_frame_size.get("width", self._orchestrator.frame_width)))
+        height = max(1, int(self._last_frame_size.get("height", self._orchestrator.frame_height)))
+        faces = [dict(face) for face in self._last_face_tracks if int(face.get("lost_frames", 0) or 0) == 0]
+        persons = []
+        if not faces:
+            for box in bboxes:
+                if box.class_name != "person":
+                    continue
+                persons.append({
+                    "bbox": [box.x1, box.y1, box.x2, box.y2],
+                    "cx": box.center_x / width,
+                    "cy": (box.y1 + box.height * 0.28) / height,
+                    "confidence": box.confidence,
+                })
+        event = Event.make(
+            "vision",
+            "observation",
+            "main_phase3",
+            payload={
+                "session_id": self._orchestrator.session.session_id,
+                "observation_id": self._observation_id,
+                "captured_at": time.time() * 1000.0,
+                "frame_size": {"width": width, "height": height},
+                "faces": faces,
+                "persons": persons,
+            },
+        )
         self._last_event = event
         result = self.process_event(event)
         return self._last_command if result.get("command") else None

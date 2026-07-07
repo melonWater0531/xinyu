@@ -477,6 +477,34 @@ _TRACKING_TELEMETRY_DEFAULTS = {
     "tracking_config_path": "",
     "tracking_config_error": "",
 }
+_PERCEPTION_DIAGNOSTIC_DEFAULTS = {
+    "video_connected": False,
+    "video_fps": 0.0,
+    "last_frame_age_ms": None,
+    "frame_width": 1920,
+    "frame_height": 1080,
+    "face_tracker_available": False,
+    "face_tracker_loaded": False,
+    "detect_max_width": None,
+    "face_period": None,
+    "face_degraded": False,
+    "stage_ms": {},
+    "latest_pose_count": 0,
+    "latest_face_count": 0,
+    "latest_person_count": 0,
+    "latest_sources": [],
+    "observation_id": 0,
+    "observation_feature": "inactive",
+    "observation_session_id": "",
+    "observation_faces": 0,
+    "observation_persons": 0,
+    "last_observation_at": 0.0,
+    "last_publish_at": 0.0,
+    "last_publish_ok": None,
+    "last_publish_accepted": None,
+    "last_publish_error": "",
+}
+_perception_diag = dict(_PERCEPTION_DIAGNOSTIC_DEFAULTS)
 _runtime_cache = {
     **_TRACKING_TELEMETRY_DEFAULTS,
     "connected": False,
@@ -598,7 +626,54 @@ def _runtime_with_telemetry_defaults(runtime: dict | None = None) -> dict:
         "hardware_command_queue_size": 0,
     }.items():
         data.setdefault(key, default)
+    data.setdefault("perception_diagnostics", _perception_diagnostics())
     return data
+
+
+def _perception_diagnostics(**overrides) -> dict:
+    """Current perception health for tracking debugging; no control behavior."""
+    diag = {
+        k: (dict(v) if isinstance(v, dict) else list(v) if isinstance(v, list) else v)
+        for k, v in _PERCEPTION_DIAGNOSTIC_DEFAULTS.items()
+    }
+    diag.update({
+        k: (dict(v) if isinstance(v, dict) else list(v) if isinstance(v, list) else v)
+        for k, v in _perception_diag.items()
+    })
+    vc = video_client
+    diag.update({
+        "video_connected": bool(vc.connected) if vc else False,
+        "video_fps": round(float(vc.fps), 2) if vc else 0.0,
+        "last_frame_age_ms": vc.last_frame_age_ms if vc else None,
+        "frame_width": int(vc.resolution[0]) if vc else 1920,
+        "frame_height": int(vc.resolution[1]) if vc else 1080,
+        "face_tracker_available": bool(_face_tracker and getattr(_face_tracker, "available", False)),
+        "face_tracker_loaded": bool(_face_tracker and getattr(_face_tracker, "loaded", False)),
+        "detect_max_width": globals().get("DETECT_MAX_WIDTH"),
+        "face_period": _perception_stats.get("face_period") if "_perception_stats" in globals() else None,
+        "face_degraded": bool(_perception_stats.get("face_degraded")) if "_perception_stats" in globals() else False,
+        "stage_ms": dict(_perception_stats.get("stage_ms", {})) if "_perception_stats" in globals() else {},
+    })
+    pose_persons = [p for p in list(_latest_pose_persons) if int(getattr(p, "_lost_frames", 0) or 0) == 0]
+    face_count = sum(1 for p in pose_persons if getattr(p, "face_center", None) is not None)
+    sources = sorted({
+        str(getattr(p, "_source", "") or "unknown")
+        for p in pose_persons
+    })
+    diag.update({
+        "latest_pose_count": len(pose_persons),
+        "latest_face_count": face_count,
+        "latest_person_count": len(_extract_detections()),
+        "latest_sources": sources,
+    })
+    diag.update(overrides)
+    return _json_clean(diag)
+
+
+def _update_perception_diagnostics(**fields) -> dict:
+    global _perception_diag
+    _perception_diag = _perception_diagnostics(**fields)
+    return dict(_perception_diag)
 
 
 # State snapshot helpers
@@ -2297,7 +2372,7 @@ def _build_vision_observation() -> dict:
             "cy": (y + h * 0.28) / height,
             "confidence": float(detection.get("confidence", 0.0)),
         })
-    return {
+    payload = {
         "session_id": str(_runtime_cache.get("session_id", "")),
         "observation_id": _observation_id,
         "captured_at": time.time() * 1000.0,
@@ -2311,6 +2386,15 @@ def _build_vision_observation() -> dict:
         "faces": faces,
         "persons": people,
     }
+    _update_perception_diagnostics(
+        observation_id=_observation_id,
+        observation_feature=str(_runtime_cache.get("active_feature", "inactive")),
+        observation_session_id=str(_runtime_cache.get("session_id", "")),
+        observation_faces=len(faces),
+        observation_persons=len(people),
+        last_observation_at=round(time.time(), 3),
+    )
+    return payload
 
 
 async def _publish_vision_observation() -> None:
@@ -2319,10 +2403,30 @@ async def _publish_vision_observation() -> None:
         return
     payload = _build_vision_observation()
     if not payload["session_id"]:
+        _update_perception_diagnostics(
+            last_publish_ok=False,
+            last_publish_accepted=False,
+            last_publish_error="missing_session_id",
+        )
         return
     event = Event.make("vision", "observation", "fastapi_perception", payload=payload)
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(_bus_pool, lambda: _eventbus.emit(event))
+    try:
+        result = await loop.run_in_executor(_bus_pool, lambda: _eventbus.emit(event))
+    except Exception as exc:
+        _update_perception_diagnostics(
+            last_publish_at=round(time.time(), 3),
+            last_publish_ok=False,
+            last_publish_accepted=False,
+            last_publish_error=str(exc)[:160],
+        )
+        raise
+    _update_perception_diagnostics(
+        last_publish_at=round(time.time(), 3),
+        last_publish_ok=bool(result.get("ok", result.get("accepted", False))) if isinstance(result, dict) else False,
+        last_publish_accepted=bool(result.get("accepted", False)) if isinstance(result, dict) else False,
+        last_publish_error=str(result.get("reason") or result.get("error") or "")[:160] if isinstance(result, dict) else "invalid_eventbus_result",
+    )
     _apply_runtime_result(result)
 
 
@@ -2439,6 +2543,7 @@ def build_state_snapshot() -> dict:
                 "height": video_client.resolution[1] if video_client else 1080,
                 "detections": detections,
             },
+            "perception": _perception_diagnostics(),
             "pose": _build_pose_data(),
             "doa": doa_status,
             "sound_follow": sound_follow,
@@ -2719,6 +2824,11 @@ def _observe_control_step(detections: list, fw: int, fh: int) -> None:
     global _control_obs
     if _runtime_cache.get("connected"):
         return
+    _update_perception_diagnostics(
+        frame_width=int(fw),
+        frame_height=int(fh),
+        latest_person_count=sum(1 for d in detections if d.get("class_name") == "person"),
+    )
     last_event = None
     if _doa_reader is not None and bool(getattr(_doa_reader, "has_speech", False)) and float(getattr(_doa_reader, "age", 999.0)) <= 1.0:
         last_event = Event.make("audio", "speech_detected", "fastapi_telemetry",
@@ -2885,7 +2995,7 @@ async def state_push_loop():
             run_face = True
             run_pose = True
             if _single_track_active and not _multi_track_active:
-                run_pose = False   # 日常场景：人脸/情绪/专注，跳过 YOLO pose
+                run_pose = False   # 日常场景优先走人脸；无脸时下面用轻量 fallback 补候选。
             elif _multi_track_active and not _single_track_active:
                 run_face = True   # Multi-person fusion still needs face candidates.
             # -- Decode the current frame once per tick; all consumers share it --
@@ -2951,6 +3061,21 @@ async def state_push_loop():
                         except Exception as e:
                             if pose_frame_count % 30 == 0:
                                 logger.debug("FaceTrackerV2 error: %s", str(e)[:80])
+                    if not tracked_faces and _single_track_active and not _multi_track_active and pose_due:
+                        try:
+                            t0 = time.monotonic()
+                            persons = await loop.run_in_executor(_fast_pool, _refine_faces, frame, [])
+                            _record_stage_ms("face", t0)
+                            if persons:
+                                for p in persons:
+                                    if not str(getattr(p, "_source", "")):
+                                        p._source = "single_yunet_fallback"
+                                tracked_faces = persons
+                                _latest_pose_persons.clear()
+                                _latest_pose_persons.extend(persons)
+                        except Exception as e:
+                            if pose_frame_count % 30 == 0:
+                                logger.debug("single face fallback error: %s", str(e)[:80])
                     if not tracked_faces and run_pose and pose_due:
                         if pose_est is None:
                             from vision.pose_estimator import get_pose_estimator
@@ -3289,7 +3414,7 @@ async def api_system_health():
     }
     overall = "ready" if all(v["status"] == "ready" for v in components.values()) else "degraded"
     return {"ok": True, "status": overall, "components": components,
-            "perception": dict(_perception_stats), "device": _device_config_state()}
+            "perception": _perception_diagnostics(), "device": _device_config_state()}
 
 
 @app.get("/api/day_summary")

@@ -174,6 +174,7 @@ class Orchestrator:
         self._telemetry = _default_tracking_telemetry()
         self._telemetry.update(config_telemetry)
         self._control_params = self._load_control_params()
+        self.lock_confirm_required = max(1, int(round(self._param("require_stable_frames"))))
         self._clear_current_target_telemetry()
 
     def _load_doa_calibration(self):
@@ -332,13 +333,19 @@ class Orchestrator:
             self._command_suppressed_reason = "candidate_gap_hold"
             return None
         if self._face_lock_established:
-            self.lock_state = self.tracking_phase = "reacquiring"
+            self.lock_state = "reacquiring"
             self._command_suppressed_reason = "waiting_locked_face"
-            return None
+            self.fsm.transition(Event.make("vision", "target_lost", "orchestrator"))
+            return self._search(now)
         person = self._best_person(persons)
         if person:
             self._vision_lost_frames = 0
-            self._reset_search()
+            if self._no_target_since is None:
+                self._no_target_since = now
+            search_after_ms = self._param("demo_search_after_ms") if self._demo_mode() else self._param("search_after_ms")
+            if now - self._no_target_since >= search_after_ms / 1000.0:
+                self.fsm.transition(Event.make("vision", "target_lost", "orchestrator"))
+                return self._search(now)
             self.tracking_phase = "body_align"
             self.lock_state = "acquiring"
             self.fsm.transition(Event.make("vision", "target_detected", "orchestrator"))
@@ -537,7 +544,7 @@ class Orchestrator:
             self._command_suppressed_reason = "error_confirmation"
             return None
         now = time.monotonic()
-        min_interval_s = self._param("min_command_interval_ms") / 1000.0 if self._demo_mode() else 0.3
+        min_interval_s = self._param("min_command_interval_ms") / 1000.0
         if now - self._last_motion_at < min_interval_s:
             self._command_suppressed_reason = "command_interval"
             self._telemetry["motion_blocked_reason"] = "command_interval"
@@ -545,9 +552,9 @@ class Orchestrator:
         elapsed_since_motion = max(min_interval_s, now - self._last_motion_at) if self._last_motion_at else min_interval_s
         yaw_limit = min(self._param("max_yaw_delta_deg_per_tick"), self._param("max_yaw_deg_per_sec") * elapsed_since_motion)
         pitch_limit = min(self._param("max_pitch_delta_deg_per_tick"), self._param("max_pitch_deg_per_sec") * elapsed_since_motion)
-        if self._demo_mode() and reason == "body_align":
-            yaw_limit = min(yaw_limit, 0.3)
-            pitch_limit = min(pitch_limit, 0.2)
+        if reason == "body_align":
+            yaw_limit = min(yaw_limit, 0.3 if self._demo_mode() else 0.45)
+            pitch_limit = min(pitch_limit, 0.2 if self._demo_mode() else 0.25)
             self._telemetry["body_align_suppressed"] = True
         yaw_step = self._clamp(-ex*45.0, -yaw_limit, yaw_limit)
         pitch_step = self._clamp(ey*30.0, -pitch_limit, pitch_limit)
@@ -572,9 +579,9 @@ class Orchestrator:
             self._telemetry["motion_blocked_reason"] = "min_command_delta"
             return None
         mag = max(abs(ex), abs(ey))
-        speed = 180 if mag > .25 else 90 if mag > .10 else 60
-        if self._demo_mode() and reason == "body_align":
-            speed = min(speed, 60)
+        speed = 360 if mag > .25 else 240 if mag > .10 else 120
+        if reason == "body_align":
+            speed = min(speed, 80)
         self._yaw_target, self._pitch_target = yaw, pitch
         self._last_motion_at = now
         self._command_suppressed_reason = ""
@@ -605,33 +612,38 @@ class Orchestrator:
                     "command_sent": False,
                 })
             return None
-        if self._demo_mode() and now - self._no_target_since < self._param("demo_search_after_ms") / 1000.0:
+        search_after_ms = self._param("demo_search_after_ms") if self._demo_mode() else self._param("search_after_ms")
+        if now - self._no_target_since < search_after_ms / 1000.0:
             self.tracking_phase = "search_grace"
-            self._telemetry.update({
-                "demo_zone": "NO_FACE",
-                "demo_hold_active": True,
-                "demo_hold_reason": "no_face_delayed_search_hold",
-                "motion_blocked_reason": "demo_no_face_hold",
-                "command_sent": False,
-            })
+            if self._demo_mode():
+                self._telemetry.update({
+                    "demo_zone": "NO_FACE",
+                    "demo_hold_active": True,
+                    "demo_hold_reason": "no_face_delayed_search_hold",
+                    "motion_blocked_reason": "demo_no_face_hold",
+                    "command_sent": False,
+                })
             return None
         elapsed = now - self._no_target_since
-        if elapsed < .5:
-            return None
-        if elapsed <= 8:
+        timeout_s = self._param("search_timeout_ms") / 1000.0
+        if elapsed <= timeout_s:
             self.tracking_phase = "limited_search"
-            sweep = self._param("demo_search_sweep_deg") if self._demo_mode() else 35
-            yaw = self.center_yaw + sweep*math.sin((elapsed-.5)/4*math.tau)
+            sweep = self._param("demo_search_sweep_deg") if self._demo_mode() else self._param("search_sweep_deg")
+            period_s = max(1.0, 2.0 * sweep / max(1.0, self._param("search_yaw_deg_per_sec")))
+            yaw = self.center_yaw + sweep*math.sin(max(0.0, elapsed - search_after_ms / 1000.0) / period_s * math.tau)
+            pitch_sweep = 0.0 if self._demo_mode() else self._param("search_pitch_sweep_deg")
+            pitch = self.center_pitch + pitch_sweep * math.sin(max(0.0, elapsed - search_after_ms / 1000.0) / max(1.0, period_s * 1.7) * math.tau)
             if self._demo_mode():
                 self._telemetry.update({
                     "demo_zone": "NO_FACE",
                     "demo_hold_active": False,
                     "motion_blocked_reason": "",
                     "command_delta_yaw_deg": round(abs(float(yaw - self._yaw_target)), 3),
-                    "command_delta_pitch_deg": round(abs(float(self.center_pitch - self._pitch_target)), 3),
+                    "command_delta_pitch_deg": round(abs(float(pitch - self._pitch_target)), 3),
                     "command_sent": True,
                 })
-            return self._command(yaw=yaw, pitch=self.center_pitch, speed=180, reason="limited_search")
+            speed = 180 if self._demo_mode() else int(self._param("search_command_speed"))
+            return self._command(yaw=yaw, pitch=self._clamp(pitch, 30, 150), speed=speed, reason="limited_search")
         if not self._home_sent_at:
             self._home_sent_at = now
             self.tracking_phase = "returning_standby"
@@ -842,28 +854,35 @@ class Orchestrator:
 
     def _load_control_params(self):
         defaults = {
-            "demo_stop_shake_mode": 1.0,
+            "demo_stop_shake_mode": 0.0,
             "demo_hold_min_x_ratio": 0.30,
             "demo_hold_max_x_ratio": 0.70,
             "demo_hold_min_y_ratio": 0.25,
             "demo_hold_max_y_ratio": 0.75,
             "demo_search_sweep_deg": 3.0,
             "demo_search_after_ms": 2500.0,
-            "min_command_interval_ms": 200.0,
+            "min_command_interval_ms": 125.0,
             "min_yaw_command_delta_deg": 0.3,
             "min_pitch_command_delta_deg": 0.2,
-            "center_deadband_x_ratio": 0.05,
-            "center_deadband_y_ratio": 0.06,
+            "center_deadband_x_ratio": 0.035,
+            "center_deadband_y_ratio": 0.045,
             "safe_roi_width_ratio": 0.84,
             "safe_roi_height_ratio": 0.84,
             "edge_margin_x_ratio": 0.08,
             "edge_margin_y_ratio": 0.08,
-            "max_yaw_deg_per_sec": 16.7,
-            "max_pitch_deg_per_sec": 10.0,
-            "max_yaw_delta_deg_per_tick": 1.2,
-            "max_pitch_delta_deg_per_tick": 0.8,
-            "yaw_smoothing_alpha": 0.20,
-            "pitch_smoothing_alpha": 0.20,
+            "max_yaw_deg_per_sec": 90.0,
+            "max_pitch_deg_per_sec": 45.0,
+            "max_yaw_delta_deg_per_tick": 6.0,
+            "max_pitch_delta_deg_per_tick": 3.0,
+            "yaw_smoothing_alpha": 0.55,
+            "pitch_smoothing_alpha": 0.45,
+            "require_stable_frames": 2.0,
+            "search_after_ms": 500.0,
+            "search_sweep_deg": 55.0,
+            "search_yaw_deg_per_sec": 180.0,
+            "search_pitch_sweep_deg": 8.0,
+            "search_timeout_ms": 12000.0,
+            "search_command_speed": 300.0,
         }
         configured = self._tracking_control_config.get("control") if isinstance(self._tracking_control_config, dict) else {}
         if not isinstance(configured, dict):
@@ -884,7 +903,7 @@ class Orchestrator:
         params["demo_hold_max_y_ratio"] = self._clamp(params["demo_hold_max_y_ratio"], 0.0, 1.0)
         params["demo_search_sweep_deg"] = self._clamp(params["demo_search_sweep_deg"], 0.0, 3.0)
         params["demo_search_after_ms"] = self._clamp(params["demo_search_after_ms"], 2000.0, 10000.0)
-        params["min_command_interval_ms"] = self._clamp(params["min_command_interval_ms"], 200.0, 1000.0)
+        params["min_command_interval_ms"] = self._clamp(params["min_command_interval_ms"], 80.0, 1000.0)
         params["min_yaw_command_delta_deg"] = self._clamp(params["min_yaw_command_delta_deg"], 0.2, 5.0)
         params["min_pitch_command_delta_deg"] = self._clamp(params["min_pitch_command_delta_deg"], 0.15, 5.0)
         params["center_deadband_x_ratio"] = self._clamp(params["center_deadband_x_ratio"], 0.0, 0.5)
@@ -899,6 +918,13 @@ class Orchestrator:
         params["max_pitch_delta_deg_per_tick"] = self._clamp(params["max_pitch_delta_deg_per_tick"], 0.01, 45.0)
         params["yaw_smoothing_alpha"] = self._clamp(params["yaw_smoothing_alpha"], 0.01, 1.0)
         params["pitch_smoothing_alpha"] = self._clamp(params["pitch_smoothing_alpha"], 0.01, 1.0)
+        params["require_stable_frames"] = self._clamp(params["require_stable_frames"], 1.0, 5.0)
+        params["search_after_ms"] = self._clamp(params["search_after_ms"], 0.0, 5000.0)
+        params["search_sweep_deg"] = self._clamp(params["search_sweep_deg"], 3.0, 120.0)
+        params["search_yaw_deg_per_sec"] = self._clamp(params["search_yaw_deg_per_sec"], 30.0, 720.0)
+        params["search_pitch_sweep_deg"] = self._clamp(params["search_pitch_sweep_deg"], 0.0, 35.0)
+        params["search_timeout_ms"] = self._clamp(params["search_timeout_ms"], 3000.0, 30000.0)
+        params["search_command_speed"] = self._clamp(params["search_command_speed"], 60.0, 720.0)
         return params
 
     def _param(self, name):

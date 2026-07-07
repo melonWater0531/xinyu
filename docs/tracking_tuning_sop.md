@@ -1,9 +1,10 @@
 # Tracking Tuning SOP
 
-This document is the Phase 1A tuning skeleton for single-person recognition,
-face tracking, and gimbal stabilization. Phase 1A is observe-only: the runtime
-may expose these fields, but the control behavior remains owned by
-`main_phase3.py` and `core/orchestrator_v2.py`.
+This document is the tuning skeleton for single-person recognition, face
+tracking, and gimbal stabilization. The production default is active follow:
+find a face quickly, keep structured observation telemetry current, and move
+the gimbal promptly when the face leaves the small deadband. The older
+stop-shake demo behavior remains available via `demo_stop_shake_mode`.
 
 ## Parameter Table
 
@@ -28,6 +29,9 @@ may expose these fields, but the control behavior remains owned by
 | `search_yaw_deg_per_sec` | deg/s | current search command speed | faster sweep | slower sweep |
 | `search_pitch_deg_per_sec` | deg/s | current search behavior | reserved for Phase 1C | reserved for Phase 1C |
 | `search_timeout_ms` | ms | current timeout before standby | searches longer | returns standby sooner |
+| `search_pitch_sweep_deg` | deg | active-follow search pitch sweep | searches more vertical space | flatter search |
+| `search_command_speed` | deg/s | active-follow search command speed | faster search commands | gentler search commands |
+| `demo_stop_shake_mode` | boolean | active-follow default is false | large in-frame hold demo | active follow |
 
 ## Telemetry Fields
 
@@ -43,13 +47,16 @@ Latency fields are `frame_age_ms`, `face_detection_ms`, `embedding_ms`,
 ## Recommended Order
 
 1. Check `frame_age_ms`.
-2. Check `control_loop_ms`.
-3. Check `face_detection_ms` and `embedding_ms`.
-4. Confirm deadband behavior.
-5. Tune `max_yaw_*` and `max_pitch_*`.
-6. Tune `yaw_smoothing_alpha` and `pitch_smoothing_alpha`.
-7. Tune `lost_hold_ms`.
-8. Tune `search_sweep_deg` and `search_*_deg_per_sec`.
+2. Check `perception_diagnostics.latest_face_count`,
+   `observation_faces`, `latest_sources`, and `last_publish_ok`.
+3. Check `control_loop_ms`.
+4. Check `face_detection_ms` and `embedding_ms`.
+5. Confirm deadband behavior.
+6. Tune `max_yaw_*` and `max_pitch_*`.
+7. Tune `yaw_smoothing_alpha` and `pitch_smoothing_alpha`.
+8. Tune `lost_hold_ms`.
+9. Tune `search_sweep_deg`, `search_pitch_sweep_deg`, and
+   `search_*_deg_per_sec`.
 
 ## Common Issues
 
@@ -61,6 +68,16 @@ If the system chases stale frames, reduce model frequency only after confirming
 
 If reacquire feels too eager, adjust `require_stable_frames` in Phase 1C after
 verifying the candidate is stable in telemetry.
+
+If single-person tracking starts with no face even though the face is visible,
+first inspect `perception_diagnostics.face_tracker_available`,
+`latest_sources`, `latest_face_count`, and `observation_faces`. In single mode,
+FaceTrackerV2 is preferred; YuNet/person fallback should still populate
+candidate observations when FaceTrackerV2 misses.
+
+If active follow feels too slow, confirm `demo_stop_shake_mode` is false before
+raising motion limits. If it is true, the large HOLD region is intentionally
+suppressing motion for demo stability.
 
 ## Performance Downgrade Order
 
