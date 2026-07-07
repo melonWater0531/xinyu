@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
 import json
 import os
+import struct
 import threading
 import tempfile
 import time
@@ -21,13 +23,18 @@ from services.zhipu_voice import VOICE_PRESETS
 class FakeUsb:
     def __init__(self) -> None:
         self.writes = []
-        self.values = {12: b"\x00", 13: b"\x50", 17: b"\x30\x20\x10\x00\x8b\xc9\x24\x00"}
+        self.values = {
+            (20, 12): b"\x00",
+            (20, 13): b"\x50",
+            (20, 17): b"\x30\x20\x10\x00\x8b\xc9\x24\x00",
+        }
 
     def ctrl_transfer(self, request_type, request, value, index, payload, timeout):
         if value & 0x80:
-            data = self.values.get(value & 0x7F, b"\x00" * (int(payload) - 1))
+            data = self.values.get((index, value & 0x7F), self.values.get(value & 0x7F, b"\x00" * (int(payload) - 1)))
             return bytes([0]) + data
         self.writes.append((value, index, bytes(payload)))
+        self.values[(index, value)] = bytes(payload)
         self.values[value] = bytes(payload)
         return []
 
@@ -112,6 +119,13 @@ class HardwareAdapterTests(unittest.TestCase):
         self.assertTrue(any(cmd == LED_EFFECT_CMDID and payload == b"\x04" for cmd, _resid, payload in reader._dev.writes))
         self.assertTrue(reader.set_led_off())
         self.assertEqual(reader.led_status["effect"], "off")
+
+    def test_respeaker_auto_selected_beam_is_led_doa_basis(self) -> None:
+        reader = ReSpeakerDOA()
+        fake = FakeUsb()
+        fake.values[(33, 75)] = b"".join(struct.pack("<f", v) for v in (0.1, 0.2, 0.3, math.pi / 2))
+        reader._dev = fake
+        self.assertAlmostEqual(reader._read_auto_selected_beam(), 90.0, places=4)
 
     def test_node_red_bridge_command_and_readback(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), BridgeHandler)

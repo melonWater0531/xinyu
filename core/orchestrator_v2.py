@@ -148,6 +148,13 @@ class Orchestrator:
         self._doa_candidate = self._active_doa = None
         self._doa_candidate_since = self._last_speech_at = 0.0
         self.doa_switch_threshold_deg = 15.0
+        self._doa_led_ema = None
+        self._doa_led_last_sent = None
+        self._doa_led_last_time = 0.0
+        self._doa_led_alpha = 0.30
+        self._doa_led_dead_zone_deg = 3.0
+        self._doa_led_cooldown_s = 0.35
+        self._doa_led_max_step_deg = 35.0
         self._speaker_seek = False
         self._speaker_confidence = 0.0
         self._seek_started_at = 0.0   # monotonic ts of the last audio_coarse
@@ -371,6 +378,8 @@ class Orchestrator:
 
     def _audio(self, event):
         now = time.monotonic()
+        if event.payload.get("doa_only") and self.session.mode is ControlMode.MULTI_SOUND_YAW:
+            return self._doa_led_sync(event, now)
         if event.name == "timeout" or not bool(event.payload.get("speech", True)):
             if now - self._last_speech_at > 1.5 and self.locked_track_id is not None:
                 self.tracking_phase = "speaker_hold"
@@ -422,6 +431,49 @@ class Orchestrator:
         self._yaw_target = yaw
         self._last_motion_at = now
         return self._command(yaw=yaw, speed=360, reason="audio_coarse")
+
+    def _doa_led_sync(self, event, now):
+        doa = float(event.payload.get("doa_deg", 0.0)) % 360
+        corrected = (doa + self.doa_offset_deg) % 360
+        if abs(((corrected - 180.0 + 180.0) % 360) - 180.0) <= self.rear_cone_deg:
+            self.tracking_phase = "audio_rear_ignored"
+            self._command_suppressed_reason = "rear_cone"
+            return None
+
+        target = self._doa_yaw(doa)
+        if self._doa_led_ema is None:
+            self._doa_led_ema = target
+        else:
+            self._doa_led_ema = self._doa_led_alpha * target + (1.0 - self._doa_led_alpha) * self._doa_led_ema
+
+        yaw = self._doa_led_ema
+        if self._doa_led_last_sent is not None:
+            delta = yaw - self._doa_led_last_sent
+            if abs(delta) < self._doa_led_dead_zone_deg:
+                self.tracking_phase = "doa_led_sync"
+                self._command_suppressed_reason = "doa_led_dead_zone"
+                return None
+            if now - self._doa_led_last_time < self._doa_led_cooldown_s:
+                self.tracking_phase = "doa_led_sync"
+                self._command_suppressed_reason = "doa_led_cooldown"
+                return None
+            if abs(delta) > self._doa_led_max_step_deg:
+                yaw = self._doa_led_last_sent + (self._doa_led_max_step_deg if delta > 0 else -self._doa_led_max_step_deg)
+
+        yaw = round(self._clamp(yaw, 1, 345), 1)
+        self._doa_led_last_sent = yaw
+        self._doa_led_last_time = now
+        self._active_doa = doa
+        self._speaker_seek = False
+        self._speaker_confidence = 0.0
+        self._seek_started_at = 0.0
+        self._seek_to_lock_ms = None
+        self._yaw_target = yaw
+        self._last_motion_at = now
+        self.tracking_phase = "doa_led_sync"
+        self._command_suppressed_reason = ""
+        self.fsm.transition(Event.make("audio", "speech_detected", "orchestrator"))
+        return self._command(yaw=yaw, speed=360, reason="doa_led_sync")
 
     def _track(self, item, reason):
         cx, cy = self._norm(item.get("cx"), self.frame_width), self._norm(item.get("cy"), self.frame_height)
@@ -706,6 +758,9 @@ class Orchestrator:
         self._unlock()
         self._reset_search()
         self._doa_candidate = self._active_doa = None
+        self._doa_led_ema = None
+        self._doa_led_last_sent = None
+        self._doa_led_last_time = 0.0
         self._speaker_seek = False
         self._speaker_confidence = 0.0
         self._seek_started_at = 0.0

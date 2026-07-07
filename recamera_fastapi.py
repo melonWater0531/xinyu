@@ -325,6 +325,12 @@ _eye_metrics = {"ear_avg": 0.3, "blink_rate": 0, "perclos": 0, "focus_score": 10
 _emotieff_result = None  # EmotiEffLib parallel inference result
 # Audio conversation recording (perception/recording only — does NOT move the gimbal).
 _doa_reader = None
+_doa_diag = {
+    "last_deg": None,
+    "last_changed_at": 0.0,
+    "last_seen_at": 0.0,
+    "last_delta_deg": 0.0,
+}
 _conversation_recorder = None
 _conversation_recording_requested = False
 _meeting_save_audio = False
@@ -688,15 +694,41 @@ def _doa_status() -> dict:
             "available": False,
             "source": os.environ.get("RECAMERA_DOA_SOURCE", "usb"),
             "led": {"hardware": False, "effect": "unavailable"},
+            "diagnostics": {"moving": False, "stable_sec": 0.0, "last_delta_deg": 0.0, "packet_count": 0, "doa_basis": "unavailable"},
         }
     status_fn = getattr(_doa_reader, "status", None)
     detail = status_fn() if callable(status_fn) else {}
+    now = time.time()
+    doa_deg = round(float(detail.get("doa_deg", _doa_reader.doa)), 1)
+    raw_doa = detail.get("raw_doa_deg")
+    led_doa = detail.get("led_doa_deg")
+    doa_basis = str(detail.get("doa_basis") or ("auto_selected_beam" if led_doa is not None else "raw_fallback"))
+    prev = _doa_diag.get("last_deg")
+    delta = 0.0 if prev is None else abs(((doa_deg - float(prev) + 180.0) % 360.0) - 180.0)
+    if prev is None or delta >= 3.0:
+        _doa_diag.update({"last_deg": doa_deg, "last_changed_at": now, "last_delta_deg": round(delta, 1)})
+    _doa_diag["last_seen_at"] = now
+    stable_sec = 0.0 if not _doa_diag.get("last_changed_at") else max(0.0, now - float(_doa_diag["last_changed_at"]))
     return {
         "available": True,
         "source": detail.get("source", "usb"),
-        "doa_deg": round(float(_doa_reader.doa), 1),
+        "doa_deg": doa_deg,
+        "raw_doa_deg": round(float(raw_doa), 1) if raw_doa is not None else doa_deg,
+        "led_doa_deg": round(float(led_doa), 1) if led_doa is not None else None,
+        "doa_basis": doa_basis,
         "has_speech": bool(_doa_reader.has_speech),
         "age": round(float(_doa_reader.age), 2),
+        "diagnostics": {
+            "moving": delta >= 3.0,
+            "stable_sec": round(stable_sec, 1),
+            "last_changed_at": round(float(_doa_diag.get("last_changed_at") or 0.0), 3),
+            "last_change_age_sec": round(stable_sec, 1),
+            "last_delta_deg": round(delta, 1),
+            "packet_count": int(detail.get("packet_count") or 0),
+            "doa_basis": doa_basis,
+            "raw_doa_deg": round(float(raw_doa), 1) if raw_doa is not None else doa_deg,
+            "led_doa_deg": round(float(led_doa), 1) if led_doa is not None else None,
+        },
         **detail,
     }
 
@@ -707,8 +739,12 @@ def _respeaker_state() -> dict:
         "connected": bool(doa.get("available") or doa.get("connected")),
         "source": doa.get("source", os.environ.get("RECAMERA_DOA_SOURCE", "usb")),
         "doa_deg": doa.get("doa_deg"),
+        "raw_doa_deg": doa.get("raw_doa_deg"),
+        "led_doa_deg": doa.get("led_doa_deg"),
+        "doa_basis": doa.get("doa_basis"),
         "has_speech": bool(doa.get("has_speech")),
         "age": doa.get("age"),
+        "diagnostics": doa.get("diagnostics", {}),
         "audio_device": os.environ.get("RECAMERA_AUDIO_DEVICE", "system_default"),
         "led": doa.get("led", {"hardware": False, "effect": "unavailable"}),
     }
@@ -830,24 +866,42 @@ async def doa_event_loop() -> None:
         feature = str(_runtime_cache.get("active_feature", "inactive"))
         session_id = str(_runtime_cache.get("session_id", ""))
         control_active = feature in DOA_CONTROL_FEATURES and bool(session_id)
-        active = bool(
+        doa_fresh = bool(
             control_active
             and _doa_reader is not None
-            and getattr(_doa_reader, "has_speech", False)
             and float(getattr(_doa_reader, "age", 999.0)) <= 1.0
         )
+        has_speech = bool(getattr(_doa_reader, "has_speech", False)) if _doa_reader is not None else False
+        doa_only = bool(feature == "multi_sound_yaw" and _led_runtime_mode == "doa" and doa_fresh)
+        active = bool(doa_fresh and (has_speech or doa_only))
         if active:
             _last_audio_event_session_id = session_id
-            doa_window.append(float(_doa_reader.doa))
-            smoothed_doa = _circular_mean_deg(doa_window)
-            lip_motion, lip_score, lip_track_id = _lip_motion_evidence()
+            status_fn = getattr(_doa_reader, "status", None)
+            doa_status = status_fn() if callable(status_fn) else {}
+            raw_doa = float(doa_status.get("raw_doa_deg", getattr(_doa_reader, "raw_doa", _doa_reader.doa)))
+            led_doa = doa_status.get("led_doa_deg")
+            doa_basis = str(doa_status.get("doa_basis") or ("auto_selected_beam" if led_doa is not None else "raw_fallback"))
+            if doa_only:
+                event_doa = float(led_doa if led_doa is not None else raw_doa)
+                lip_motion, lip_score, lip_track_id = None, 0.0, None
+            else:
+                doa_window.append(raw_doa)
+                event_doa = _circular_mean_deg(doa_window)
+                lip_motion, lip_score, lip_track_id = _lip_motion_evidence()
+            payload = {
+                "doa_deg": event_doa, "speech": has_speech, "session_id": session_id,
+                "vad_confidence": 0.8, "lip_motion": lip_motion,
+                "lip_motion_score": lip_score, "lip_track_id": lip_track_id,
+                "source_has_speech": has_speech,
+                "doa_basis": doa_basis if doa_only else "raw_doa_value",
+                "raw_doa_deg": raw_doa,
+                "led_doa_deg": led_doa,
+            }
+            if doa_only:
+                payload["doa_only"] = True
             event = Event.make(
                 "audio", "speech_detected", "respeaker",
-                payload={
-                    "doa_deg": smoothed_doa, "speech": True, "session_id": session_id,
-                    "vad_confidence": 0.8, "lip_motion": lip_motion,
-                    "lip_motion_score": lip_score, "lip_track_id": lip_track_id,
-                },
+                payload=payload,
             )
             result = await loop.run_in_executor(_bus_pool, lambda: _eventbus.emit(event))
             _apply_runtime_result(result)

@@ -126,12 +126,45 @@ class ControlPageResilienceTests(unittest.TestCase):
 
     def test_heartbeat_is_short_degraded_and_does_not_clear_session(self) -> None:
         page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
-        heartbeat = page.split("async function heartbeat()", 1)[1].split("function toggleLandmarks", 1)[0]
+        heartbeat = page.split("async function heartbeat()", 1)[1].split("async function recoverMultiSessionIfExpired", 1)[0]
         self.assertIn("timeoutMs:1200", heartbeat)
         self.assertIn("silent:true", heartbeat)
         self.assertIn("控制心跳降级", heartbeat)
+        self.assertNotIn("r.degraded||", heartbeat)
         self.assertNotIn("heartbeatFailures>=3", heartbeat)
         self.assertNotIn("clearSession();", heartbeat)
+
+    def test_multi_heartbeat_can_recover_expired_session(self) -> None:
+        page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
+        self.assertIn("recoveringSession=false", page)
+        heartbeat = page.split("async function heartbeat()", 1)[1].split("function toggleLandmarks", 1)[0]
+        recover = page.split("async function recoverMultiSessionIfExpired", 1)[1].split("function toggleLandmarks", 1)[0]
+        self.assertIn("sessionExpired=/no_command|heartbeat_rejected|session_id_required|lease_expired/i.test(reason)", heartbeat)
+        self.assertIn("if(sessionExpired||!transient)await recoverMultiSessionIfExpired(sessionId)", heartbeat)
+        self.assertIn("activePage!=='multi_sound_yaw'", recover)
+        self.assertIn("/api/control/runtime", recover)
+        self.assertIn("last.reason==='lease_expired'", recover)
+        self.assertIn("clearSession();", recover)
+        self.assertIn("/api/multi_track/start", recover)
+        self.assertIn("await applyControlConfig()", recover)
+
+    def test_multi_heartbeat_keeps_timeout_and_busy_transient(self) -> None:
+        page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
+        heartbeat = page.split("async function heartbeat()", 1)[1].split("async function recoverMultiSessionIfExpired", 1)[0]
+        self.assertIn("r.timeout", heartbeat)
+        self.assertIn("r.authority==='unreachable'", heartbeat)
+        self.assertIn("eventbus_timeout", heartbeat)
+        self.assertIn("eventbus_busy", heartbeat)
+
+    def test_control_page_shows_doa_motion_diagnostics(self) -> None:
+        page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
+        self.assertIn('id="doaMotion"', page)
+        self.assertIn("doa.diagnostics||rs.diagnostics", page)
+        self.assertIn("auto beam", page)
+        self.assertIn("rawDeg", page)
+        self.assertIn("ledDeg", page)
+        self.assertIn("diag.moving", page)
+        self.assertIn("diag.packet_count", page)
 
     def test_meeting_frontend_shows_realtime_asr_lifecycle(self) -> None:
         page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")

@@ -21,6 +21,7 @@ from __future__ import annotations
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import math
 import struct
 import threading
 import time
@@ -39,6 +40,10 @@ PID = 0x001A
 DOA_RESID = 20
 DOA_CMDID = 0x80 | 18  # 0x80 | cmdid for read
 DOA_LENGTH = 9  # 1 status + 4 × uint16 (8 bytes) — matches simple script
+AEC_RESID = 33
+AEC_AZIMUTH_CMDID = 75
+AUDIO_MGR_RESID = 35
+AUDIO_MGR_SELECTED_AZIMUTHS_CMDID = 11
 LED_EFFECT_CMDID = 12
 LED_BRIGHTNESS_CMDID = 13
 LED_GAMMIFY_CMDID = 14
@@ -63,10 +68,14 @@ class ReSpeakerDOA:
 
         # Latest reading
         self._doa_deg: float = 0.0       # 0-359, 0=front
+        self._led_doa_deg: Optional[float] = None  # Auto selected beam, same source as firmware DOA LED.
+        self._doa_basis: str = "raw_fallback"
         self._has_speech: bool = False
         self._last_read_time: float = 0.0
+        self._last_led_doa_time: float = 0.0
         self._read_count: int = 0
         self._error_count: int = 0
+        self._beam_error_count: int = 0
         self._led = {
             "hardware": True, "effect": "off", "brightness": 80,
             "base_color": "#102030", "doa_color": "#24c98b",
@@ -163,8 +172,15 @@ class ReSpeakerDOA:
         while self._running:
             try:
                 doa, speech = self._read_doa_raw()
+                led_doa = self._read_auto_selected_beam()
                 with self._lock:
                     self._doa_deg = doa
+                    if led_doa is not None:
+                        self._led_doa_deg = led_doa
+                        self._doa_basis = "auto_selected_beam"
+                        self._last_led_doa_time = time.monotonic()
+                    elif self._led_doa_deg is None:
+                        self._doa_basis = "raw_fallback"
                     self._has_speech = speech
                     self._last_read_time = time.monotonic()
                     self._read_count += 1
@@ -202,6 +218,25 @@ class ReSpeakerDOA:
 
         return doa_deg, has_speech
 
+    def _read_auto_selected_beam(self) -> Optional[float]:
+        """Read the firmware DOA LED basis: AEC_AZIMUTH_VALUES[3]."""
+        try:
+            raw = self._ctrl_read_raw(AEC_RESID, AEC_AZIMUTH_CMDID, 16)
+            values = struct.unpack("<ffff", raw[:16])
+            radians = float(values[3])
+        except Exception:
+            try:
+                raw = self._ctrl_read_raw(AUDIO_MGR_RESID, AUDIO_MGR_SELECTED_AZIMUTHS_CMDID, 8)
+                values = struct.unpack("<ff", raw[:8])
+                radians = float(values[1])
+            except Exception:
+                self._beam_error_count += 1
+                return None
+        if not math.isfinite(radians):
+            self._beam_error_count += 1
+            return None
+        return math.degrees(radians) % 360.0
+
     # ── Public API ──────────────────────────────────────────
 
     def read(self) -> Tuple[float, bool]:
@@ -216,9 +251,26 @@ class ReSpeakerDOA:
 
     @property
     def doa(self) -> float:
-        """Latest DOA angle in degrees (0=front, 90=right)."""
+        """Latest official LED-basis DOA angle, falling back to raw DOA."""
+        with self._lock:
+            return self._led_doa_deg if self._led_doa_deg is not None else self._doa_deg
+
+    @property
+    def raw_doa(self) -> float:
+        """Latest raw DOA_VALUE angle in degrees."""
         with self._lock:
             return self._doa_deg
+
+    @property
+    def led_doa(self) -> Optional[float]:
+        """Latest Auto selected beam angle used by firmware DOA LED effect."""
+        with self._lock:
+            return self._led_doa_deg
+
+    @property
+    def doa_basis(self) -> str:
+        with self._lock:
+            return self._doa_basis if self._led_doa_deg is not None else "raw_fallback"
 
     @property
     def has_speech(self) -> bool:
@@ -283,11 +335,15 @@ class ReSpeakerDOA:
         with self._lock:
             age = 999.0 if self._last_read_time == 0.0 else time.monotonic() - self._last_read_time
             return {
-                "doa": round(self._doa_deg, 1),
+                "doa": round((self._led_doa_deg if self._led_doa_deg is not None else self._doa_deg), 1),
+                "raw_doa": round(self._doa_deg, 1),
+                "led_doa": round(self._led_doa_deg, 1) if self._led_doa_deg is not None else None,
+                "doa_basis": self.doa_basis,
                 "has_speech": self._has_speech,
                 "age": round(age, 2),
                 "reads": self._read_count,
                 "errors": self._error_count,
+                "beam_errors": self._beam_error_count,
             }
 
     def set_led_doa(
@@ -341,9 +397,14 @@ class ReSpeakerDOA:
         return {
             "available": self._dev is not None and self.age <= 1.0,
             "source": "usb", "connected": self._dev is not None,
-            "doa_deg": round(self.doa, 1), "has_speech": self.has_speech,
+            "doa_deg": round(self.doa, 1),
+            "raw_doa_deg": round(self.raw_doa, 1),
+            "led_doa_deg": round(self.led_doa, 1) if self.led_doa is not None else None,
+            "doa_basis": self.doa_basis,
+            "has_speech": self.has_speech,
             "age": round(self.age, 2), "packet_count": self._read_count,
-            "errors": self._error_count, "led": self.led_status,
+            "errors": self._error_count, "beam_errors": self._beam_error_count,
+            "led": self.led_status,
         }
 
     def __repr__(self) -> str:

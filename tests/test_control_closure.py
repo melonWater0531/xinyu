@@ -53,6 +53,30 @@ class ControlClosureTests(unittest.TestCase):
         self.assertIsNone(command.pitch)
         self.assertIsNone(self.orch.handle_event(Event.make("vision", "target_detected", "test", payload={"cx": .2, "cy": .5, "conf": .9})))
 
+    def test_multi_doa_only_syncs_to_led_direction(self) -> None:
+        self.start("multi_sound_yaw")
+        payload = {"doa_deg": 35, "speech": False, "doa_only": True, "session_id": "s1"}
+        command = self.orch.handle_event(Event.make("audio", "speech_detected", "test", payload=payload))
+        self.assertIsNotNone(command)
+        self.assertEqual(command.reason, "doa_led_sync")
+        self.assertEqual(command.yaw, 215.0)
+        self.assertIsNone(command.pitch)
+        self.assertFalse(self.orch._speaker_seek)
+
+    def test_multi_doa_only_dead_zone_suppresses_small_led_jitter(self) -> None:
+        self.start("multi_sound_yaw")
+        first = {"doa_deg": 35, "speech": False, "doa_only": True, "session_id": "s1"}
+        jitter = {"doa_deg": 36, "speech": False, "doa_only": True, "session_id": "s1"}
+        self.assertIsNotNone(self.orch.handle_event(Event.make("audio", "speech_detected", "test", payload=first)))
+        self.orch._doa_led_last_time -= .5
+        self.assertIsNone(self.orch.handle_event(Event.make("audio", "speech_detected", "test", payload=jitter)))
+        self.assertEqual(self.orch._command_suppressed_reason, "doa_led_dead_zone")
+
+    def test_meeting_recording_does_not_follow_doa_only_without_speech(self) -> None:
+        self.start("meeting_recording")
+        payload = {"doa_deg": 35, "speech": False, "doa_only": True, "session_id": "s1"}
+        self.assertIsNone(self.orch.handle_event(Event.make("audio", "speech_detected", "test", payload=payload)))
+
     def test_manual_requires_current_session(self) -> None:
         self.start("manual_gimbal_debug")
         self.assertIsNone(self.orch.handle_event(ui("dpad_move", session_id="old", pan=2, tilt=1)))

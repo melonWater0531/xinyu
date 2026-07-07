@@ -90,6 +90,80 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             api._runtime_cache = old_runtime
             api._emotieff_result = old_emotion
 
+    def test_doa_status_exposes_motion_diagnostics(self) -> None:
+        class FakeDoa:
+            doa = 320.0
+            has_speech = True
+            age = 0.04
+
+            def __init__(self) -> None:
+                self.packet_count = 10
+
+            def status(self) -> dict:
+                return {"source": "usb", "connected": True, "packet_count": self.packet_count}
+
+        old_reader = api._doa_reader
+        old_diag = dict(api._doa_diag)
+        fake = FakeDoa()
+        try:
+            api._doa_reader = fake
+            api._doa_diag.update({"last_deg": None, "last_changed_at": 0.0, "last_seen_at": 0.0, "last_delta_deg": 0.0})
+            first = api._doa_status()
+            self.assertIn("diagnostics", first)
+            self.assertEqual(first["diagnostics"]["packet_count"], 10)
+            self.assertFalse(first["diagnostics"]["moving"])
+
+            fake.packet_count = 11
+            stable = api._doa_status()
+            self.assertFalse(stable["diagnostics"]["moving"])
+            self.assertIn("stable_sec", stable["diagnostics"])
+            self.assertIn("last_changed_at", stable["diagnostics"])
+
+            fake.doa = 330.0
+            fake.packet_count = 12
+            moving = api._doa_status()
+            self.assertTrue(moving["diagnostics"]["moving"])
+            self.assertEqual(moving["diagnostics"]["last_delta_deg"], 10.0)
+        finally:
+            api._doa_reader = old_reader
+            api._doa_diag.clear()
+            api._doa_diag.update(old_diag)
+
+    def test_doa_status_prefers_auto_selected_beam_for_led_path(self) -> None:
+        class FakeDoa:
+            doa = 90.0
+            raw_doa = 320.0
+            led_doa = 90.0
+            has_speech = True
+            age = 0.04
+
+            def status(self) -> dict:
+                return {
+                    "source": "usb",
+                    "connected": True,
+                    "doa_deg": 90.0,
+                    "raw_doa_deg": 320.0,
+                    "led_doa_deg": 90.0,
+                    "doa_basis": "auto_selected_beam",
+                    "packet_count": 3,
+                }
+
+        old_reader = api._doa_reader
+        old_diag = dict(api._doa_diag)
+        try:
+            api._doa_reader = FakeDoa()
+            api._doa_diag.update({"last_deg": None, "last_changed_at": 0.0, "last_seen_at": 0.0, "last_delta_deg": 0.0})
+            status = api._doa_status()
+            self.assertEqual(status["doa_deg"], 90.0)
+            self.assertEqual(status["raw_doa_deg"], 320.0)
+            self.assertEqual(status["led_doa_deg"], 90.0)
+            self.assertEqual(status["doa_basis"], "auto_selected_beam")
+            self.assertEqual(status["diagnostics"]["raw_doa_deg"], 320.0)
+        finally:
+            api._doa_reader = old_reader
+            api._doa_diag.clear()
+            api._doa_diag.update(old_diag)
+
     def test_emotion_context_handles_missing_and_probability_shapes(self) -> None:
         empty = build_emotion_context(None)
         self.assertIn("是否观察到人脸：否", empty)

@@ -358,6 +358,7 @@ button,input,select{font:inherit}
                 </div>
                 <div class="kv"><span>ReSpeaker</span><span id="doaReady">--</span></div>
                 <div class="kv"><span>DOA 延迟</span><span id="doaAge">--</span></div>
+                <div class="kv"><span>DOA 变化</span><span id="doaMotion">--</span></div>
                 <div class="kv"><span>实体 LED</span><span id="hardwareLedState">--</span></div>
               </div>
             </div>
@@ -543,7 +544,7 @@ button,input,select{font:inherit}
 
 <script>
 let state=null,ws=null,wsRetry=null,lastWsAt=0,lastLog='',lastStopState='',activePage='single_face_analysis',switching=false,currentSessionId='',landmarkMesh=false;
-let heartbeatInFlight=false,heartbeatFailures=0,remoteControlOwner=false,lastHeartbeatLogAt=0,heartbeatTimer=null;
+let heartbeatInFlight=false,heartbeatFailures=0,remoteControlOwner=false,lastHeartbeatLogAt=0,heartbeatTimer=null,recoveringSession=false;
 let lastVideoReconnectAt=0;
 const controlChannel=('BroadcastChannel' in window)?new BroadcastChannel('recamera-control-owner'):null;
 if(controlChannel)controlChannel.onmessage=ev=>{
@@ -980,15 +981,38 @@ async function heartbeat(){
       heartbeatFailures=0;
       return;
     }
-    const transient=!r||r.degraded||r.timeout||r.authority==='unreachable'||/timed out|timeout|busy|empty_response/i.test(String(r.reason||''));
+    const reason=String(r&&((r.reason||r.error)||(r.heartbeat_state&&r.heartbeat_state.last_error))||'');
+    const sessionExpired=/no_command|heartbeat_rejected|session_id_required|lease_expired/i.test(reason);
+    const transient=!r||r.timeout||r.authority==='unreachable'||/timed out|timeout|busy|empty_response|eventbus_timeout|eventbus_busy/i.test(reason);
     heartbeatFailures+=1;
     const now=Date.now();
     if(now-lastHeartbeatLogAt>8000){
       lastHeartbeatLogAt=now;
-      log(`控制心跳降级（${r&&r.reason||'timeout'}），会议录音/转写保持运行，可直接点击终止并生成纪要${transient?'':'；控制会话可能已失效'}`);
+      log(`控制心跳降级（${reason||'timeout'}），会议录音/转写保持运行，可直接点击终止并生成纪要${transient&&!sessionExpired?'':'；控制会话可能已失效'}`);
     }
+    if(sessionExpired||!transient)await recoverMultiSessionIfExpired(sessionId);
   }finally{
     heartbeatInFlight=false;
+  }
+}
+async function recoverMultiSessionIfExpired(sessionId){
+  if(recoveringSession||activePage!=='multi_sound_yaw'||sessionId!==currentSessionId)return;
+  recoveringSession=true;
+  try{
+    const r=await apiGet('/api/control/runtime',{timeoutMs:2000,silent:true});
+    if(sessionId!==currentSessionId)return;
+    const rt=r&&r.runtime||{},last=rt.last_command||{};
+    const expired=rt.active_feature==='inactive'||!rt.session_id||last.reason==='lease_expired'||Number(rt.lease_remaining_ms||0)<=0;
+    if(!expired)return;
+    log('多人控制会话已过期，正在自动恢复声源跟随');
+    clearSession();
+    const started=await apiPost('/api/multi_track/start',{save_audio:false},{timeoutMs:6000});
+    if(adoptSession(started,'multi_sound_yaw')){
+      await applyControlConfig();
+      log('多人控制会话已自动恢复');
+    }
+  }finally{
+    recoveringSession=false;
   }
 }
 function toggleLandmarks(){
@@ -1124,8 +1148,13 @@ function renderState(s){
   $('blinkRateVal').textContent=eye.blink_rate!=null?num(eye.blink_rate,'',1):'--';$('attnState').textContent=att.state||att.gaze_direction||'--';
 
   const deg=doa.doa_deg!=null?Number(doa.doa_deg):null,hasSpeech=!!doa.has_speech;
+  const diag=doa.diagnostics||rs.diagnostics||{};
+  const basis=doa.doa_basis||rs.doa_basis||diag.doa_basis||'raw_fallback';
+  const rawDeg=doa.raw_doa_deg??rs.raw_doa_deg??diag.raw_doa_deg;
+  const ledDeg=doa.led_doa_deg??rs.led_doa_deg??diag.led_doa_deg;
   $('doaVal').textContent=deg!=null?Math.round(deg)+'°':'--';
-  $('speechVal').textContent=hasSpeech?'有声':'无声';$('doaReady').textContent=doa.available?`已连接 (${doa.source||'doa'})`:'未连接';$('doaAge').textContent=health.doa_age!=null?num(health.doa_age,'s',2):'--';
+  $('speechVal').textContent=hasSpeech?'有声':'无声';$('doaReady').textContent=doa.available?`已连接 (${basis==='auto_selected_beam'?'auto beam':'raw fallback'})`:'未连接';$('doaAge').textContent=health.doa_age!=null?num(health.doa_age,'s',2):'--';
+  $('doaMotion').textContent=(diag.moving?`变化中 Δ${num(diag.last_delta_deg,'°',1)}`:`稳定 ${num(diag.stable_sec,'s',1)}`)+` · raw ${rawDeg!=null?Math.round(Number(rawDeg))+'°':'--'} · led ${ledDeg!=null?Math.round(Number(ledDeg))+'°':'--'} · pkt ${diag.packet_count??'--'}`;
   renderDoa(deg,hasSpeech,'doaArrow',['ledN','ledE','ledS','ledW'],'ledVal');
   const led=rs.led||doa.led||{},ledText=led.hardware?`${led.effect||'--'} / hardware`:'unavailable';
   $('hardwareLedState').textContent=ledText;
