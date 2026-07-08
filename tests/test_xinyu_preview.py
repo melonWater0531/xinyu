@@ -55,6 +55,7 @@ class XinyuProductHomeTests(unittest.TestCase):
         for phrase in (
             'fetch("/api/chat"',
             'apiJSON(`/api/conversations/${encodeURIComponent(conversationId)}`',
+            'apiJSON(`/api/conversations/${encodeURIComponent(conversationId)}/messages`',
             'apiJSON("/api/conversations"',
             'apiJSON("/api/memory"',
             'apiJSON("/api/reflect"',
@@ -77,6 +78,7 @@ class XinyuProductHomeTests(unittest.TestCase):
         for phrase in ("memory_context", "work_context", "day_summary", "data-chat-memory-save", "data-delete-conversation", "buildCompanionPrompts", "renderCompanionPrompts"):
             self.assertIn(phrase, self.js)
         self.assertIn('text.startsWith("接着聊聊我日记里写的")', self.js)
+        self.assertIn("replyFitsPromptIntent", self.js)
         self.assertNotIn('text.includes("整理") || text.includes("今天")', self.js)
 
     def test_interactive_controls_exist(self) -> None:

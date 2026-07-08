@@ -758,6 +758,19 @@
     return hasContext || value.length >= Math.min(local.length, 42);
   }
 
+  function replyFitsPromptIntent(message, reply) {
+    const prompt = String(message || "");
+    const value = String(reply || "");
+    if (prompt.startsWith("接着聊聊我日记里写的")) {
+      const meetingOnly = ["会议", "预算申报", "活动规划", "待办"].some((token) => value.includes(token));
+      const diaryLike = ["日记", "写到", "这段", "这一句", "感受", "朋友", "吃饭", "逛街"].some((token) => value.includes(token));
+      return !meetingOnly || diaryLike;
+    }
+    if (prompt.startsWith("围绕你记得的")) return ["记得", "背景", "影响", "这件事"].some((token) => value.includes(token));
+    if (prompt.includes("不想被建议")) return !["建议你", "可以尝试", "首先", "第一"].some((token) => value.includes(token));
+    return true;
+  }
+
   async function requestLLMReply(message, fallback) {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10000);
@@ -776,7 +789,7 @@
         persist();
       }
       return {
-        reply: shouldUseLLMReply(reply, fallback) ? reply : fallback,
+        reply: shouldUseLLMReply(reply, fallback) && replyFitsPromptIntent(message, reply) ? reply : fallback,
         conversationId: body.conversation_id || state.activeConversationId || "",
       };
     } finally {
@@ -843,6 +856,20 @@
       persist();
     }
     return id;
+  }
+
+  async function persistConversationTurn(role, content) {
+    const text = String(content || "").trim();
+    if (!text) return;
+    try {
+      const conversationId = await ensureConversation();
+      if (!conversationId) return;
+      await apiJSON(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+        method: "POST",
+        body: {role, content: text},
+        timeoutMs: 6000,
+      });
+    } catch (_error) {}
   }
 
   async function loadConversation(conversationId) {
@@ -1674,8 +1701,13 @@
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.ok) throw new Error(data.error || "voice_chat_failed");
-      if (data.transcript) appendChat(data.transcript, "user");
-      appendChat(data.reply || "小屿听到了。", "assistant");
+      if (data.transcript) {
+        appendChat(data.transcript, "user");
+        persistConversationTurn("user", data.transcript);
+      }
+      const reply = data.reply || "小屿听到了。";
+      appendChat(reply, "assistant");
+      persistConversationTurn("assistant", reply);
       if (data.audio_url) new Audio(data.audio_url).play().catch(() => {});
       setText("xy-voice-status", "语音回复完成");
     } catch (_error) {

@@ -100,6 +100,7 @@
 .xy-chat-hub-head button { min-height: 32px; padding: 0 12px; border: 0; border-radius: 13px; color: var(--xy-surface); background: var(--xy-caramel); }
 .xy-chat-hub-list { display: grid; gap: 8px; }
 .xy-chat-history-item { display: grid; grid-template-columns: 1fr auto; gap: 8px; width: 100%; padding: 10px; border: 1px solid rgba(138,106,69,.12); border-radius: 14px; text-align: left; background: rgba(246,239,229,.56); }
+.xy-chat-history-item > button { min-width: 0; padding: 0; border: 0; text-align: left; background: transparent; }
 .xy-chat-history-item strong { display: block; color: var(--xy-text); font-size: 13px; line-height: 18px; }
 .xy-chat-history-item small { display: block; margin-top: 3px; color: var(--xy-text-muted); font-size: 11px; line-height: 16px; }
 .xy-chat-history-item em { display: inline-flex; align-items: center; width: max-content; margin-top: 6px; padding: 2px 7px; border-radius: 999px; color: #5E7899; background: rgba(143,169,216,.16); font-size: 11px; font-style: normal; }

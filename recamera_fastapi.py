@@ -4861,6 +4861,18 @@ async def api_conversation_detail(conversation_id: str):
             "messages": conversation_store.messages(conversation_id)}
 
 
+@app.post("/api/conversations/{conversation_id}/messages")
+async def api_conversation_append_message(conversation_id: str, payload: dict = Body(default={})):
+    from services.conversation_store import conversation_store
+    role = str(payload.get("role", ""))
+    content = str(payload.get("content", ""))
+    message = conversation_store.append_message(conversation_id, role, content)
+    if not message:
+        return JSONResponse({"ok": False, "error": "message_not_saved"}, status_code=400)
+    session = conversation_store.get(conversation_id)
+    return {"ok": True, "message": message, "conversation": conversation_store.compact(session) if session else None}
+
+
 @app.delete("/api/conversations/{conversation_id}")
 async def api_conversation_delete(conversation_id: str):
     from services.conversation_store import conversation_store
