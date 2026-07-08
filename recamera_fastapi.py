@@ -4689,12 +4689,20 @@ async def api_emotion_infer():
     return _local_emotion_inference(state_data)
 
 
-def _build_chat_messages(payload: dict) -> tuple[list, str, str, str]:
+def _persist_chat_enabled(payload: dict) -> bool:
+    if payload.get("_persist") is False:
+        return False
+    # Pytest calls api_chat directly; avoid writing synthetic "hello" turns into
+    # the operator's real records during contract tests.
+    return not bool(os.getenv("PYTEST_CURRENT_TEST"))
+
+
+def _build_chat_messages(payload: dict) -> tuple[list, str, str, str, str]:
     """Shared prompt assembly for /api/chat and /api/chat/stream.
     Returns (messages, msg, emo_key, user_name). Server-side chat memory
     provides history; client context strings remain a supplementary hint."""
-    from services.chat_memory import chat_memory
     from services.emotion_prompt import build_chat_system_prompt, describe_companion_context
+    from services.conversation_store import conversation_store
 
     msg        = str(payload.get("message", "")).strip()
     emotion_zh = str(payload.get("emotion", ""))
@@ -4702,9 +4710,21 @@ def _build_chat_messages(payload: dict) -> tuple[list, str, str, str]:
     diary_text = str(payload.get("diary_text", ""))
     # Sanitize the name that gets interpolated into the system prompt
     user_name  = str(payload.get("user_name", "")).replace("\n", " ").replace("{", "").replace("}", "")[:24]
+    conversation_id = str(payload.get("conversation_id", "")).strip()
+    if _persist_chat_enabled(payload):
+        conversation_id = conversation_store.ensure(conversation_id).get("id", "")
 
     emo_key = _EMO_ZH_EN.get(emotion_zh, (_emotieff_result or {}).get("emotion", "Neutral"))
     sys_prompt = build_chat_system_prompt(build_state_snapshot().get("data", {}), user_name)
+    server_memories = conversation_store.memories()[:12] if _persist_chat_enabled(payload) else []
+    if server_memories:
+        payload = {**payload}
+        memory_context = dict(payload.get("memory_context") or {})
+        confirmed = list(memory_context.get("confirmed_notes") or [])
+        confirmed.extend({"date": item.get("created_at", "")[:10], "content": item.get("content", "")}
+                         for item in server_memories if item.get("content"))
+        memory_context["confirmed_notes"] = confirmed[-16:]
+        payload["memory_context"] = memory_context
     user_ctx = f"用户当前选择/输入的情绪标签：{emotion_zh or emo_key}。"
     if diary_text:
         user_ctx += f"\n【今日日记】{diary_text[:200]}"
@@ -4716,9 +4736,10 @@ def _build_chat_messages(payload: dict) -> tuple[list, str, str, str]:
     user_ctx += f"\n\n{msg or '请结合我今天的状态，给我一句有温度的话。'}"
 
     messages = [{"role": "system", "content": sys_prompt}]
-    messages.extend(chat_memory.recent_messages())
+    if conversation_id:
+        messages.extend(conversation_store.recent_messages(conversation_id))
     messages.append({"role": "user", "content": user_ctx})
-    return messages, msg, emo_key, user_name
+    return messages, msg, emo_key, user_name, conversation_id
 
 
 @app.post("/api/chat")
@@ -4729,8 +4750,8 @@ async def api_chat(payload: dict = Body(default={})):
         from vision.llm_reflect import get_llm
         _llm_engine = get_llm()
 
-    from services.chat_memory import chat_memory
-    messages, msg, emo_key, user_name = _build_chat_messages(payload)
+    from services.conversation_store import conversation_store
+    messages, msg, emo_key, user_name, conversation_id = _build_chat_messages(payload)
 
     result = await _cloud_llm_complete(messages, max_tokens=150)
     reply = str(result.get("text") or "")
@@ -4746,11 +4767,15 @@ async def api_chat(payload: dict = Body(default={})):
     else:
         source = result.get("provider") if result.get("provider") != "none" else "template"
 
-    if msg:
-        chat_memory.append("user", msg)
-    if reply:
-        chat_memory.append("assistant", reply)
-    return {"reply": reply, "source": source, "emotion": emo_key}
+    if _persist_chat_enabled(payload) and conversation_id:
+        if msg:
+            conversation_store.append_message(conversation_id, "user", msg)
+        if reply:
+            conversation_store.append_message(conversation_id, "assistant", reply)
+    response = {"reply": reply, "source": source, "emotion": emo_key}
+    if conversation_id:
+        response["conversation_id"] = conversation_id
+    return response
 
 
 @app.post("/api/chat/stream")
@@ -4762,9 +4787,9 @@ async def api_chat_stream(payload: dict = Body(default={})):
         from vision.llm_reflect import get_llm
         _llm_engine = get_llm()
 
-    from services.chat_memory import chat_memory
     from services.llm_router import router as _llm_router
-    messages, msg, emo_key, user_name = _build_chat_messages(payload)
+    from services.conversation_store import conversation_store
+    messages, msg, emo_key, user_name, conversation_id = _build_chat_messages(payload)
 
     async def _gen():
         import json as _j
@@ -4787,21 +4812,91 @@ async def api_chat_stream(payload: dict = Body(default={})):
                                                 context=fallback_context)
             provider = "template"
             yield f"data: {_j.dumps({'delta': reply}, ensure_ascii=False)}\n\n"
-        if msg:
-            chat_memory.append("user", msg)
-        if reply:
-            chat_memory.append("assistant", reply)
-        yield f"event: done\ndata: {_j.dumps({'source': provider, 'emotion': emo_key}, ensure_ascii=False)}\n\n"
+        if _persist_chat_enabled(payload) and conversation_id:
+            if msg:
+                conversation_store.append_message(conversation_id, "user", msg)
+            if reply:
+                conversation_store.append_message(conversation_id, "assistant", reply)
+        yield f"event: done\ndata: {_j.dumps({'source': provider, 'emotion': emo_key, 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(_gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/chat/history")
-async def api_chat_history(date: str = ""):
-    from services.chat_memory import chat_memory
-    return {"ok": True, "date": date or time.strftime("%Y-%m-%d"),
-            "messages": chat_memory.history(date)}
+async def api_chat_history(date: str = "", conversation_id: str = ""):
+    from services.conversation_store import conversation_store
+    if conversation_id:
+        session = conversation_store.get(conversation_id)
+        return {"ok": True, "conversation": conversation_store.compact(session) if session else None,
+                "messages": conversation_store.messages(conversation_id)}
+    session = conversation_store.ensure("")
+    return {"ok": True, "date": date or time.strftime("%Y-%m-%d"), "conversation": session,
+            "messages": conversation_store.messages(session["id"])}
+
+
+@app.post("/api/conversations")
+async def api_conversation_create(payload: dict = Body(default={})):
+    from services.conversation_store import conversation_store
+    session = conversation_store.create(
+        title=str(payload.get("title", "")),
+        category=str(payload.get("category", "general_chat")),
+    )
+    return {"ok": True, "conversation": session}
+
+
+@app.get("/api/conversations")
+async def api_conversation_list(limit: int = 30):
+    from services.conversation_store import conversation_store
+    return {"ok": True, "conversations": conversation_store.list(limit=max(1, min(int(limit or 30), 80)))}
+
+
+@app.get("/api/conversations/{conversation_id}")
+async def api_conversation_detail(conversation_id: str):
+    from services.conversation_store import conversation_store
+    session = conversation_store.get(conversation_id)
+    if not session or session.get("status") == "deleted":
+        return JSONResponse({"ok": False, "error": "conversation_not_found"}, status_code=404)
+    return {"ok": True, "conversation": conversation_store.compact(session),
+            "messages": conversation_store.messages(conversation_id)}
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def api_conversation_delete(conversation_id: str):
+    from services.conversation_store import conversation_store
+    result = conversation_store.delete_conversation(conversation_id)
+    if not result.get("ok"):
+        return JSONResponse({"ok": False, "error": "conversation_not_found"}, status_code=404)
+    return result
+
+
+@app.get("/api/memory")
+async def api_memory_list():
+    from services.conversation_store import conversation_store
+    return {"ok": True, "memories": conversation_store.memories()}
+
+
+@app.post("/api/memory")
+async def api_memory_add(payload: dict = Body(default={})):
+    from services.conversation_store import conversation_store
+    memory = conversation_store.add_memory(
+        content=str(payload.get("content", "")),
+        conversation_id=str(payload.get("conversation_id", "")),
+        message_ids=payload.get("message_ids") if isinstance(payload.get("message_ids"), list) else [],
+        source=str(payload.get("source", "companion")),
+    )
+    if not memory:
+        return JSONResponse({"ok": False, "error": "empty_memory"}, status_code=400)
+    return {"ok": True, "memory": memory}
+
+
+@app.delete("/api/memory/{memory_id}")
+async def api_memory_delete(memory_id: str):
+    from services.conversation_store import conversation_store
+    ok = conversation_store.delete_memory(memory_id)
+    if not ok:
+        return JSONResponse({"ok": False, "error": "memory_not_found"}, status_code=404)
+    return {"ok": True, "memory_id": memory_id}
 
 
 @app.post("/api/report/weekly")

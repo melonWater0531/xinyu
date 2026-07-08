@@ -44,6 +44,8 @@ class XinyuProductHomeTests(unittest.TestCase):
         self.assertIn(".xinyu-preview-page", self.css)
         for phrase in ("当前情绪", "情绪趋势 · 今天", "小屿建议", "和小屿聊聊天", "心屿设备"):
             self.assertIn(phrase, self.html)
+        for phrase in ("我今天有点累", "帮我整理一下今天", "给我一些放松建议", "记录一下我的情绪"):
+            self.assertNotIn(f"<button type=\"button\">{phrase}</button>", self.html)
         for token in ("--xy-bg: #F6EFE5", "--xy-surface: #FFFDF8", "--xy-text: #3E332A", "--xy-caramel: #8A6A45"):
             self.assertIn(token, self.css)
         for phrase in ("blink_rate", "calibration", "emotion_probability", "识别概率", "逐字稿"):
@@ -52,7 +54,9 @@ class XinyuProductHomeTests(unittest.TestCase):
     def test_product_interfaces_are_wired_with_fallbacks(self) -> None:
         for phrase in (
             'fetch("/api/chat"',
-            'apiJSON(`/api/chat/history?date=',
+            'apiJSON(`/api/conversations/${encodeURIComponent(conversationId)}`',
+            'apiJSON("/api/conversations"',
+            'apiJSON("/api/memory"',
             'apiJSON("/api/reflect"',
             'apiJSON("/api/report/weekly"',
             'apiJSON("/api/conversation/start"',
@@ -70,8 +74,10 @@ class XinyuProductHomeTests(unittest.TestCase):
             self.assertIn(phrase, self.js)
         for fallback in ("buildXiaoyuReply", "buildDiaryAssistantReply", "fallback", "showToast"):
             self.assertIn(fallback, self.js)
-        for phrase in ("memory_context", "work_context", "day_summary", "data-chat-memory-save"):
+        for phrase in ("memory_context", "work_context", "day_summary", "data-chat-memory-save", "data-delete-conversation", "buildCompanionPrompts", "renderCompanionPrompts"):
             self.assertIn(phrase, self.js)
+        self.assertIn('text.startsWith("接着聊聊我日记里写的")', self.js)
+        self.assertNotIn('text.includes("整理") || text.includes("今天")', self.js)
 
     def test_interactive_controls_exist(self) -> None:
         ids = set(re.findall(r'\bid="([^"]+)"', self.html))
@@ -86,6 +92,10 @@ class XinyuProductHomeTests(unittest.TestCase):
             "xy-device-summary",
             "xy-voice-summary",
             "xy-announce-enabled",
+            "xy-chat-history-toggle",
+            "xy-chat-history-panel",
+            "xy-chat-new",
+            "xy-chat-history-list",
             "xy-sedentary-minutes",
             "xy-snooze-minutes",
             "xy-eye-fatigue-enabled",

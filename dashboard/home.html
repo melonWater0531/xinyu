@@ -65,12 +65,19 @@
       </section>
 
       <section class="xy-page" data-page="companion" aria-labelledby="xy-companion-title" hidden>
+        <div class="xy-chat-hub">
+          <button class="xy-chat-hub-toggle" id="xy-chat-history-toggle" type="button" aria-label="查看历史对话"><svg><use href="#xy-book"/></svg></button>
+          <div class="xy-chat-hub-panel" id="xy-chat-history-panel" hidden>
+            <div class="xy-chat-hub-head"><strong>对话历史</strong><button type="button" id="xy-chat-new">新一轮</button></div>
+            <div class="xy-chat-hub-list" id="xy-chat-history-list"></div>
+          </div>
+        </div>
         <header class="xy-page-header"><div><p class="xy-kicker">陪伴对话</p><h1 id="xy-companion-title">和小屿聊聊天</h1><p>你的感受由你来定义；小屿会结合今天的状态陪你慢慢整理。</p></div><span class="xy-icon-badge xy-amber"><svg><use href="#xy-heart"/></svg></span></header>
         <div class="xy-chat" id="xy-chat" aria-live="polite">
           <article class="xy-bubble xy-bubble-assistant"><span class="xy-icon-badge xy-amber"><svg><use href="#xy-message"/></svg></span><div><strong>Hi，蛋挞</strong><p>有什么想和我聊的吗？不用急着说清楚，想到哪里就说到哪里。</p></div></article>
         </div>
         <div class="xy-prompt-chips" aria-label="情绪快捷输入">
-          <button type="button">我今天有点累</button><button type="button">帮我整理一下今天</button><button type="button">给我一些放松建议</button><button type="button">记录一下我的情绪</button>
+          <button type="button">我现在只想先说一句，不想被建议</button><button type="button">帮我把脑子里的事分成三小块</button><button type="button">用很轻的方式提醒我照顾身体</button><button type="button">把这一刻记成一条温柔的心情记录</button>
         </div>
         <div class="xy-voice-row" aria-label="语音陪伴">
           <button class="xy-soft" id="xy-voice-record" type="button"><svg><use href="#xy-message"/></svg><span>语音说给小屿</span></button>

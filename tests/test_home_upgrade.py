@@ -3,9 +3,11 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
+from services.conversation_store import ConversationStore
 from services.emotion_prompt import build_chat_system_prompt, build_weekly_report_prompt, describe_companion_context
 
 
@@ -137,6 +139,23 @@ const report=XinyuWeeklyReport.buildFallback(Array.from({length:4},(_,i)=>({date
         self.assertIn("我今天有点难受", prompt)
         self.assertIn("步数5000", prompt)
         self.assertIn("演示数据必须明确", prompt)
+
+    def test_conversation_store_sessions_memory_and_delete_cascade(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ConversationStore(root=str(Path(tmp) / "conversations"), memory_root=str(Path(tmp) / "memory"))
+            session = store.create()
+            store.append_message(session["id"], "user", "我这周在赶预算表，压力有点大")
+            store.append_message(session["id"], "assistant", "预算表这件事确实压着你。")
+            detail = store.get(session["id"])
+            self.assertEqual(detail["category"], "work_planning")
+            self.assertIn("预算表", detail["summary"])
+            memory = store.add_memory("用户这周在赶预算表。", conversation_id=session["id"])
+            self.assertTrue(memory["id"])
+            self.assertEqual(len(store.memories()), 1)
+            deleted = store.delete_conversation(session["id"])
+            self.assertTrue(deleted["ok"])
+            self.assertEqual(deleted["deleted_memories"], 1)
+            self.assertEqual(store.memories(), [])
 
     def test_demo_sop_covers_polished_flow(self) -> None:
         sop = (ROOT / "docs" / "home_demo_sop.md").read_text(encoding="utf-8")
