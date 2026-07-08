@@ -195,7 +195,7 @@ class ControlPageResilienceTests(unittest.TestCase):
         self.assertNotIn("drawImage", overlay)
         self.assertIn("drawScene($('multiOverlay')", overlay)
 
-    def test_all_control_videos_preserve_original_frame(self) -> None:
+    def test_control_video_stream_is_current_tab_only_and_preserves_frame(self) -> None:
         page = (ROOT / "dashboard" / "recamera_v2_live.html").read_text(encoding="utf-8")
         self.assertIn(".video-wrap img", page)
         self.assertIn("object-fit:contain", page)
@@ -206,7 +206,9 @@ class ControlPageResilienceTests(unittest.TestCase):
         self.assertIn('id="multiFrameInfo"', page)
         self.assertIn("last_frame_age_ms", page)
         self.assertIn("now-lastVideoReconnectAt<3000", page)
-        self.assertIn("/video_feed?ts=${now}", page)
+        self.assertIn("function updateVideoStreams", page)
+        self.assertIn("videoTargetForPage(activePage)", page)
+        self.assertIn("el.removeAttribute('src')", page)
         self.assertNotIn("videoEl.src='/api/snapshot'", page)
 
     def test_meeting_frontend_requests_timeout_and_release_buttons(self) -> None:
@@ -291,7 +293,9 @@ class ControlPageResilienceTests(unittest.TestCase):
     def test_multi_mode_throttles_nonessential_perception(self) -> None:
         backend = (ROOT / "recamera_fastapi.py").read_text(encoding="utf-8")
         self.assertIn("run_companion_detail = not multi_mode", backend)
-        self.assertIn("pose_frame_count % 15", backend)
+        self.assertIn('profile = "multi_tracking"', backend)
+        self.assertIn("pose_period = 15", backend)
+        self.assertIn("pose_due = pose_frame_count % pose_period == 0", backend)
         self.assertIn("adapter.predict", backend)
         self.assertIn("run_in_executor(_slow_pool", backend)
 

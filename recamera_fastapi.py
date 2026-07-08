@@ -652,6 +652,8 @@ def _perception_diagnostics(**overrides) -> dict:
         "detect_max_width": globals().get("DETECT_MAX_WIDTH"),
         "face_period": _perception_stats.get("face_period") if "_perception_stats" in globals() else None,
         "face_degraded": bool(_perception_stats.get("face_degraded")) if "_perception_stats" in globals() else False,
+        "perception_profile": _perception_stats.get("profile") if "_perception_stats" in globals() else "",
+        "loop_sleep_ms": _perception_stats.get("loop_sleep_ms") if "_perception_stats" in globals() else None,
         "stage_ms": dict(_perception_stats.get("stage_ms", {})) if "_perception_stats" in globals() else {},
     })
     pose_persons = [p for p in list(_latest_pose_persons) if int(getattr(p, "_lost_frames", 0) or 0) == 0]
@@ -2878,6 +2880,8 @@ _perception_stats = {
     "stage_ms": {"decode": 0.0, "face": 0.0, "mediapipe": 0.0, "gesture": 0.0, "emotion": 0.0},
     "face_period": 2,
     "face_degraded": False,
+    "loop_sleep_ms": 250,
+    "profile": "idle",
 }
 
 
@@ -2978,6 +2982,10 @@ async def state_push_loop():
         try:
             pose_frame_count += 1
             multi_mode = bool(_multi_track_active and not _single_track_active)
+            single_mode = bool(_single_track_active and not _multi_track_active)
+            companion_mode = bool(_analysis_features.get("llm_diary") or _analysis_features.get("health_pwa"))
+            gesture_mode = bool(_analysis_features.get("gesture_interaction"))
+            idle_mode = not single_mode and not multi_mode and not companion_mode and not gesture_mode
             run_companion_detail = not multi_mode
             # Adaptive throttle: slow face stage backs the cadence off one notch
             face_ms = _perception_stats["stage_ms"]["face"]
@@ -2985,18 +2993,47 @@ async def state_push_loop():
                 _perception_stats["face_degraded"] = True
             elif face_ms < 200.0:
                 _perception_stats["face_degraded"] = False
-            base_face_period = 3 if multi_mode else 2
+            if single_mode:
+                base_face_period = 1
+                pose_period = 4
+                detail_period = 8
+                gesture_base_period = 24
+                loop_sleep_s = 0.125
+                profile = "single_tracking"
+            elif multi_mode:
+                base_face_period = 3
+                pose_period = 15
+                detail_period = 12
+                gesture_base_period = 24
+                loop_sleep_s = 0.25
+                profile = "multi_tracking"
+            elif companion_mode or gesture_mode:
+                base_face_period = 4
+                pose_period = 12
+                detail_period = 8
+                gesture_base_period = 8 if gesture_mode else 24
+                loop_sleep_s = 0.25
+                profile = "companion"
+            else:
+                base_face_period = 8
+                pose_period = 24
+                detail_period = 8
+                gesture_base_period = 32
+                loop_sleep_s = 0.25
+                profile = "idle_low_load"
             face_period = base_face_period + (1 if _perception_stats["face_degraded"] else 0)
             _perception_stats["face_period"] = face_period
+            _perception_stats["loop_sleep_ms"] = int(loop_sleep_s * 1000)
+            _perception_stats["profile"] = profile
             face_due = pose_frame_count % face_period == 0
-            pose_due = (pose_frame_count % 15 == 0) if multi_mode else (pose_frame_count % 4 == 0)
+            pose_due = pose_frame_count % pose_period == 0
             # -- Scene gating: daily (single) runs face/emotion/eye; work (multi) runs pose only.
             #    When neither mode is active, both pipelines run (default observation mode). --
             run_face = True
-            run_pose = True
-            if _single_track_active and not _multi_track_active:
+            run_pose = not idle_mode
+            if single_mode:
                 run_pose = False   # 日常场景优先走人脸；无脸时下面用轻量 fallback 补候选。
-            elif _multi_track_active and not _single_track_active:
+            elif multi_mode:
                 run_face = True   # Multi-person fusion still needs face candidates.
             # -- Decode the current frame once per tick; all consumers share it --
             jpeg = video_client.jpeg_bytes if video_client else None
@@ -3013,6 +3050,8 @@ async def state_push_loop():
             det_inv = 1.0 / cached_det_scale if cached_det_scale else 1.0
             # Unchanged frame -> nothing new to infer; skip all model stages this tick
             run_inference = frame_is_new
+            run_mediapipe_detail = companion_mode
+            run_gesture_detail = gesture_mode
 
             # -- Face detection: FaceTrackerV2 (SCRFD + Kalman/ByteTrack), YOLO fallback --
             if video_client and (face_due or pose_due) and run_inference:
@@ -3118,7 +3157,8 @@ async def state_push_loop():
                 _attn_result = {"has_face": False}
 
             # -- MediaPipe face + eye metrics (throttled) --
-            if pose_frame_count % 6 == 0 and run_face and run_companion_detail and run_inference:
+            detail_due = pose_frame_count % detail_period == 0
+            if run_mediapipe_detail and detail_due and run_face and run_companion_detail and run_inference:
                 if frame is not None:
                     if _mp_face is None:
                         from vision.mediapipe_face import MPFaceDetector
@@ -3162,8 +3202,8 @@ async def state_push_loop():
 
             # -- Gesture recognition (companionship intents only; no control events) --
             # Adaptive cadence: scan slowly until a hand appears, then track fast
-            gesture_period = 2 if (_gesture_detector is not None and getattr(_gesture_detector, "hand_seen", False)) else 8
-            if pose_frame_count % gesture_period == 0 and run_face and run_companion_detail and run_inference:
+            gesture_period = 2 if (_gesture_detector is not None and getattr(_gesture_detector, "hand_seen", False)) else gesture_base_period
+            if run_gesture_detail and pose_frame_count % gesture_period == 0 and run_face and run_companion_detail and run_inference:
                 if frame is not None and _gesture_detector is not None:
                     try:
                         loop = _current_running_loop()
@@ -3184,7 +3224,7 @@ async def state_push_loop():
                                      face_kps['left_mouth'], face_kps['right_mouth']]
                         break
 
-            if frame is not None and run_face and landmarks and run_companion_detail and pose_frame_count % 6 == 0 and run_inference:
+            if frame is not None and run_face and landmarks and run_companion_detail and detail_due and run_inference:
                     from vision.face_crop import extract_face_crop
                     from vision.emotieff_adapter import get_emotieff_adapter
                     crop_result = extract_face_crop(frame, landmarks, None)
@@ -3252,7 +3292,11 @@ async def state_push_loop():
                     pass
             if _llm_engine and _llm_engine.loaded and run_companion_detail:
                 loop = _current_running_loop()
-                if emotion_changed:
+                diary_due = emotion_changed and (
+                    _analysis_features.get("llm_diary")
+                    or time.time() - float(_last_llm_diary_time or 0.0) > 60.0
+                )
+                if diary_due:
                     try:
                         text = await loop.run_in_executor(None, _llm_engine.diary, emo_name, attn_sc, "")
                         if text:
@@ -3287,7 +3331,7 @@ async def state_push_loop():
             logger.error("Push error: %s", str(e)[:120])
             import traceback
             logger.error(traceback.format_exc()[-200:])
-        await asyncio.sleep(0.25)  # ~4 Hz state push; heavy models are independently throttled
+        await asyncio.sleep(float(_perception_stats.get("loop_sleep_ms", 250)) / 1000.0)
 
 
 # WebSocket endpoint

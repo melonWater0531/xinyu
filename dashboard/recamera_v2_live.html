@@ -818,9 +818,7 @@ async function saveDeviceConfig(){
   const r=await apiPost('/api/device/config',{device_ip});
   if(r&&r.ok){
     applyDeviceState(r.device);
-    const src=`${location.origin}/video_feed?t=${Date.now()}`;
-    videoEl.src=src;
-    multiMirror.src=src;
+    updateVideoStreams(true);
     log(r.reconnect_state==='pending'?'设备地址已保存，视频和控制运行时正在重连':'设备地址已保存；控制运行时离线，目前仅连接视频');
   }else{
     setDeviceConfigText(r&&r.reason?r.reason:'保存失败');
@@ -838,6 +836,7 @@ async function activatePage(pageId){
   $('pageTitle').textContent=pageMeta[pageId].title;
   $('pageSub').textContent=pageMeta[pageId].sub;
   featureActive[pageId]=false;
+  updateVideoStreams();
   updateFeatureLocks();
   log('已进入页面，等待点击“启动功能”');
   switching=false;
@@ -1268,15 +1267,33 @@ async function pollSystemHealth(){
   }catch(e){$('systemHealthText').textContent='检查失败'}
 }
 const videoEl=$('videoStream'),multiMirror=$('multiVideoMirror'),gestureMirror=$('gestureVideoMirror');
+function videoTargetForPage(pageId){
+  if(pageId==='single_face_analysis')return videoEl;
+  if(pageId==='multi_sound_yaw')return multiMirror;
+  if(pageId==='gesture_interaction')return gestureMirror;
+  return null;
+}
+function updateVideoStreams(force=false){
+  const target=videoTargetForPage(activePage);
+  const src=`${location.origin}/video_feed?t=${Date.now()}`;
+  [videoEl,multiMirror,gestureMirror].forEach(el=>{
+    if(!el)return;
+    if(el===target){
+      if(force||!el.src)el.src=src;
+    }else if(el.src){
+      el.removeAttribute('src');
+    }
+  });
+}
 function reconnectVideo(reason){
   const now=Date.now();if(now-lastVideoReconnectAt<3000)return;lastVideoReconnectAt=now;
-  const src=`${location.origin}/video_feed?ts=${now}`;videoEl.src=src;multiMirror.src=src;if(gestureMirror)gestureMirror.src=src;
+  updateVideoStreams(true);
   log(`${reason}; reconnecting video_feed`);
 }
-videoEl.src=`${location.origin}/video_feed?t=${Date.now()}`;
-multiMirror.src=videoEl.src;
-if(gestureMirror)gestureMirror.src=videoEl.src;
+updateVideoStreams(true);
 videoEl.onerror=()=>reconnectVideo('video_feed failed');
+multiMirror.onerror=()=>reconnectVideo('video_feed failed');
+if(gestureMirror)gestureMirror.onerror=()=>reconnectVideo('video_feed failed');
 connectWS();loadDeviceConfig();poll();pollSystemHealth();setInterval(poll,350);setInterval(pollSystemHealth,2000);addEventListener('resize',()=>state&&drawOverlay(state));
 if('ResizeObserver' in window)new ResizeObserver(()=>state&&drawOverlay(state)).observe(document.querySelector('.main'));
 addEventListener('beforeunload',()=>{deactivatePage(activePage,true)});
