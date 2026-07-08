@@ -18,10 +18,12 @@
 | TTS/语音输出 | 智谱/OpenAI-compatible TTS + FastAPI 音频缓存 + Node-RED audio bridge；浏览器 Web Speech 作回退 | reCamera Gimbal 2002w 扬声器或浏览器 | 设备播放只走 `/recamera-control/v1/audio/*`，不进入云台控制 Event |
 | 手动云台 | Dashboard UI Event | reCamera yaw/pitch CAN 电机 | 有效 manual session 才接受 D-Pad/home |
 
-`/control` 是所有已部署功能的集合面板。每个功能卡都有独立启动和终止
-按钮；页面中的 Sleep、Standby、Stop、Calibrate 均通过 FastAPI 发出 UI
-Event，再由 `main_phase3.py`、Orchestrator、SafetyLayer 和
-`RecameraClient` 进入 Node-RED bridge。FastAPI 不直接打开硬件控制客户端。
+`/control` 是工程调试与演示面板。每个功能卡都有独立启动和终止按钮；
+页面中的 Sleep、Standby、Stop、Calibrate 均通过 FastAPI 发出 UI Event，
+再由 `main_phase3.py`、Orchestrator、SafetyLayer 和 `RecameraClient`
+进入 Node-RED bridge。FastAPI 不直接打开硬件控制客户端。多人页默认
+`save_audio:false`，只演示 DOA yaw 跟随、人脸关联和遥测；完整会议录音、
+转写、摘要和历史入库以 `/home` 会议页为准。
 
 官方 reCamera Gimbal 面板语义在本系统中固定为：
 
@@ -44,6 +46,9 @@ USB Audio Class 由 `sounddevice` 独立录音。TCP `9999` 仅是 DOA 备用输
 会议 turn finalize 时通过只读 DOA/face/pose/gimbal 状态做非阻塞说话人标注；
 无法匹配时写入 `未知说话人`，不影响 WAV 保存、ASR 或摘要。Wake word 是可选
 服务，默认关闭，缺少 openWakeWord 或模型时只在 state 中报告 unavailable。
+`/api/meeting/complete` 是异步收口接口：首次响应只代表停止录音和摘要任务已
+提交；前端应继续读取 `/api/conversation/state` 或 `/api/state.conversation`
+里的 `report.status`，直到 `ready/error` 后再展示最终纪要或错误。
 
 FastAPI 的视频、分析、录音和 Dashboard 状态通过 `/ws` 与 `/api/state`
 发布；权威 FSM、会话、命令、安全结果和云台 readback 均来自
@@ -128,8 +133,8 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
         ▼
   build_state_snapshot() → /ws WebSocket push（每 200ms）+ `/api/state`
         │
-        ├─ PAGE 1 /control /v2  → recamera_v2_live.html（Event 控制 + 实时遥测）
-        └─ PAGE 2 /home         → home.html（产品页；真实状态优先，WS 失败降级 1s polling）
+        ├─ PAGE 1 /control /v2  → recamera_v2_live.html（Event 控制 + DOA/硬件调试遥测）
+        └─ PAGE 2 /home         → home.html（产品页；会议/语音闭环；WS 失败降级 polling）
 
 云台遥测（main_phase3 侧）
   RecameraClient.get_status() → runtime snapshot → EventBus → FastAPI /ws
@@ -392,7 +397,7 @@ Debounce:
 - [x] PAGE 2（`home.html`）：五页产品 Home
   - 通过 `/ws` 订阅真实状态；失败后降级到 `/api/state` polling
   - 聊天调用 `/api/chat`，日记调用 `/api/reflect`，周报调用 `/api/report/weekly`
-  - 会议调用 `/api/conversation/start`、`/api/meeting/complete`、`/api/conversation/state`、`/api/meeting/speakers`
+  - 会议调用 `/api/conversation/start`、`/api/meeting/complete`、`/api/conversation/state`、`/api/meeting/speakers`；`/api/meeting/complete` 是后台任务提交，`report.status=ready/error` 才是完成态
   - 语音调用 `/api/voice/chat` 和 `/api/voice/stop`
   - 设备页读取 `/api/system/health` 与 `/api/voice/state`
   - 所有接口失败时保留 seed data、localStorage 和本地文案 fallback
@@ -402,7 +407,7 @@ DeepSeek 默认模型保留 `deepseek-v4-flash`。旧截图中“模型不存在
 
 会议 pipeline 当前只实现轻量 speaker label，不执行 pitch 搜索、唇动验证、ArcFace 重识别或重型 diarization；这些扩展暂不进入当前主链路。
 
-`/api/voice/say` 仍广播 `voice_utterance` / `voice_stop` 事件，`/home` 可用浏览器 Web Speech API 播放或降级为文字/toast。完整语音轮次使用 `/api/voice/chat`：短音频 raw body → 智谱 ASR → LLM 回复 → TTS 缓存 → reCamera Node-RED audio bridge 播放；失败时回退浏览器音频/文字。
+`/api/voice/say` 仍广播 `voice_utterance` / `voice_stop` 事件，`/home` 可用浏览器 Web Speech API 播放或降级为文字/toast。完整语音轮次使用 `/api/voice/chat`：短音频 raw body → 智谱 ASR → LLM 回复 → TTS 缓存 → reCamera Node-RED audio bridge 播放；失败时回退浏览器音频/文字。语音播放状态分两层：`bridge_accepted` 表示 Node-RED 已接收音频，`device_playback_state/playback_confirmed` 表示设备端 `aplay` 的异步结果。
 
 ---
 
@@ -464,6 +469,10 @@ Dashboard UI -> FastAPI UI Event -> EventBus -> main_phase3.py -> FSM -> Orchest
 
 每个功能启动后由 `session_id + 5s lease` 维护唯一控制权，前端每 **1000ms** 发送一次 heartbeat（`POST /api/control/heartbeat {session_id}`）。页面隐藏不会主动停止；页面卸载时发送 stop，心跳真正中断后租约仍会自动回收控制权。
 
+`/control` 的多人声源演示不属于上面的完整会议链路：它调用
+`/api/multi_track/start {save_audio:false}` 与 `/api/multi_track/stop {finalize:false}`，
+用于验证 ReSpeaker DOA、speaker seek、face lock 和 gimbal yaw，不生成录音片段或纪要。
+
 ### localStorage 键清单（home.html）
 
 | Key | 用途 |
@@ -508,7 +517,7 @@ main_phase3 runtime snapshot ──> EventBus ──> FastAPI ──> Dashboard
 - **ReSpeaker XVF3800**：四麦克风 DOA/VAD、会议 USB Audio、12 颗 WS2812 实体 DOA 灯环。
 - **reCamera Gimbal 2002w**：SSCMA 摄像头、Node-RED bridge、CAN yaw/pitch 电机、语音输出扬声器。
 - **Windows/WSL 主机**：FastAPI 感知和录音、EventBus、唯一 control runtime。
-- reCamera 自带扬声器已纳入语音输出闭环：FastAPI 缓存 WAV，通过 Node-RED `/recamera-control/v1/audio/play` 触发设备端 `aplay -D <device>`；设备名由 `RECAMERA_APLAY_DEVICE` / `VOICE_APLAY_DEVICE` 或 `aplay -l` 自动探测决定。自带麦克风和补光灯仍不参与当前业务闭环。
+- reCamera 自带扬声器已纳入语音输出闭环：FastAPI 缓存 WAV，通过 Node-RED `/recamera-control/v1/audio/play` 触发设备端 `aplay -D <device>`；设备名由 `RECAMERA_APLAY_DEVICE` / `VOICE_APLAY_DEVICE` 或 `aplay -l` 自动探测决定。FastAPI 首次 play 响应只能确认 bridge accepted，最终应以 `/api/voice/playback/status` / `/api/voice/state.playback` 的 `device_playback_state`、`playback_confirmed`、`last_error` 和 `exit_code` 为准。自带麦克风和补光灯仍不参与当前业务闭环。
 
 配套设备 Flow 位于 `deploy/node_red/recamera_control_bridge.json`，暴露 command、stop、status 三个版本化 endpoint。Bridge 不可达时 `--enable-control` fail closed。
 

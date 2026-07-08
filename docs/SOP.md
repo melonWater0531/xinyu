@@ -162,7 +162,7 @@ curl -q --noproxy "*" -sS -i --max-time 3 \
   "http://$RECAMERA_DEVICE_IP:1880/recamera-control/v1/audio/status"
 ```
 
-FastAPI 语音播放的闭环标准是：TTS 生成成功 → 音频传到 reCamera → 设备端 `aplay` 启动成功 → `/audio/status` 返回 `playing/done/error` → `/api/voice/state` 可见最后一次播放状态。
+FastAPI 语音播放的闭环标准是：TTS 生成成功 → 音频传到 reCamera → 设备端 `aplay` 启动成功 → `/audio/status` 返回 `playing/done/error` → `/api/voice/state.playback` 可见最后一次播放状态。`bridge_accepted=true` 只表示 Node-RED audio bridge 已接收音频；必须再看 `device_playback_state`、`playback_confirmed`、`last_error` 和 bridge 返回的 `exit_code` 才能确认设备端是否真的播放完成。
 
 ---
 
@@ -328,7 +328,7 @@ Dashboard UI
 }
 ```
 
-HTTP 200 或 EventBus `accepted=true` 只表示事件已被控制运行时接收，不等同于硬件已完成动作。命令仍可能被 SafetyLayer 拦截或因硬件连接失败而未执行。
+HTTP 200 或 EventBus `accepted=true` 只表示事件已被控制运行时接收，不等同于硬件已完成动作。命令仍可能被 SafetyLayer 拦截或因硬件连接失败而未执行。判断真实云台动作应同时查看 `/api/control/runtime` 中的 `hardware_ready`、`last_apply_ok`、`last_hardware_command_error`、`gimbal_bridge_status`、`hardware_io.command_state` 和设备 readback。
 
 ---
 
@@ -378,7 +378,7 @@ ASR 默认优先使用智谱 GLM-ASR（需要 `ZHIPU_API_KEY`）；云端不可�
 |---|---|---|---|
 | 人脸追踪与分析 | 启动功能 | 终止功能 | 情绪、专注、EAR/PERCLOS 更新；云台命令来自 main runtime |
 | 声源 yaw 跟随 | 启动功能 | 终止功能 | DOA/VAD 更新，yaw-only 控制，pitch 不自动跟随 |
-| 会议录音 | 启动功能 | 终止并保存 | 录音状态、VAD 分段、音频处理状态、可选 yaw 跟随和摘要接口可用 |
+| 多人声源演示 | 启动声源演示 | 终止声源演示 | `/control` 默认 `save_audio:false`，只验证 DOA yaw 跟随、人脸关联和状态遥测；不提交 ASR/LLM 纪要 |
 | 手势识别 | 启动功能 | 终止功能 | `gesture.available=true`，只展示类别、置信度与稳定帧，不叠加交互语义 |
 | 健康与 PWA | 启动功能 | 终止功能 | 护眼/久坐/喝水/疲劳/低专注/情绪关心状态可观察 |
 | LLM 与日记 | 启动功能 | 终止功能 | DeepSeek 优先，智谱兜底；云端不可用时端点本地 fallback |
@@ -518,7 +518,7 @@ POST /api/tracking_mode {"mode":"multi"}
 
 ### 5.6 会议录音
 
-点击"启动功能"后，Dashboard 调用：
+正式会议闭环在 `/home` 会议页。点击"开始会议记录"后，Dashboard 调用：
 
 ```text
 POST /api/conversation/start {"control_session":true, "save_audio":true}
@@ -526,6 +526,10 @@ POST /api/conversation/start {"control_session":true, "save_audio":true}
 
 返回 `session_id` 保存到前端；录音设备由 `RECAMERA_AUDIO_DEVICE` 决定。
 启动会议录音会重置本轮说话人映射，并暂停 wake word；停止会议录音后恢复 wake word。说话人标注只读取 DOA、`face_lock`、`pose.persons` 和 `gimbal.pitch` 等状态，不驱动云台。无法匹配或 provider 异常时，turn 会保存为 `未知说话人`，不阻塞 WAV 保存、ASR 或摘要。
+
+结束会议时 `/home` 调用 `POST /api/meeting/complete {session_id}`。该接口是异步 job 提交接口：HTTP 返回 `submitted=true, processing=true` 时只表示后台已开始停止录音和整理，不表示纪要已经生成。前端继续通过 `/api/conversation/state` 或 `/api/state.conversation.report.status` 等待 `ready/error`；`ready` 后才把报告写入会议历史并清空本地会议 session。
+
+`/control` 的多人页是声源定位调试面板，启动 `/api/multi_track/start {"save_audio":false}`，终止 `/api/multi_track/stop {"finalize":false}`。它不会录音，也不会调用 `/api/meeting/complete` 生成纪要；完整录音、转写和会议历史以 `/home` 为准。
 
 离开页面或点击结束时调用：
 
@@ -701,6 +705,8 @@ curl -X POST http://localhost:8001/api/meeting/summarize \
   -H 'Content-Type: application/json' -d '{}'
 ```
 
+`/api/meeting/complete` 是 `/home` 使用的完整收口接口：先停止当前 control session 和录音，再在后台调用 summarize。调用方应把首次响应视为“任务已提交”，再轮询 `/api/conversation/state` 的 `report.status`。`ready` 才表示会议纪要可展示和入库；`error` 应展示 `report.error`，不要把首次 `accepted=true` 当成摘要完成。
+
 `/api/meeting/summarize` 失败时返回结构化错误码：
 
 | 错误码 | 场景 | 操作提示 |
@@ -763,6 +769,8 @@ curl -X POST http://localhost:8001/api/voice/play \
 ```
 
 `/api/voice/chat` 返回 `{transcript, reply, audio_url, playback_target, providers}`。默认 `VOICE_PLAYBACK_TARGET=recamera_speaker`：FastAPI 生成 WAV 后通过 Node-RED `/recamera-control/v1/audio/play` 传到设备，由 reCamera 执行 `aplay -D <device>`。设备名优先使用 `RECAMERA_APLAY_DEVICE` / `VOICE_APLAY_DEVICE`，默认 `auto` 时从设备端 `aplay -l` 选择第一块声卡。失败时 `/api/voice/state.playback` 会记录原因，前端回退浏览器音频/文字反馈。
+
+语音播放有两个状态层级：`bridge_accepted` 表示 FastAPI 已把音频交给 Node-RED；`device_playback_state` 和 `playback_confirmed` 来自 `/recamera-control/v1/audio/status`，用于确认 `aplay` 是否 `playing/done/error`。排障时优先看 `last_error`、`aplay_device`、`exit_code` 和 `bridge_attempts`。
 
 `/control` 的 **Voice / Speaker Loop** 卡片可以完成集中验收：先点"刷新 bridge"，再点"reCamera 测试音"确认设备出声；配置智谱 key 后点"智谱 TTS 播放"验证声线；最后用"录音上传"验证 ASR→Chat→TTS→播放闭环。
 
@@ -850,7 +858,7 @@ Session 和心跳：
 
 7. 进入陪伴 Tab → Network 每 1000ms 出现 `POST /api/control/heartbeat {session_id}`。
 8. 离开陪伴 Tab → 心跳停止；`beforeunload` 时出现 `sendBeacon` 到 `/api/single_track/stop`。
-9. 启动会议 → `POST /api/conversation/start {control_session:true, save_audio:true}`；结束整理 → `POST /api/meeting/complete {session_id}`，状态轮询 `/api/conversation/state`。
+9. 启动会议 → `POST /api/conversation/start {control_session:true, save_audio:true}`；结束整理 → `POST /api/meeting/complete {session_id}`，首次响应是后台提交；继续轮询 `/api/conversation/state`，直到 `report.status=ready/error`。`ready` 后会议进入本地历史，`error` 展示 `report.error`。
 
 日记与 LLM：
 
@@ -861,7 +869,7 @@ Session 和心跳：
 14. 调用 `POST /api/emotion/infer`：无人脸时返回 `provider=local,label=暂未观察到,intensity=0`；有人脸且云端可用时返回开放词汇标签、强度和解释；云端不可用时仍返回本地 fallback。
 15. `/home` 点击"语音"或做 Open Palm：录入短音频 → `/api/voice/chat` 返回 transcript/reply；有 TTS 时 `audio_url` 可播放。
 16. Closed Fist 单次稳定握拳即调用 `/api/voice/stop` 并收起当前提醒；不再要求二次握拳确认。
-17. `/control` 的 Voice / Speaker Loop 可验证：浏览器事件、智谱 TTS、reCamera 测试音、audio bridge status、录音上传 `/api/voice/chat`、停止播放；`/api/voice/state.playback` 可见设备扬声器播放状态。
+17. `/control` 的 Voice / Speaker Loop 可验证：浏览器事件、智谱 TTS、reCamera 测试音、audio bridge status、录音上传 `/api/voice/chat`、停止播放；`/api/voice/state.playback` 可见 `bridge_accepted`、`device_playback_state`、`playback_confirmed` 和设备扬声器播放状态。
 
 周报：
 
@@ -952,6 +960,8 @@ curl -q --noproxy "*" -sS -i --max-time 3 \
 4. SafetyLayer 是否因 rate limit、范围或 safe mode 拦截。
 5. 控制运行时日志是否出现命令应用失败。
 
+`accepted=true` 但 `hardware_ready=false` 时，说明控制会话存在但硬件出口不可用；这是降级状态，不是前端已完成硬件动作。若 `hardware_io.command_state=accepted/executing` 长时间不变，再查 Node-RED bridge、CAN readback 和设备 lease。
+
 ### 9.5 DOA 没有数据
 
 ```bash
@@ -975,6 +985,8 @@ curl http://localhost:8001/api/conversation/debug
 确认 `RECAMERA_AUDIO_DEVICE` 是 WSL 中 ReSpeaker 的 `sounddevice` 输入索引，且 `max_input_channels > 0`。索引错误时重新执行 **1.2 节**第 5 步。
 
 `/api/state.audio_processing.fallback_reason` 显示 `noisereduce_unavailable` 或 `webrtcvad_unavailable` 时，录音仍使用 RMS 分段继续工作；需要增强链路时安装对应依赖后重启 FastAPI。
+
+如果 `/home` 点击结束后页面显示“整理已提交”但历史没有出现，先看 `/api/conversation/state` 的 `report.status`：`stopping/summarizing` 表示后台仍在跑，`ready` 才应入历史，`error` 则看 `report.error`、`asr_status` 和 `last_asr_error`。不要用 `/control` 的多人声源演示来验证会议录音；该页默认 `save_audio:false`。
 
 ### 9.7 安全原则
 
@@ -1130,6 +1142,9 @@ localStorage 完整键清单（`home.html` 实际实现）：
 | ReSpeaker DOA 到真实 yaw 控制闭环 | **YES** |
 | ReSpeaker 实体 LED DOA 灯效 | **YES，USB 模式** |
 | FastAPI 展示真实云台 readback | **YES，经 main_phase3 runtime snapshot** |
+| `/home` 完整会议录音/转写/纪要闭环 | **YES，`/api/meeting/complete` 异步提交，轮询 `report.status` 收口** |
+| `/control` 多人页默认录音/纪要 | **NO，默认是 `save_audio:false` 的声源定位演示** |
+| reCamera 扬声器播放确认 | **PARTIAL，bridge accepted 与设备端 `aplay` 状态分层暴露** |
 
 ### A.3 6.0 变更记录
 

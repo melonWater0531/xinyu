@@ -1596,13 +1596,26 @@ async def _play_voice_audio(audio_id: str, target: str = "", reason: str = "api"
             str(meta.get("content_type") or "audio/wav"),
         )
         ok = bool(result.get("ok", result.get("accepted", False)))
+        device_state = str(result.get("state") or ("accepted" if ok else "error"))
+        playback_confirmed = device_state in {"playing", "done"}
         _voice_playback.update({
-            "state": str(result.get("state") or ("playing" if ok else "fallback_browser")),
+            "state": device_state if ok else "fallback_browser",
+            "bridge_accepted": ok,
+            "device_playback_state": device_state,
+            "playback_confirmed": playback_confirmed,
             "last_error": "" if ok else str(result.get("error") or result.get("reason") or "play_failed"),
             "last_result": result,
             "updated_at": time.time(),
         })
-        return {"ok": ok, "target": "recamera_speaker", "audio_url": meta["audio_url"], "bridge": result, "state": _voice_playback}
+        return {
+            "ok": ok,
+            "bridge_accepted": ok,
+            "playback_confirmed": playback_confirmed,
+            "target": "recamera_speaker",
+            "audio_url": meta["audio_url"],
+            "bridge": result,
+            "state": _voice_playback,
+        }
     _voice_playback.update({"state": "unsupported_target", "last_error": target, "last_result": {}})
     return {"ok": False, "error": "unsupported_target", "target": target, "state": _voice_playback}
 
@@ -1617,8 +1630,12 @@ async def _voice_playback_status() -> dict:
     ok = bool(status.get("ok", True)) and str(status.get("state", "")) not in {"unconfigured", "unreachable", "error"}
     bridge_state = str(status.get("state") or ("ready" if ok else "unreachable"))
     if status:
+        device_state = str(status.get("state") or ("ready" if ok else "unreachable"))
         _voice_playback.update({
-            "state": bridge_state,
+            "state": device_state,
+            "bridge_accepted": bool(status.get("ok", ok)),
+            "device_playback_state": device_state,
+            "playback_confirmed": device_state == "done",
             "last_error": str(status.get("error") or status.get("last_error") or ""),
             "last_result": status,
             "updated_at": time.time(),
@@ -2328,7 +2345,8 @@ def _conversation_debug_state() -> dict:
             }
             if timeline.exists():
                 try:
-                    item["timeline_lines"] = sum(1 for _ in timeline.open("r", encoding="utf-8"))
+                    with timeline.open("r", encoding="utf-8") as fh:
+                        item["timeline_lines"] = sum(1 for _ in fh)
                 except Exception:
                     item["timeline_lines"] = -1
             sessions.append(item)

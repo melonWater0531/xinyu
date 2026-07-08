@@ -32,7 +32,9 @@ python3 recamera_fastapi.py
 
 ### 陪伴页 LLM 调用方式
 
-`/home` 陪伴页会优先调用 `POST /api/chat`。日记保存调用 `POST /api/reflect`，周报调用 `POST /api/report/weekly`，会议记录调用 `POST /api/conversation/start` 和 `POST /api/meeting/complete`，语音对话调用 `POST /api/voice/chat`。若接口无响应、LLM key 未配置或设备不可用，页面会继续使用本地 memory reply，不会空白。
+`/home` 陪伴页会优先调用 `POST /api/chat`。日记保存调用 `POST /api/reflect`，周报调用 `POST /api/report/weekly`，会议记录调用 `POST /api/conversation/start` 和 `POST /api/meeting/complete`，语音对话调用 `POST /api/voice/chat`。`/api/meeting/complete` 是后台任务提交：页面继续读取 `/api/conversation/state`，等 `report.status=ready/error` 后才写入会议历史或展示错误。若接口无响应、LLM key 未配置或设备不可用，页面会继续使用本地 memory reply，不会空白。
+
+注意：`/control` 的多人页是声源定位和人脸关联演示，默认 `save_audio:false`，终止时只停止 `/api/multi_track/stop`，不会录音、转写或生成纪要。需要验证完整会议闭环时始终使用 `/home` 的会议页。
 
 电脑本机访问：
 

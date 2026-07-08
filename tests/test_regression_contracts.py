@@ -1009,6 +1009,8 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(result["ok"])
             self.assertEqual(result["state"], "unreachable")
             self.assertEqual(result["playback"]["last_error"], "timeout")
+            self.assertEqual(result["playback"]["device_playback_state"], "unreachable")
+            self.assertFalse(result["playback"]["playback_confirmed"])
         finally:
             api._voice_audio_client = old_client
 
@@ -1092,6 +1094,8 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["reason"], "sedentary")
             self.assertEqual(result["text"], "你已经坐了挺久了，起来走两分钟，回来我还在。")
             self.assertEqual(result["playback"]["target"], "recamera_speaker")
+            self.assertTrue(result["playback"]["bridge_accepted"])
+            self.assertTrue(result["playback"]["playback_confirmed"])
             self.assertEqual(result["playback"]["bridge"]["state"], "done")
             self.assertTrue(fake_client.calls)
         finally:

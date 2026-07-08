@@ -179,7 +179,8 @@ class ControlPageResilienceTests(unittest.TestCase):
         self.assertEqual(references - set(ids), set(), "script references missing DOM ids")
         self.assertNotIn('id="page-meeting_recording"', page)
         self.assertIn('id="page-multi_sound_yaw"', page)
-        self.assertIn("/api/meeting/complete", page)
+        self.assertIn("/api/multi_track/stop", page)
+        self.assertIn("完整录音、转写和纪要请从 /home 会议页启动", page)
         self.assertIn("说话人逐句记录", page)
         self.assertIn("LLM 会议纪要", page)
 

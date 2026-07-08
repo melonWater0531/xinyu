@@ -182,7 +182,7 @@ button,input,select{font:inherit}
     </button>
     <div class="nav-group">多人场景</div>
     <button class="nav-btn" data-page="multi_sound_yaw" onclick="activatePage('multi_sound_yaw')">
-      <span>多人会议闭环</span><span class="nav-chip">DOA · ASR</span>
+      <span>多人声源演示</span><span class="nav-chip">DOA · Face</span>
     </button>
     <div class="nav-group">陪伴与健康</div>
     <button class="nav-btn" data-page="gesture_interaction" onclick="activatePage('gesture_interaction')">
@@ -310,7 +310,7 @@ button,input,select{font:inherit}
         <div class="workflow-step" id="meetingStepDoa"><span class="step-index">1</span><strong>声源定位</strong><small id="meetingStepDoaText">等待启动</small></div>
         <div class="workflow-step" id="meetingStepFace"><span class="step-index">2</span><strong>说话人锁定</strong><small id="meetingStepFaceText">等待声源</small></div>
         <div class="workflow-step" id="meetingStepRecord"><span class="step-index">3</span><strong>录音与分段</strong><small id="meetingStepRecordText">尚未录音</small></div>
-        <div class="workflow-step" id="meetingStepReport"><span class="step-index">4</span><strong>转写与纪要</strong><small id="meetingStepReportText">等待会议结束</small></div>
+        <div class="workflow-step" id="meetingStepReport"><span class="step-index">4</span><strong>录音/纪要</strong><small id="meetingStepReportText">本页默认不录音</small></div>
       </div>
       <div class="grid layout-2">
         <section class="card video-card">
@@ -328,8 +328,8 @@ button,input,select{font:inherit}
             <div class="card-head"><h2>多人会议控制</h2><span class="pill" id="multiModeText">未激活</span></div>
             <div class="meeting-actions">
               <div class="controls">
-                <button class="btn primary" id="btnMeetingStart" onclick="startMeetingWorkflow()">启动多人会议</button>
-                <button class="btn danger requires-feature" data-page-lock="multi_sound_yaw" id="btnMeetingComplete" onclick="completeMeetingWorkflow()">终止并生成纪要</button>
+                <button class="btn primary" id="btnMeetingStart" onclick="startMeetingWorkflow()">启动声源演示</button>
+                <button class="btn danger requires-feature" data-page-lock="multi_sound_yaw" id="btnMeetingComplete" onclick="completeMeetingWorkflow()">终止声源演示</button>
               </div>
               <span class="pill" id="meetingRecordState">录音未启动</span>
             </div>
@@ -379,7 +379,7 @@ button,input,select{font:inherit}
           <div class="card-head"><h2>LLM 会议纪要</h2><span class="pill" id="meetingReportState">尚未生成</span></div>
           <div class="minutes-panel" aria-live="polite">
             <div class="minutes-summary" id="meetingSummary">等待会议结束</div>
-            <div class="minutes-body" id="meetingMinutes">点击“终止并生成纪要”后，系统会先完成逐段转写，再整理不同说话人的观点和会议结论。</div>
+            <div class="minutes-body" id="meetingMinutes">/control 默认是声源定位与人脸关联演示，不启用真实录音。完整会议录音和纪要请使用 /home 的会议页。</div>
           </div>
           <div class="kv" style="margin-top:10px"><span>处理状态</span><span id="meetingAsrStatus">idle</span></div>
           <div class="kv"><span>转写条数</span><span id="meetingReportTurns">0</span></div>
@@ -573,7 +573,7 @@ let smoothAttn=0,smoothConf=0;
 const $=id=>document.getElementById(id);
 const pageMeta={
   single_face_analysis:{title:'人脸追踪与分析',sub:'切到页面后只展示信息，点击“启动功能”才会找人脸、云台对准，并开始情绪、人脸、专注与眼部指标分析。'},
-  multi_sound_yaw:{title:'多人会议闭环',sub:'声源找人、人脸锁定、分段录音、说话人转写与 LLM 会议纪要在同一个会话中完成。'},
+  multi_sound_yaw:{title:'多人声源演示',sub:'声源找人和人脸锁定在同一个控制会话中完成；真实录音与纪要闭环在 /home 会议页。'},
   gesture_interaction:{title:'手势识别',sub:'查看 MediaPipe 手势类别、置信度与稳定帧；手势不叠加交互语义。'},
   health_pwa:{title:'健康与 PWA 通知',sub:'汇总护眼、久坐、喝水、疲劳、低专注和情绪关心通知状态。'},
   llm_diary:{title:'LLM 与情绪日记',sub:'汇总 DeepSeek 对话、日记反思、会议摘要和本地 fallback 状态。'},
@@ -883,18 +883,18 @@ async function startMeetingWorkflow(){
 async function completeMeetingWorkflow(){
   if(!currentSessionId||meetingCompleting)return;
   meetingCompleting=true;updateFeatureLocks();
-  $('meetingReportState').textContent='正在转写与生成';
-  $('meetingStepReportText').textContent='ASR 与 LLM 处理中';
-  log('正在终止会议、转写语音并生成会议纪要');
+  $('meetingReportState').textContent='演示停止中';
+  $('meetingStepReportText').textContent='本页未启用录音与纪要';
+  log('正在终止多人声源演示；本页未启用真实录音或会议纪要');
   const sessionId=currentSessionId;
   try{
-    const r=await apiPost('/api/meeting/complete',{session_id:sessionId},{timeoutMs:10000});
+    const r=await apiPost('/api/multi_track/stop',{session_id:sessionId,finalize:false},{timeoutMs:10000});
     if(r&&r.accepted){
       clearSession();
       if(r.state)renderMeetingWorkflow(r.state,{});
-      log(r.processing?'会议停止与转写任务已提交，后台正在生成纪要':(r.ok?'会议闭环完成，逐句转写与纪要已生成':`会议已停止，但纪要生成失败：${r.error||'未知错误'}`));
+      log('多人声源演示已终止；没有提交 ASR/LLM 纪要任务');
     }else{
-      log(`终止提交失败：${r&&r.error||r&&r.reason||'服务不可达'}；页面会继续轮询当前状态`);
+      log(`终止演示失败：${r&&r.error||r&&r.reason||'服务不可达'}；页面会继续轮询当前状态`);
     }
   }finally{
     meetingCompleting=false;
@@ -994,7 +994,7 @@ async function heartbeat(){
     const now=Date.now();
     if(now-lastHeartbeatLogAt>8000){
       lastHeartbeatLogAt=now;
-      log(`控制心跳降级（${reason||'timeout'}），会议录音/转写保持运行，可直接点击终止并生成纪要${transient&&!sessionExpired?'':'；控制会话可能已失效'}`);
+      log(`控制心跳降级（${reason||'timeout'}），声源演示保持运行，可直接点击终止声源演示${transient&&!sessionExpired?'':'；控制会话可能已失效'}`);
     }
     if(sessionExpired||!transient)await recoverMultiSessionIfExpired(sessionId);
   }finally{
@@ -1079,7 +1079,7 @@ function renderMeetingWorkflow(conv={},context={}){
   const ready=reportStatus==='ready';
   $('meetingReportState').textContent=ready?'已生成':reportStatus==='stopping'?'停止中':reportStatus==='summarizing'?`生成中 ${Number(report.progress||0)}%`:reportStatus==='recording_degraded'?'录音降级':reportStatus==='error'?'生成失败':'尚未生成';
   $('meetingSummary').textContent=ready?(report.summary||'会议纪要已生成'):reportStatus==='stopping'?'正在封存录音并提交转写任务…':(reportStatus==='summarizing'?'正在整理逐句记录…':'等待会议结束');
-  $('meetingMinutes').textContent=ready?(report.minutes||report.diary||''):'点击“终止并生成纪要”后，系统会先完成逐段转写，再整理不同说话人的观点和会议结论。';
+  $('meetingMinutes').textContent=ready?(report.minutes||report.diary||''):'本页默认只做声源定位与人脸关联演示；完整录音、转写和纪要请从 /home 会议页启动。';
   $('meetingAsrStatus').textContent=reportStatus;
   $('meetingReportTurns').textContent=report.turns||0;
   $('meetingReportDuration').textContent=report.duration_min!=null?`${report.duration_min} 分钟`:'--';

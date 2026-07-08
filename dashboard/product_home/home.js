@@ -18,6 +18,7 @@
   let systemHealth = null;
   let voiceState = null;
   let announceSettings = null;
+  let meetingCompletionPending = false;
   let ws = null;
   let pollTimer = 0;
   let mediaRecorder = null;
@@ -1121,6 +1122,39 @@
     };
   }
 
+  function rememberMeetingReport(report = {}) {
+    const status = String(report.status || "");
+    if (status !== "ready" || !(report.summary || report.minutes || report.diary)) return false;
+    const meeting = normalizeMeetingFromReport(report, {status: "已整理"});
+    const key = report.report_path || report.session_id || report.id || meeting.id;
+    const existingIndex = meetingNotes.findIndex((item) => {
+      const existing = item.report || {};
+      return (existing.report_path || existing.session_id || existing.id || item.id) === key;
+    });
+    if (existingIndex >= 0) meetingNotes[existingIndex] = meeting;
+    else meetingNotes.push(meeting);
+    persistMeetingNotes();
+    return true;
+  }
+
+  function settleMeetingCompletion(conversation = stateData().conversation || {}) {
+    const report = conversation.report || conversation.meeting_report || {};
+    const status = String(report.status || conversation.meeting_state || "");
+    if (status === "ready" && rememberMeetingReport(report)) {
+      meetingCompletionPending = false;
+      persistMeetingSession("");
+      setText("xy-meeting-live-status", "会议整理完成，已放入会议历史。");
+      return true;
+    }
+    if (meetingCompletionPending && status === "error") {
+      meetingCompletionPending = false;
+      persistMeetingSession("");
+      setText("xy-meeting-live-status", report.error || conversation.last_recording_error || "会议整理失败，可稍后重试。");
+      return true;
+    }
+    return false;
+  }
+
   function currentRealMeeting() {
     const conversation = stateData().conversation || {};
     const report = conversation.report || conversation.meeting_report || {};
@@ -1206,6 +1240,7 @@
     try {
       const data = await apiJSON("/api/conversation/state", {timeoutMs: 6000});
       liveState = {...(liveState || {}), data: {...stateData(), conversation: data}};
+      settleMeetingCompletion(data);
       renderMeeting();
     } catch (_error) {}
     try {
@@ -1240,10 +1275,14 @@
     try {
       const data = await apiJSON("/api/meeting/complete", {method: "POST", body: {session_id: state.meetingSessionId}, timeoutMs: 15000});
       if (data.report || data.minutes || data.summary) {
-        meetingNotes.push(normalizeMeetingFromReport(data.report || data, {status: "已整理"}));
-        persistMeetingNotes();
+        rememberMeetingReport(data.report || data);
+        persistMeetingSession("");
+      } else if (data.processing || data.submitted) {
+        meetingCompletionPending = true;
+        setText("xy-meeting-live-status", "会议整理已提交，后台完成后会自动放入会议历史。");
+      } else {
+        persistMeetingSession("");
       }
-      persistMeetingSession("");
       showToast("会议整理已提交");
       await refreshConversationState();
     } catch (error) {
@@ -1642,6 +1681,7 @@
       voiceState = stateData().voice;
       announceSettings = voiceState.announce || announceSettings;
     }
+    settleMeetingCompletion();
     renderHome();
     renderMeeting();
     renderDevice();
