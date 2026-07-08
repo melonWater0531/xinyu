@@ -38,8 +38,20 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
+# Keep native CV/ONNX thread pools from consuming whole cores while FastAPI is
+# mostly waiting between low-frequency perception ticks. Operators can override
+# these before launch when benchmarking a stronger host.
+_MODEL_THREADS = os.environ.get("RECAMERA_MODEL_THREADS", "1")
+for _thread_env in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_thread_env, _MODEL_THREADS)
+
 import numpy as np
 import cv2
+
+try:
+    cv2.setNumThreads(int(os.environ.get("RECAMERA_CV2_THREADS", _MODEL_THREADS)))
+except Exception:
+    pass
 
 from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -101,10 +113,16 @@ class SSCMAVideoClient:
         self._fps: float = 0.0
         self._connected: bool = False
         self._resolution: list = [1920, 1080]       # [w, h] ->updated on first frame
+        self._resolution_known: bool = False
         self._frame_event: Optional[asyncio.Event] = None  # signal MJPEG generator
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None  # for thread-safe set()
         self._fail_count: int = 0  # consecutive connection failures
+        self._total_fail_count: int = 0
+        self._last_error: str = ""
+        self._last_connected_at: float = 0.0
+        self._last_packet_at: float = 0.0
         self._last_frame_at: float = 0.0
+        self._last_decode_at: float = 0.0
 
     @property
     def resolution(self) -> list:
@@ -128,7 +146,8 @@ class SSCMAVideoClient:
 
     @property
     def connected(self) -> bool:
-        return self._connected
+        with self._lock:
+            return bool(self._connected)
 
     @property
     def fps(self) -> float:
@@ -140,6 +159,21 @@ class SSCMAVideoClient:
         with self._lock:
             last_frame_at = self._last_frame_at
         return max(0, int((time.monotonic() - last_frame_at) * 1000)) if last_frame_at else None
+
+    @property
+    def diagnostics(self) -> dict:
+        with self._lock:
+            last_frame_at = self._last_frame_at
+            return {
+                "url": self.url,
+                "connected": bool(self._connected),
+                "fail_count": int(self._fail_count),
+                "total_fail_count": int(self._total_fail_count),
+                "last_error": str(self._last_error or ""),
+                "last_connected_at": float(self._last_connected_at or 0.0),
+                "last_packet_age_ms": max(0, int((time.monotonic() - self._last_packet_at) * 1000)) if self._last_packet_at else None,
+                "last_frame_age_ms": max(0, int((time.monotonic() - last_frame_at) * 1000)) if last_frame_at else None,
+            }
 
     def start(self):
         if self._running:
@@ -166,7 +200,11 @@ class SSCMAVideoClient:
                 ws = websocket.WebSocket()
                 ws.settimeout(3.0)
                 ws.connect(self.url, timeout=5.0, http_proxy_host=None, http_proxy_port=None)
-                self._connected = True
+                with self._lock:
+                    self._connected = True
+                    self._fail_count = 0
+                    self._last_error = ""
+                    self._last_connected_at = time.time()
                 logger.info("📷 SSCMA connected")
 
                 while self._running:
@@ -187,18 +225,26 @@ class SSCMAVideoClient:
                                 self._fps = fps_count / elapsed
                             fps_count = 0
                             fps_t0 = time.monotonic()
-                    except websocket.TimeoutError:
+                    except TimeoutError:
+                        continue
+                    except (getattr(websocket, "WebSocketTimeoutException", TimeoutError),):
                         continue
                     except Exception:
                         break
             except Exception as e:
-                self._fail_count += 1
-                if self._fail_count == 1:
+                with self._lock:
+                    self._connected = False
+                    self._fail_count += 1
+                    self._total_fail_count += 1
+                    fail_count = self._fail_count
+                    self._last_error = str(e)[:160]
+                if fail_count == 1:
                     logger.warning("📷 SSCMA connection failed (%s) ->retrying every 2s", str(e)[:80])
-                elif self._fail_count % 15 == 0:
-                    logger.warning("📷 SSCMA still unreachable after %d attempts (%s)", self._fail_count, str(e)[:60])
+                elif fail_count % 15 == 0:
+                    logger.warning("📷 SSCMA still unreachable after %d attempts (%s)", fail_count, str(e)[:60])
             finally:
-                self._connected = False
+                with self._lock:
+                    self._connected = False
                 if ws:
                     try: ws.close()
                     except: pass
@@ -213,24 +259,36 @@ class SSCMAVideoClient:
 
             img_b64 = payload.get("image", "")
             boxes = payload.get("boxes", [])
+            now = time.monotonic()
+            should_decode = bool(img_b64) and (
+                not self._resolution_known
+                or _should_decode_sscma_frame(now, self._last_decode_at)
+            )
 
-            if img_b64:
+            if img_b64 and should_decode:
                 jpeg = base64.b64decode(img_b64)
                 with self._lock:
                     self._jpeg_bytes = jpeg
-                    self._jpeg_b64 = img_b64
+                    self._jpeg_b64 = img_b64 if _video_stream_active() else ""
                     self._boxes = boxes if boxes else []
+                    self._last_packet_at = now
                     self._last_frame_at = time.monotonic()
+                    self._last_decode_at = now
                     # Extract actual resolution from JPEG on first frame
-                    if self._resolution == [1920, 1080]:
+                    if not self._resolution_known:
                         try:
                             import cv2, numpy as np
                             arr = np.frombuffer(jpeg, np.uint8)
                             img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                             if img is not None:
                                 self._resolution = [img.shape[1], img.shape[0]]
+                                self._resolution_known = True
                         except Exception:
                             pass
+            else:
+                with self._lock:
+                    self._boxes = boxes if boxes else []
+                    self._last_packet_at = now
         except Exception:
             pass
 
@@ -277,6 +335,56 @@ class ConnectionManager:
 # Global instances (set during lifespan)
 video_client: Optional[SSCMAVideoClient] = None
 _video_client_lock = threading.Lock()
+_video_viewer_lock = threading.Lock()
+_video_viewer_count = 0
+
+
+def _video_stream_active() -> bool:
+    with _video_viewer_lock:
+        return _video_viewer_count > 0
+
+
+def _active_perception_mode() -> bool:
+    return bool(
+        _single_track_active
+        or _multi_track_active
+        or _analysis_features.get("llm_diary")
+        or _analysis_features.get("health_pwa")
+        or _analysis_features.get("gesture_interaction")
+    )
+
+
+def _should_decode_sscma_frame(now: float, last_decode_at: float) -> bool:
+    if _active_perception_mode() or _video_stream_active():
+        return True
+    try:
+        interval_s = float(os.environ.get("RECAMERA_IDLE_SSCMA_DECODE_INTERVAL", "1.5"))
+    except ValueError:
+        interval_s = 1.5
+    return now - float(last_decode_at or 0.0) >= max(0.2, interval_s)
+
+
+def _release_face_tracker_if_idle(idle_mode: bool) -> None:
+    global _face_tracker
+    if not idle_mode or not _face_tracker:
+        return
+    try:
+        if hasattr(_face_tracker, "reset"):
+            _face_tracker.reset()
+    except Exception:
+        pass
+    _face_tracker = None
+    try:
+        import gc
+        import vision.face_tracker_v2 as ftv2
+        ftv2._tracker_v2 = None
+        gc.collect()
+    except Exception:
+        pass
+    if "_perception_stats" in globals():
+        _perception_stats["stage_ms"]["face"] = 0.0
+
+
 _gimbal_tlm = {
     "connected": False,
     "yaw": None,
@@ -487,7 +595,12 @@ _PERCEPTION_DIAGNOSTIC_DEFAULTS = {
     "face_tracker_loaded": False,
     "detect_max_width": None,
     "face_period": None,
+    "pose_period": None,
+    "detail_period": None,
     "face_degraded": False,
+    "analysis_detail_enabled": False,
+    "mediapipe_detail_enabled": False,
+    "gesture_detail_enabled": False,
     "stage_ms": {},
     "latest_pose_count": 0,
     "latest_face_count": 0,
@@ -555,11 +668,13 @@ def _device_config_state() -> dict:
     ip = app_config.device_ip if app_config else ""
     stored = device_config_store.read()
     control_connected = bool(_runtime_cache.get("connected"))
+    sscma_diag = getattr(video_client, "diagnostics", {}) if video_client else {}
     return {
         "ip": ip,
         "configured": bool(ip),
         "sscma_url": device_sscma_ws_url(ip) if ip else "",
         "video_connected": bool(video_client.connected) if video_client else False,
+        "sscma": sscma_diag,
         "control_connected": control_connected,
         "control_state": "ready" if control_connected else "video_only",
         "version": int(stored.get("version", 0)),
@@ -641,17 +756,31 @@ def _perception_diagnostics(**overrides) -> dict:
         for k, v in _perception_diag.items()
     })
     vc = video_client
+    sscma_diag = getattr(vc, "diagnostics", {}) if vc else {}
+    with _video_viewer_lock:
+        viewer_count = int(_video_viewer_count)
     diag.update({
         "video_connected": bool(vc.connected) if vc else False,
         "video_fps": round(float(vc.fps), 2) if vc else 0.0,
         "last_frame_age_ms": vc.last_frame_age_ms if vc else None,
+        "sscma_fail_count": int(sscma_diag.get("fail_count") or 0),
+        "sscma_total_fail_count": int(sscma_diag.get("total_fail_count") or 0),
+        "sscma_last_error": str(sscma_diag.get("last_error") or ""),
+        "sscma_last_connected_at": float(sscma_diag.get("last_connected_at") or 0.0),
+        "sscma_last_packet_age_ms": sscma_diag.get("last_packet_age_ms"),
+        "video_viewer_count": viewer_count,
         "frame_width": int(vc.resolution[0]) if vc else 1920,
         "frame_height": int(vc.resolution[1]) if vc else 1080,
         "face_tracker_available": bool(_face_tracker and getattr(_face_tracker, "available", False)),
         "face_tracker_loaded": bool(_face_tracker and getattr(_face_tracker, "loaded", False)),
         "detect_max_width": globals().get("DETECT_MAX_WIDTH"),
         "face_period": _perception_stats.get("face_period") if "_perception_stats" in globals() else None,
+        "pose_period": _perception_stats.get("pose_period") if "_perception_stats" in globals() else None,
+        "detail_period": _perception_stats.get("detail_period") if "_perception_stats" in globals() else None,
         "face_degraded": bool(_perception_stats.get("face_degraded")) if "_perception_stats" in globals() else False,
+        "analysis_detail_enabled": bool(_perception_stats.get("analysis_detail_enabled")) if "_perception_stats" in globals() else False,
+        "mediapipe_detail_enabled": bool(_perception_stats.get("mediapipe_detail_enabled")) if "_perception_stats" in globals() else False,
+        "gesture_detail_enabled": bool(_perception_stats.get("gesture_detail_enabled")) if "_perception_stats" in globals() else False,
         "perception_profile": _perception_stats.get("profile") if "_perception_stats" in globals() else "",
         "loop_sleep_ms": _perception_stats.get("loop_sleep_ms") if "_perception_stats" in globals() else None,
         "stage_ms": dict(_perception_stats.get("stage_ms", {})) if "_perception_stats" in globals() else {},
@@ -2624,28 +2753,14 @@ async def lifespan(app: FastAPI):
     baseline_path = Path(__file__).resolve().parent / "runtime" / f"attention_{profile_id}_{device_key}.json"
     _attention_engine = AttentionEngine(AttentionConfig(baseline_file=str(baseline_path)))
 
-    # FaceTrackerV2: Kalman + ByteTrack + ArcFace
+    # FaceTrackerV2: Kalman + ByteTrack + ArcFace. Loaded lazily because the
+    # InsightFace/ONNX worker threads are the biggest standby CPU cost.
     global _face_tracker
-    try:
-        from vision.face_tracker_v2 import get_face_tracker_v2
-        _face_tracker = get_face_tracker_v2()
-        logger.info("🔍 FaceTrackerV2: %s",
-            "SCRFD+Kalman+ByteTrack ready" if _face_tracker.available
-            else "unavailable, fallback to YOLO")
-    except Exception as e:
-        logger.warning("FaceTrackerV2 init skipped: %s", e)
-        _face_tracker = None
+    _face_tracker = None
 
-    # Preload the YOLO pose fallback off the event loop so the first
-    # multi-person tick never pays the ONNX load + warmup inline.
-    def _preload_pose():
-        try:
-            from vision.pose_estimator import get_pose_estimator
-            get_pose_estimator()
-            logger.info("YOLO pose estimator preloaded")
-        except Exception as e:
-            logger.warning("Pose estimator preload failed: %s", str(e)[:80])
-    _slow_pool.submit(_preload_pose)
+    # YOLO pose fallback is loaded lazily by state_push_loop when multi-person
+    # tracking actually needs it. Preloading keeps first-use snappy, but it also
+    # leaves ONNX worker threads hot during standby.
 
     # EmotiEffLib only (old emotion model removed)
 
@@ -2670,10 +2785,9 @@ async def lifespan(app: FastAPI):
     _eye_tracker = None
     try:
         from vision.gaze_estimator import GazeEstimator
-        from vision.gesture_detector import GestureDetector
         from core.emotion_intervention import EmotionInterventionPolicy
         _gaze_estimator = GazeEstimator()
-        _gesture_detector = GestureDetector()
+        _gesture_detector = None
         _emotion_intervention = EmotionInterventionPolicy()
     except Exception as e:
         logger.warning("Companion perception policy init skipped: %s", e)
@@ -2879,7 +2993,12 @@ DETECT_MAX_WIDTH = int(os.environ.get("RECAMERA_DETECT_MAX_WIDTH", "960"))
 _perception_stats = {
     "stage_ms": {"decode": 0.0, "face": 0.0, "mediapipe": 0.0, "gesture": 0.0, "emotion": 0.0},
     "face_period": 2,
+    "pose_period": None,
+    "detail_period": None,
     "face_degraded": False,
+    "analysis_detail_enabled": False,
+    "mediapipe_detail_enabled": False,
+    "gesture_detail_enabled": False,
     "loop_sleep_ms": 250,
     "profile": "idle",
 }
@@ -2966,8 +3085,9 @@ _emotion_smoother = _EmotionSmoother()
 async def state_push_loop():
     """Run perception and push UI snapshots. Contains NO gimbal control."""
     global _attn_result, _emotion_result, _emotieff_result, _eye_metrics
+    global _face_tracker
     global _mp_face, _eye_tracker, _mp_face_result, _mp_landmarks5
-    global _gaze_result, _gesture_result, _proactive_intervention
+    global _gaze_result, _gesture_result, _gesture_detector, _proactive_intervention
     global _llm_engine, _llm_diary_entry, _llm_quote_text, _last_llm_diary_time
     pose_est = None
     pose_frame_count = 0
@@ -2986,7 +3106,8 @@ async def state_push_loop():
             companion_mode = bool(_analysis_features.get("llm_diary") or _analysis_features.get("health_pwa"))
             gesture_mode = bool(_analysis_features.get("gesture_interaction"))
             idle_mode = not single_mode and not multi_mode and not companion_mode and not gesture_mode
-            run_companion_detail = not multi_mode
+            _release_face_tracker_if_idle(idle_mode)
+            run_companion_detail = bool(single_mode or companion_mode or gesture_mode)
             # Adaptive throttle: slow face stage backs the cadence off one notch
             face_ms = _perception_stats["stage_ms"]["face"]
             if face_ms > 350.0:
@@ -3015,20 +3136,21 @@ async def state_push_loop():
                 loop_sleep_s = 0.25
                 profile = "companion"
             else:
-                base_face_period = 8
+                base_face_period = 2
                 pose_period = 24
-                detail_period = 8
+                detail_period = 16
                 gesture_base_period = 32
-                loop_sleep_s = 0.25
+                loop_sleep_s = 0.75
                 profile = "idle_low_load"
             face_period = base_face_period + (1 if _perception_stats["face_degraded"] else 0)
             _perception_stats["face_period"] = face_period
+            _perception_stats["pose_period"] = pose_period
+            _perception_stats["detail_period"] = detail_period
             _perception_stats["loop_sleep_ms"] = int(loop_sleep_s * 1000)
             _perception_stats["profile"] = profile
             face_due = pose_frame_count % face_period == 0
             pose_due = pose_frame_count % pose_period == 0
-            # -- Scene gating: daily (single) runs face/emotion/eye; work (multi) runs pose only.
-            #    When neither mode is active, both pipelines run (default observation mode). --
+            # -- Scene gating: active modes get their required perception; idle only scans lightly. --
             run_face = True
             run_pose = not idle_mode
             if single_mode:
@@ -3052,13 +3174,27 @@ async def state_push_loop():
             run_inference = frame_is_new
             run_mediapipe_detail = companion_mode
             run_gesture_detail = gesture_mode
+            _perception_stats["analysis_detail_enabled"] = run_companion_detail
+            _perception_stats["mediapipe_detail_enabled"] = run_mediapipe_detail
+            _perception_stats["gesture_detail_enabled"] = run_gesture_detail
 
             # -- Face detection: FaceTrackerV2 (SCRFD + Kalman/ByteTrack), YOLO fallback --
             if video_client and (face_due or pose_due) and run_inference:
                 if frame is not None:
                     loop = _current_running_loop()
                     tracked_faces = []
-                    if _face_tracker and _face_tracker.available and run_face and face_due:
+                    face_tracker_allowed = bool(single_mode or multi_mode or companion_mode or gesture_mode)
+                    if _face_tracker is None and run_face and face_due and face_tracker_allowed:
+                        try:
+                            from vision.face_tracker_v2 import get_face_tracker_v2
+                            _face_tracker = await loop.run_in_executor(_slow_pool, get_face_tracker_v2)
+                            logger.info("🔍 FaceTrackerV2: %s",
+                                "SCRFD+Kalman+ByteTrack ready" if _face_tracker.available
+                                else "unavailable, fallback to YOLO")
+                        except Exception as e:
+                            logger.warning("FaceTrackerV2 init skipped: %s", e)
+                            _face_tracker = False
+                    if _face_tracker and _face_tracker.available and run_face and face_due and face_tracker_allowed:
                         try:
                             from vision.pose_estimator import PersonPose, Keypoint
                             if frame is not None:
@@ -3204,8 +3340,11 @@ async def state_push_loop():
             # Adaptive cadence: scan slowly until a hand appears, then track fast
             gesture_period = 2 if (_gesture_detector is not None and getattr(_gesture_detector, "hand_seen", False)) else gesture_base_period
             if run_gesture_detail and pose_frame_count % gesture_period == 0 and run_face and run_companion_detail and run_inference:
-                if frame is not None and _gesture_detector is not None:
+                if frame is not None:
                     try:
+                        if _gesture_detector is None:
+                            from vision.gesture_detector import GestureDetector
+                            _gesture_detector = GestureDetector()
                         loop = _current_running_loop()
                         t0 = time.monotonic()
                         _gesture_result = await loop.run_in_executor(_slow_pool, _gesture_detector.detect, det_frame)
@@ -3369,32 +3508,39 @@ async def video_feed():
     """Stream camera frames as MJPEG ->event-driven, low latency."""
 
     async def generate_frames():
+        global _video_viewer_count
         last_jpeg = None
-        while True:
-            if video_client and video_client._frame_event:
-                try:
-                    await asyncio.wait_for(video_client._frame_event.wait(), timeout=0.05)
-                except asyncio.TimeoutError:
-                    pass
-                video_client._frame_event.clear()
+        with _video_viewer_lock:
+            _video_viewer_count += 1
+        try:
+            while True:
+                if video_client and video_client._frame_event:
+                    try:
+                        await asyncio.wait_for(video_client._frame_event.wait(), timeout=0.05)
+                    except asyncio.TimeoutError:
+                        pass
+                    video_client._frame_event.clear()
 
-            jpeg = video_client.jpeg_bytes if video_client else None
-            if jpeg is not None and jpeg is not last_jpeg:
-                last_jpeg = jpeg
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n'
-                       b'Content-Length: ' + str(len(jpeg)).encode() + b'\r\n\r\n'
-                       + jpeg + b'\r\n')
-            elif jpeg is None:
-                # Placeholder frame
-                import cv2
-                ph = np.zeros((480, 640, 3), dtype=np.uint8)
-                cv2.putText(ph, "Waiting for camera...", (120, 240),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-                _, jpg = cv2.imencode('.jpg', ph)
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + jpg.tobytes() + b'\r\n')
-                await asyncio.sleep(0.5)
+                jpeg = video_client.jpeg_bytes if video_client else None
+                if jpeg is not None and jpeg is not last_jpeg:
+                    last_jpeg = jpeg
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n'
+                           b'Content-Length: ' + str(len(jpeg)).encode() + b'\r\n\r\n'
+                           + jpeg + b'\r\n')
+                elif jpeg is None:
+                    # Placeholder frame
+                    import cv2
+                    ph = np.zeros((480, 640, 3), dtype=np.uint8)
+                    cv2.putText(ph, "Waiting for camera...", (120, 240),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                    _, jpg = cv2.imencode('.jpg', ph)
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + jpg.tobytes() + b'\r\n')
+                    await asyncio.sleep(0.5)
+        finally:
+            with _video_viewer_lock:
+                _video_viewer_count = max(0, _video_viewer_count - 1)
 
     return StreamingResponse(
         generate_frames(),

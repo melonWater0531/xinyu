@@ -292,10 +292,12 @@ class ControlPageResilienceTests(unittest.TestCase):
 
     def test_multi_mode_throttles_nonessential_perception(self) -> None:
         backend = (ROOT / "recamera_fastapi.py").read_text(encoding="utf-8")
-        self.assertIn("run_companion_detail = not multi_mode", backend)
+        self.assertIn("run_companion_detail = bool(single_mode or companion_mode or gesture_mode)", backend)
         self.assertIn('profile = "multi_tracking"', backend)
         self.assertIn("pose_period = 15", backend)
         self.assertIn("pose_due = pose_frame_count % pose_period == 0", backend)
+        self.assertIn('profile = "idle_low_load"', backend)
+        self.assertIn("loop_sleep_s = 0.75", backend)
         self.assertIn("adapter.predict", backend)
         self.assertIn("run_in_executor(_slow_pool", backend)
 

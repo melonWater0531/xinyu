@@ -60,7 +60,9 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
         for field in (
             "video_connected", "face_tracker_available", "latest_face_count",
             "latest_person_count", "observation_faces", "observation_persons",
-            "last_publish_ok", "last_publish_error",
+            "last_publish_ok", "last_publish_error", "face_period",
+            "pose_period", "detail_period", "analysis_detail_enabled",
+            "sscma_fail_count", "sscma_last_error",
         ):
             self.assertIn(field, runtime["perception_diagnostics"])
 
