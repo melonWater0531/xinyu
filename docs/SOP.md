@@ -379,7 +379,7 @@ ASR 默认优先使用智谱 GLM-ASR（需要 `ZHIPU_API_KEY`）；云端不可�
 | 人脸追踪与分析 | 启动功能 | 终止功能 | 情绪、专注、EAR/PERCLOS 更新；云台命令来自 main runtime |
 | 声源 yaw 跟随 | 启动功能 | 终止功能 | DOA/VAD 更新，yaw-only 控制，pitch 不自动跟随 |
 | 会议录音 | 启动功能 | 终止并保存 | 录音状态、VAD 分段、音频处理状态、可选 yaw 跟随和摘要接口可用 |
-| 手势交互 | 启动功能 | 终止功能 | `gesture.available=true`，五类 intent 只更新 UI，不控制云台 |
+| 手势识别 | 启动功能 | 终止功能 | `gesture.available=true`，只展示类别、置信度与稳定帧，不叠加交互语义 |
 | 健康与 PWA | 启动功能 | 终止功能 | 护眼/久坐/喝水/疲劳/低专注/情绪关心状态可观察 |
 | LLM 与日记 | 启动功能 | 终止功能 | DeepSeek 优先，智谱兜底；云端不可用时端点本地 fallback |
 | 手动云台 | 启动功能 | 终止功能 | D-Pad 只在当前 manual session 有效 |
@@ -1031,10 +1031,9 @@ curl -s http://127.0.0.1:8001/api/state | python3 -m json.tool
 
 1. 手掌完整进入画面，保持光照稳定。
 2. 同一手势连续保持至少 4 个识别帧。
-3. 确认 `confidence >= 0.6`、`stable_frames >= 4`、intent 映射正确。
-4. 首次稳定时 `intent_ready=true`，同 intent 3 秒内不会再次 ready。
-5. 在 `/home` 确认对应动作：唤起、收起提醒、正负反馈、积极瞬间草稿。
-6. 确认没有手势产生的云台或功能控制事件。
+3. 确认 `name`、`confidence`、`handedness`、`stable_frames` 正常更新。
+4. 确认 `intent=""`、`intent_ready=false`，没有语义动作或冷却状态。
+5. 确认没有手势产生的云台或功能控制事件。
 
 模型缺失时预期：`{"available":false,"intent_ready":false,"reason":"model_missing:models/gesture_recognizer.task"}`
 

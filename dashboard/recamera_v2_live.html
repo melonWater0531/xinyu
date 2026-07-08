@@ -412,10 +412,9 @@ button,input,select{font:inherit}
           <div class="controls device-actions"><button class="btn" onclick="gStandby()">Standby</button><button class="btn" onclick="gSleep()">Sleep</button><button class="btn" onclick="gStop()">Stop</button><button class="btn danger" onclick="gCalibrate()">Calibrate</button></div>
           <div class="metric-grid" style="margin-top:12px">
             <div class="metric"><div class="label">Gesture</div><div class="value small" id="gestureName">--</div></div>
-            <div class="metric"><div class="label">Intent</div><div class="value small" id="gestureIntent">--</div></div>
+            <div class="metric"><div class="label">Confidence</div><div class="value small" id="gestureConfidence">--</div></div>
             <div class="metric"><div class="label">Stable</div><div class="value" id="gestureStable">--</div></div>
           </div>
-          <div class="kv"><span>Closed Fist stop</span><span id="gestureFistStop">未触发</span></div>
           <div class="log mono" id="gestureLog" style="margin-top:12px"></div>
         </section>
       </div>
@@ -575,7 +574,7 @@ const $=id=>document.getElementById(id);
 const pageMeta={
   single_face_analysis:{title:'人脸追踪与分析',sub:'切到页面后只展示信息，点击“启动功能”才会找人脸、云台对准，并开始情绪、人脸、专注与眼部指标分析。'},
   multi_sound_yaw:{title:'多人会议闭环',sub:'声源找人、人脸锁定、分段录音、说话人转写与 LLM 会议纪要在同一个会话中完成。'},
-  gesture_interaction:{title:'手势交互',sub:'查看 MediaPipe 手势识别、稳定帧与低风险陪伴 intent；手势不驱动云台。'},
+  gesture_interaction:{title:'手势识别',sub:'查看 MediaPipe 手势类别、置信度与稳定帧；手势不叠加交互语义。'},
   health_pwa:{title:'健康与 PWA 通知',sub:'汇总护眼、久坐、喝水、疲劳、低专注和情绪关心通知状态。'},
   llm_diary:{title:'LLM 与情绪日记',sub:'汇总 DeepSeek 对话、日记反思、会议摘要和本地 fallback 状态。'},
   manual_gimbal_debug:{title:'手动云台调试',sub:'切到页面后不接管云台，点击“启动功能”才允许发送手动 UI Event。'}
@@ -616,11 +615,6 @@ function renderVoiceState(voice={}){
   $('voiceText').textContent=voice.last_utterance||'--';
   $('voiceError').textContent=playback.last_error||bridge.last_error||bridgeLast.error||'--';
   if(['saving','playing'].includes(String(playbackState)))voiceScheduleStatus();
-}
-function recentClosedFistStop(voice={}){
-  const events=Array.isArray(voice.recent_events)?voice.recent_events:[];
-  const hit=events.slice().reverse().find(ev=>String(ev.type||'')==='voice_stop'&&String(ev.reason||'')==='closed_fist');
-  return hit?fmtClock(hit.time):'未触发';
 }
 function setConn(kind,text){$('wsDot').className='dot '+(kind==='on'?'on':kind==='warn'?'warn':'');$('wsText').textContent=text}
 function fmtTime(sec){sec=Math.max(0,Number(sec)||0);const m=Math.floor(sec/60),s=Math.floor(sec%60);return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`}
@@ -1101,7 +1095,7 @@ function renderMeetingWorkflow(conv={},context={}){
 
 function renderState(s){
   if(!s)return;
-  const g=s.gimbal||{},pose=s.pose||{},att=s.attention||{},emo=s.emotieff||s.emotion||{},doa=s.doa||{},rs=s.respeaker||{},ctrl=s.control||{},health=s.health||{},conv=s.conversation||{},eye=s.eye_metrics||{},mp=s.mp_face||{},gesture=s.gesture||{},voice=s.voice||{};
+  const g=s.gimbal||{},pose=s.pose||{},att=s.attention||{},emo=s.emotieff||s.emotion||{},doa=s.doa||{},rs=s.respeaker||{},ctrl=s.control||{},health=s.health||{},conv=s.conversation||{},eye=s.eye_metrics||{},mp=s.mp_face||{},gesture=s.gesture||{};
   applyDeviceState(s.device);
   const videoState=s.video||{},vw=Number(videoState.width||1920),vh=Number(videoState.height||1080);
   if(videoState.last_frame_age_ms!=null&&Number(videoState.last_frame_age_ms)>3000)reconnectVideo('video stall');
@@ -1177,9 +1171,8 @@ function renderState(s){
   $('gestureModeText').textContent=featureActive.gesture_interaction?'运行中':'未激活';
   $('gestureReady').textContent=gesture.available?'模型可用':(gesture.reason||'未加载');
   $('gestureName').textContent=gesture.name||'--';
-  $('gestureIntent').textContent=gesture.intent_ready?gesture.intent:(gesture.intent||'--');
+  $('gestureConfidence').textContent=gesture.confidence!=null?`${Math.round(Number(gesture.confidence)*100)}%`:'--';
   $('gestureStable').textContent=gesture.stable_frames!=null?gesture.stable_frames:'--';
-  $('gestureFistStop').textContent=recentClosedFistStop(voice);
   $('healthModeText').textContent=featureActive.health_pwa?'运行中':'未激活';
   $('healthAttention').textContent=att.score!=null?`${Math.round(att.score)}/100 ${att.state||''}`:'--';
   $('healthEye').textContent=eye.perclos!=null?`PERCLOS ${Number(eye.perclos).toFixed(3)}`:'--';

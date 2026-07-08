@@ -3336,7 +3336,7 @@ async def state_push_loop():
                         logger.warning(f"MediaPipe: {e}")
                         _gaze_result = {"available": False, "state": "unknown", "x_offset": 0.0, "y_offset": 0.0, "confidence": 0.0}
 
-            # -- Gesture recognition (companionship intents only; no control events) --
+            # -- Gesture recognition (classes only; no semantic intents or control events) --
             # Adaptive cadence: scan slowly until a hand appears, then track fast
             gesture_period = 2 if (_gesture_detector is not None and getattr(_gesture_detector, "hand_seen", False)) else gesture_base_period
             if run_gesture_detail and pose_frame_count % gesture_period == 0 and run_face and run_companion_detail and run_inference:

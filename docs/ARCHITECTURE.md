@@ -12,7 +12,7 @@
 | 人脸追踪与分析 | reCamera SSCMA 摄像头 | reCamera yaw/pitch CAN 电机 | 人脸对准后并行展示情绪、专注、EAR/PERCLOS |
 | 声源 yaw 跟随 | ReSpeaker XVF3800 四麦阵列；reCamera 仅展示视频 | reCamera yaw 电机；ReSpeaker 12 LED 灯环 | USB DOA Event 驱动 yaw，pitch 始终为空；实体 LED 使用硬件 DOA 灯效 |
 | 会议录音 | ReSpeaker USB Audio + USB DOA | ReSpeaker LED；可选 reCamera yaw | 默认只录音；显式开启会议跟随后才驱动 yaw |
-| 手势交互 | reCamera SSCMA 摄像头 + MediaPipe Gesture Recognizer | Dashboard intent/toast/local feedback | Open Palm、Closed Fist、Thumb Up、Thumb Down、Victory 只映射陪伴 intent，不进入云台控制 |
+| 手势识别 | reCamera SSCMA 摄像头 + MediaPipe Gesture Recognizer | Dashboard recognition state | 只展示手势类别、置信度和稳定帧；不叠加交互语义、不进入云台控制 |
 | 健康/PWA | Dashboard localStorage + 实时 emotion/attention/eye/gaze state | 本地 PWA Notification | 护眼、久坐、喝水、疲劳、低专注、情绪关心通知在前端本地治理 |
 | LLM/日记 | DeepSeek 优先；智谱 GLM-4-Flash 兜底；端点本地 fallback | Dashboard 日记、反思、会议摘要 | 无云端 API key 时返回本地温和建议，不丢失日记 |
 | TTS/语音输出 | 智谱/OpenAI-compatible TTS + FastAPI 音频缓存 + Node-RED audio bridge；浏览器 Web Speech 作回退 | reCamera Gimbal 2002w 扬声器或浏览器 | 设备播放只走 `/recamera-control/v1/audio/*`，不进入云台控制 Event |
@@ -521,7 +521,7 @@ main_phase3 runtime snapshot ──> EventBus ──> FastAPI ──> Dashboard
 | 组件 | 所在位置 | 输入 | 输出与边界 |
 |---|---|---|---|
 | `GazeEstimator` | `vision/gaze_estimator.py` | MediaPipe Face Landmarker 虹膜/眼角点 | 粗粒度 `gaze`；只辅助 attention，不控制云台 |
-| `GestureDetector` | `vision/gesture_detector.py` | BGR 视频帧 + MediaPipe Gesture Recognizer | 稳定手势与陪伴 intent；不产生任何控制事件 |
+| `GestureDetector` | `vision/gesture_detector.py` | BGR 视频帧 + MediaPipe Gesture Recognizer | 稳定手势识别状态；不产生 intent 或控制事件 |
 | `EmotionInterventionPolicy` | `core/emotion_intervention.py` | `emotieff`、`attention`、`eye_metrics`、`gaze` | `proactive_intervention`；只产生陪伴状态和文案 |
 | 本地通知调度器 | `dashboard/home.html` | 前端计时、实时状态、localStorage | Notification/Service Worker 或站内 toast |
 
@@ -540,7 +540,7 @@ SSCMA JPEG
 
 SSCMA JPEG (每 3 个感知循环)
   -> GestureDetector
-  -> 置信度 >= 0.6 + 连续 4 帧 + intent 3s 冷却
+  -> 置信度、类别、左右手、连续稳定帧
   -> gesture state only
 
 聚合状态
@@ -591,17 +591,9 @@ SSCMA JPEG (每 3 个感知循环)
 }
 ```
 
-### 12.5 手势 intent 边界
+### 12.5 手势识别边界
 
-| Gesture Recognizer 类别 | intent | 消费方 |
-|---|---|---|
-| `Open_Palm` | `summon_xinyu` | `/home` 聊天区与 toast |
-| `Closed_Fist` | `pause_or_mute` | `/home` 当前提醒状态 |
-| `Thumb_Up` | `feedback_positive` | localStorage 轻量反馈 |
-| `Thumb_Down` | `feedback_negative` | localStorage 轻量反馈 |
-| `Victory` | `capture_positive_moment` | `/home` 日记草稿 |
-
-这五种 intent 均不进入 EventBus，不调用 Orchestrator，也不产生 `gimbal_*`、`feature_*` 或 `dpad_*`。
+Gesture Recognizer 结果只作为 `/api/state` 与 `/ws` 中的 `gesture` 状态展示。`intent` 保持为空，`intent_ready=false`，不进入 EventBus，不调用 Orchestrator，也不产生 `gimbal_*`、`feature_*` 或 `dpad_*`。
 
 ### 12.6 PWA 本地通知数据流
 

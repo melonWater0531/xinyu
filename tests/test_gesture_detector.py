@@ -43,7 +43,7 @@ class GestureDetectorTests(unittest.TestCase):
         self.assertTrue(state["available"])
         self.assertIn(state["reason"], {"no_gesture", ""})
 
-    def test_closed_fist_triggers_pause_once_without_pending_confirm(self) -> None:
+    def test_closed_fist_is_recognition_only_without_intent(self) -> None:
         detector = GestureDetector(model_path="/tmp/unused.task", stable_frames=2, cooldown_sec=10.0)
         detector._loaded = True
         detector._recognizer = _Recognizer("Closed_Fist")
@@ -51,9 +51,13 @@ class GestureDetectorTests(unittest.TestCase):
         first = detector.detect(np.zeros((32, 32, 3), dtype=np.uint8))
         second = detector.detect(np.zeros((32, 32, 3), dtype=np.uint8))
 
+        self.assertEqual(first["name"], "Closed_Fist")
+        self.assertEqual(second["name"], "Closed_Fist")
+        self.assertEqual(second["stable_frames"], 2)
+        self.assertGreaterEqual(second["progress"], 1.0)
+        self.assertEqual(second["intent"], "")
         self.assertFalse(first["intent_ready"])
-        self.assertTrue(second["intent_ready"])
-        self.assertEqual(second["intent"], "pause_or_mute")
+        self.assertFalse(second["intent_ready"])
         self.assertEqual(second["pending_confirm"], "")
         self.assertFalse(second["intent_confirmed"])
 

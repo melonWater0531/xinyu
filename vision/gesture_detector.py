@@ -1,12 +1,10 @@
-"""MediaPipe Gesture Recognizer wrapper for low-risk companion intents."""
+"""MediaPipe Gesture Recognizer wrapper for pure gesture recognition."""
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
-
 import cv2
 
 from utils.logger import get_logger
@@ -14,20 +12,6 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 MODEL_PATH = "models/gesture_recognizer.task"
-
-INTENTS = {
-    "Open_Palm": "summon_xinyu",
-    "Closed_Fist": "pause_or_mute",
-    "Thumb_Up": "feedback_positive",
-    "Thumb_Down": "feedback_negative",
-    "Victory": "capture_positive_moment",
-}
-
-
-# Intents that require a second confirmation gesture within the confirm window.
-# Closed_Fist/pause_or_mute is intentionally single-shot; cooldown prevents spam.
-CONFIRM_INTENTS = set()
-CONFIRM_WINDOW_SEC = 4.0
 
 
 @dataclass
@@ -42,10 +26,10 @@ class GestureState:
     updated_at: float = 0.0
     reason: str = ""
     progress: float = 0.0            # stable_count / needed, 0..1
-    cooldown_remaining: float = 0.0  # seconds until this intent can fire again
-    pending_confirm: str = ""        # intent awaiting a second confirmation
-    confirm_remaining: float = 0.0   # seconds left in the confirm window
-    intent_confirmed: bool = False   # two-stage intent fully confirmed
+    cooldown_remaining: float = 0.0
+    pending_confirm: str = ""
+    confirm_remaining: float = 0.0
+    intent_confirmed: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -67,10 +51,10 @@ class GestureState:
 
 
 class GestureDetector:
-    """Detect gestures and map them to companion intents only.
+    """Detect MediaPipe gesture classes without assigning interaction meaning.
 
-    This class never emits control events. It only returns stable UI intents for
-    FastAPI state snapshots.
+    This class never emits control events or semantic intents. It only returns
+    recognition state for FastAPI snapshots and the dashboard.
     """
 
     def __init__(
@@ -89,10 +73,6 @@ class GestureDetector:
         self._load_failed_reason = ""
         self._last_name = ""
         self._stable_count = 0
-        self._last_intent_at: dict[str, float] = {}
-        self._pending_confirm = ""      # two-stage intent awaiting confirmation
-        self._pending_confirm_at = 0.0
-        self._confirm_released = False  # gesture was dropped between the two stages
         self.hand_seen = False          # last detect() saw a hand (drives adaptive cadence)
 
     def _load(self) -> bool:
@@ -142,20 +122,12 @@ class GestureDetector:
             return GestureState(available=True, reason=f"detect_error:{str(exc)[:80]}").as_dict()
 
         now = time.time()
-        # Expire an unconfirmed two-stage intent
-        if self._pending_confirm and now - self._pending_confirm_at > CONFIRM_WINDOW_SEC:
-            self._pending_confirm = ""
 
         if not result.gestures:
             self._last_name = ""
             self._stable_count = 0
             self.hand_seen = bool(result.handedness)
-            if self._pending_confirm:
-                self._confirm_released = True
-            st = GestureState(available=True, reason="no_gesture")
-            st.pending_confirm = self._pending_confirm
-            st.confirm_remaining = max(0.0, CONFIRM_WINDOW_SEC - (now - self._pending_confirm_at)) if self._pending_confirm else 0.0
-            return st.as_dict()
+            return GestureState(available=True, reason="no_gesture").as_dict()
 
         self.hand_seen = True
         top = result.gestures[0][0]
@@ -170,42 +142,12 @@ class GestureDetector:
         else:
             self._last_name = name
             self._stable_count = 1
-            if self._pending_confirm and INTENTS.get(name, "") != self._pending_confirm:
-                self._confirm_released = True
 
-        intent = INTENTS.get(name, "")
-        ready = False
-        confirmed = False
-        if intent and conf >= self._min_conf and self._stable_count >= self._stable_needed:
-            if intent in CONFIRM_INTENTS:
-                if self._pending_confirm == intent and self._confirm_released:
-                    # Second stable detection (after a release) inside the window -> confirmed
-                    last = self._last_intent_at.get(intent, 0.0)
-                    if now - last >= self._cooldown:
-                        confirmed = True
-                        self._last_intent_at[intent] = now  # cooldown starts at confirmation
-                    self._pending_confirm = ""
-                elif not self._pending_confirm:
-                    last = self._last_intent_at.get(intent, 0.0)
-                    if now - last >= self._cooldown:
-                        # First stage: arm the confirm window; the gesture must be
-                        # released and re-formed before the second stage counts
-                        self._pending_confirm = intent
-                        self._pending_confirm_at = now
-                        self._confirm_released = False
-                        ready = True  # signals "first stage accepted" to the UI
-            else:
-                last = self._last_intent_at.get(intent, 0.0)
-                if now - last >= self._cooldown:
-                    ready = True
-                    self._last_intent_at[intent] = now
-
-        cooldown_remaining = 0.0
-        if intent:
-            last = self._last_intent_at.get(intent, 0.0)
-            cooldown_remaining = max(0.0, self._cooldown - (now - last)) if last else 0.0
-
-        progress = min(1.0, self._stable_count / max(1, self._stable_needed)) if intent else 0.0
+        progress = (
+            min(1.0, self._stable_count / max(1, self._stable_needed))
+            if conf >= self._min_conf
+            else 0.0
+        )
 
         return GestureState(
             available=True,
@@ -213,12 +155,6 @@ class GestureDetector:
             confidence=conf,
             handedness=handedness,
             stable_frames=self._stable_count,
-            intent=intent,
-            intent_ready=ready,
             updated_at=now,
             progress=progress,
-            cooldown_remaining=cooldown_remaining,
-            pending_confirm=self._pending_confirm,
-            confirm_remaining=max(0.0, CONFIRM_WINDOW_SEC - (now - self._pending_confirm_at)) if self._pending_confirm else 0.0,
-            intent_confirmed=confirmed,
         ).as_dict()
