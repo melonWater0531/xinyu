@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Tracking control parameters with explicit units. Phase 1B uses deadband, safe ROI, edge margin, smoothing, and motion-limit values; later lost/search fields remain reserved for Phase 1C. Missing or malformed config must not block startup and falls back to code defaults.",
+  "description": "Tracking control parameters with explicit units. Active follow uses face lock, person-anchor reacquire, deadband, safe ROI, edge margin, smoothing, and motion-limit values. Missing or malformed config must not block startup and falls back to code defaults.",
   "defaults_source": "current hardcoded runtime behavior in core/orchestrator_v2.py",
   "units": {
     "center_deadband_x_ratio": "frame_width_ratio",
@@ -24,6 +24,16 @@
     "search_pitch_sweep_deg": "degrees",
     "search_timeout_ms": "milliseconds",
     "search_command_speed": "degrees_per_second",
+    "person_confirm_frames": "frames",
+    "person_hold_ms": "milliseconds",
+    "person_head_target_y_ratio": "person_bbox_height_ratio_from_top",
+    "person_align_deadband_x_ratio": "frame_width_ratio",
+    "person_align_deadband_y_ratio": "frame_height_ratio",
+    "person_align_max_yaw_delta_deg": "degrees",
+    "person_align_max_pitch_delta_deg": "degrees",
+    "person_align_command_speed": "degrees_per_second",
+    "person_face_roi_expand_ratio": "person_bbox_width_ratio",
+    "person_face_roi_height_ratio": "person_bbox_height_ratio",
     "demo_stop_shake_mode": "boolean",
     "demo_hold_min_x_ratio": "frame_width_ratio",
     "demo_hold_max_x_ratio": "frame_width_ratio",
@@ -68,7 +78,17 @@
     "search_pitch_deg_per_sec": 0,
     "search_pitch_sweep_deg": 8,
     "search_timeout_ms": 12000,
-    "search_command_speed": 300
+    "search_command_speed": 300,
+    "person_confirm_frames": 1,
+    "person_hold_ms": 2500,
+    "person_head_target_y_ratio": 0.28,
+    "person_align_deadband_x_ratio": 0.06,
+    "person_align_deadband_y_ratio": 0.08,
+    "person_align_max_yaw_delta_deg": 1.5,
+    "person_align_max_pitch_delta_deg": 1,
+    "person_align_command_speed": 140,
+    "person_face_roi_expand_ratio": 0.12,
+    "person_face_roi_height_ratio": 0.45
   },
   "performance_budget": {
     "face_detection_hz": "8-15",

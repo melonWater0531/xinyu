@@ -50,6 +50,8 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             "deadband_x_px", "deadband_y_px", "safe_roi", "edge_margin",
             "target_yaw_deg", "target_pitch_deg", "command_yaw_deg",
             "command_pitch_deg", "centered_reason", "centered_block_reason",
+            "person_visible", "locked_person_bbox", "face_search_roi",
+            "person_align_reason", "reacquire_reason",
             "face_detection_ms", "embedding_ms", "tracker_update_ms",
             "control_loop_ms", "vision_hz", "control_hz", "telemetry_hz",
             "ui_push_hz", "tracking_config_loaded", "tracking_config_path",
@@ -118,6 +120,95 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
             api._latest_pose_persons[:] = old_persons
             api._perception_diag = old_diag
             api._observation_id = old_observation_id
+            api._runtime_cache = old_runtime
+
+    def test_person_roi_face_fallback_populates_face_observation(self) -> None:
+        class FakeVideo:
+            connected = True
+            fps = 12.5
+            last_frame_age_ms = 42
+            resolution = [1280, 720]
+            boxes = [[640, 360, 300, 500, 88, 0]]
+
+        old_video = api.video_client
+        old_persons = list(api._latest_pose_persons)
+        old_detector = api._detect_yunet_faces_in_roi
+        old_observation_id = api._observation_id
+        old_runtime = dict(api._runtime_cache)
+        try:
+            api.video_client = FakeVideo()
+            api._latest_pose_persons[:] = []
+            api._runtime_cache = {
+                **api._runtime_cache,
+                "active_feature": "single_face_analysis",
+                "session_id": "roi-session",
+            }
+
+            def fake_roi_detector(_img, roi):
+                self.assertIsNotNone(roi)
+                fake_face = np.zeros(15, dtype=float)
+                fake_face[0:4] = [20, 20, 80, 80]
+                fake_face[14] = 0.91
+                return [(0.91, [560, 170, 620, 230], fake_face)]
+
+            api._detect_yunet_faces_in_roi = fake_roi_detector
+            persons = api._refine_faces(np.zeros((720, 1280, 3), dtype=np.uint8), [])
+            api._latest_pose_persons[:] = persons
+            payload = api._build_vision_observation()
+            self.assertEqual(len(payload["faces"]), 1)
+            self.assertEqual(payload["faces"][0]["source"], "yunet_person_roi")
+            self.assertIsNotNone(payload["faces"][0]["track_id"])
+        finally:
+            api.video_client = old_video
+            api._latest_pose_persons[:] = old_persons
+            api._detect_yunet_faces_in_roi = old_detector
+            api._observation_id = old_observation_id
+            api._runtime_cache = old_runtime
+
+    def test_stale_video_frame_clears_pose_and_blocks_observation(self) -> None:
+        class StaleVideo:
+            connected = True
+            fps = 7.4
+            last_frame_age_ms = 104000
+            resolution = [1280, 720]
+            boxes = [[640, 360, 1200, 700, 72, 0]]
+
+        old_video = api.video_client
+        old_persons = list(api._latest_pose_persons)
+        old_diag = dict(api._perception_diag)
+        old_runtime = dict(api._runtime_cache)
+        try:
+            api.video_client = StaleVideo()
+            api._latest_pose_persons[:] = [
+                SimpleNamespace(
+                    _track_id=11,
+                    _lost_frames=0,
+                    _source="face_tracker_v2",
+                    _is_primary=True,
+                    bbox=(307.2, -210.4, 659.9, 246.4),
+                    conf=0.59,
+                    face_center=(483.6, 18.0),
+                    face_conf=0.59,
+                    keypoints=[],
+                )
+            ]
+            api._runtime_cache = {
+                **api._runtime_cache,
+                "active_feature": "single_face_analysis",
+                "session_id": "stale-session",
+            }
+            pose = api._build_pose_data()
+            self.assertEqual(pose["persons"], [])
+            self.assertEqual(api._extract_detections(), [])
+            with self.assertRaisesRegex(RuntimeError, "stale_frame"):
+                api._build_vision_observation()
+            diag = api._perception_diagnostics()
+            self.assertEqual(diag["latest_face_count"], 0)
+            self.assertEqual(diag["latest_person_count"], 0)
+        finally:
+            api.video_client = old_video
+            api._latest_pose_persons[:] = old_persons
+            api._perception_diag = old_diag
             api._runtime_cache = old_runtime
 
     def test_voice_target_enum_accepts_recamera_aliases(self) -> None:
@@ -340,9 +431,10 @@ class BackendContractTests(unittest.IsolatedAsyncioTestCase):
         try:
             api._cloud_llm_complete = no_cloud
             chat = await api.api_chat({"message": "hello", "context": "", "user_name": "test"})
-            self.assertEqual(set(chat.keys()), {"reply", "source", "emotion"})
+            self.assertEqual(set(chat.keys()), {"reply", "source", "emotion", "conversation_id"})
             self.assertEqual(chat["source"], "template")
             self.assertTrue(chat["reply"])
+            self.assertTrue(chat["conversation_id"])
 
             reflect = await api.api_llm_reflect({"mode": "diary", "emotion": "Happiness", "attention": 80})
             self.assertEqual(set(reflect.keys()), {"diary", "reply", "text", "source", "time"})

@@ -202,13 +202,44 @@ class ControlClosureTests(unittest.TestCase):
 
     def test_face_requires_two_tracked_frames_and_rejects_untracked_fallback(self) -> None:
         self.start("single_face_analysis")
-        tracked = {"track_id": 11, "cx": .5, "cy": .32, "confidence": .9, "lost_frames": 0}
+        tracked = {"track_id": 11, "cx": .5, "cy": .32, "confidence": .6, "lost_frames": 0}
         self.orch.handle_event(self.observation(1, faces=[tracked]))
         self.assertIsNone(self.orch.locked_track_id)
         untracked = {"track_id": None, "cx": .5, "cy": .32, "confidence": .99, "lost_frames": 0}
         self.orch.handle_event(self.observation(2, faces=[untracked]))
         self.assertIsNone(self.orch.locked_track_id)
         self.assertEqual(self.orch.lock_state, "acquiring")
+
+    def test_soft_face_candidate_holds_person_motion_before_lock(self) -> None:
+        self.start("single_face_analysis")
+        face = {"track_id": 11, "cx": .5, "cy": .18, "confidence": .5, "lost_frames": 0}
+        person = {"bbox": [40, 20, 1180, 710], "cx": .48, "cy": .3, "confidence": .9}
+        self.assertIsNone(self.orch.handle_event(self.observation(1, faces=[face], persons=[person])))
+        runtime = self.orch.runtime_state()
+        self.assertEqual(runtime["tracking_phase"], "face_candidate_hold")
+        self.assertEqual(runtime["command_suppressed_reason"], "face_candidate_hold")
+
+    def test_out_of_frame_face_candidate_is_rejected_for_lock(self) -> None:
+        self.start("single_face_analysis")
+        face = {
+            "track_id": 19,
+            "cx": .38,
+            "cy": .025,
+            "bbox": [307.2, -210.4, 659.9, 246.4],
+            "confidence": .9,
+            "lost_frames": 0,
+            "keypoints": [
+                {"x": 352, "y": -41, "name": "left_eye"},
+                {"x": 483, "y": -48, "name": "right_eye"},
+                {"x": 366, "y": 30, "name": "nose"},
+                {"x": 359, "y": 130, "name": "left_mouth"},
+                {"x": 453, "y": 125, "name": "right_mouth"},
+            ],
+        }
+        for oid in range(1, 4):
+            self.assertIsNone(self.orch.handle_event(self.observation(oid, faces=[face])))
+        self.assertIsNone(self.orch.locked_track_id)
+        self.assertEqual(self.orch.runtime_state()["tracking_phase"], "face_candidate_hold")
 
     def test_locked_face_occlusion_does_not_fall_back_to_body(self) -> None:
         self.start("single_face_analysis")
@@ -220,7 +251,7 @@ class ControlClosureTests(unittest.TestCase):
         self.assertEqual(self.orch.locked_track_id, 12)
         self.assertEqual(self.orch.lock_state, "occlusion_hold")
 
-    def test_locked_face_loss_enters_search_instead_of_body_align(self) -> None:
+    def test_locked_face_loss_reacquires_inside_person_anchor(self) -> None:
         self.start("single_face_analysis")
         face = {"track_id": 17, "cx": .5, "cy": .32, "confidence": .9, "lost_frames": 0}
         for oid in range(1, 4):
@@ -230,9 +261,10 @@ class ControlClosureTests(unittest.TestCase):
         command = self.orch.handle_event(self.observation(4, persons=[person]))
         runtime = self.orch.runtime_state()
         self.assertIsNone(command)
-        self.assertNotEqual(runtime["tracking_phase"], "body_align")
-        self.assertEqual(runtime["tracking_phase"], "search_grace")
-        self.assertEqual(runtime["command_suppressed_reason"], "waiting_locked_face")
+        self.assertEqual(runtime["tracking_phase"], "face_reacquire_in_person")
+        self.assertEqual(runtime["reacquire_reason"], "person_anchor")
+        self.assertTrue(runtime["person_visible"])
+        self.assertIsNotNone(runtime["face_search_roi"])
 
     def test_candidate_detection_gap_does_not_trigger_body_correction(self) -> None:
         self.start("single_face_analysis")
@@ -325,7 +357,7 @@ class ControlClosureTests(unittest.TestCase):
     def test_demo_stop_shake_body_align_only_allows_very_small_correction(self) -> None:
         self.start("single_face_analysis")
         self.enable_demo_stop_shake()
-        person = {"bbox": [0, 0, 1280, 720], "cx": .9, "cy": .8, "confidence": .95}
+        person = {"bbox": [900, 360, 1260, 710], "cx": .84, "cy": .64, "confidence": .95}
         command = None
         for oid in range(1, 4):
             command = self.orch.handle_event(self.observation(oid, persons=[person]))
@@ -335,14 +367,15 @@ class ControlClosureTests(unittest.TestCase):
         self.assertIsNotNone(command)
         self.assertLessEqual(abs(command.yaw - 180), 0.301)
         self.assertLessEqual(abs(command.pitch - 90), 0.201)
+        self.assertEqual(command.reason, "person_align")
         self.assertEqual(runtime["demo_zone"], "BODY_ALIGN_ONLY")
         self.assertTrue(runtime["body_align_suppressed"])
         self.assertTrue(runtime["command_sent"])
 
-    def test_body_align_default_is_bounded_for_coarse_seek(self) -> None:
+    def test_person_align_default_allows_visible_pitch_for_coarse_seek(self) -> None:
         self.start("single_face_analysis")
         self.orch._control_params["demo_stop_shake_mode"] = 0.0
-        person = {"bbox": [0, 0, 1280, 720], "cx": .9, "cy": .8, "confidence": .95}
+        person = {"bbox": [900, 360, 1260, 710], "cx": .84, "cy": .64, "confidence": .95}
         command = None
         for oid in range(1, 4):
             command = self.orch.handle_event(self.observation(oid, persons=[person]))
@@ -350,24 +383,40 @@ class ControlClosureTests(unittest.TestCase):
                 break
         runtime = self.orch.runtime_state()
         self.assertIsNotNone(command)
-        self.assertEqual(command.reason, "body_align")
-        self.assertLessEqual(abs(command.yaw - 180), 0.451)
-        self.assertLessEqual(abs(command.pitch - 90), 0.251)
-        self.assertLessEqual(command.speed, 80)
+        self.assertEqual(command.reason, "person_align")
+        self.assertLessEqual(abs(command.yaw - 180), 1.501)
+        self.assertLessEqual(abs(command.pitch - 90), 1.001)
+        self.assertGreater(abs(command.pitch - 90), 0.25)
+        self.assertLessEqual(command.speed, 140)
         self.assertTrue(runtime["body_align_suppressed"])
+        self.assertEqual(runtime["person_align_reason"], "person_align")
+        self.assertIsNotNone(runtime["face_search_roi"])
 
-    def test_body_align_does_not_prevent_limited_face_search(self) -> None:
+    def test_person_anchor_prevents_wide_search_while_person_visible(self) -> None:
         self.start("single_face_analysis")
         self.orch._control_params["demo_stop_shake_mode"] = 0.0
-        person = {"bbox": [0, 0, 1280, 720], "cx": .9, "cy": .8, "confidence": .95}
+        person = {"bbox": [900, 360, 1260, 710], "cx": .84, "cy": .64, "confidence": .95}
         self.orch.handle_event(self.observation(1, persons=[person]))
-        self.orch._no_target_since -= 0.7
         self.orch._last_motion_at -= 0.2
         command = self.orch.handle_event(self.observation(2, persons=[person]))
         runtime = self.orch.runtime_state()
         self.assertIsNotNone(command)
-        self.assertEqual(command.reason, "limited_search")
-        self.assertEqual(runtime["tracking_phase"], "limited_search")
+        self.assertEqual(command.reason, "person_align")
+        self.assertEqual(runtime["tracking_phase"], "person_align")
+
+    def test_person_anchor_waits_for_pending_motion_before_accumulating(self) -> None:
+        self.start("single_face_analysis")
+        self.orch._control_params["demo_stop_shake_mode"] = 0.0
+        person = {"bbox": [900, 360, 1260, 710], "cx": .84, "cy": .64, "confidence": .95}
+        self.assertIsNone(self.orch.handle_event(self.observation(1, persons=[person])))
+        first = self.orch.handle_event(self.observation(2, persons=[person]))
+        self.assertIsNotNone(first)
+        self.orch.update_gimbal_readback(180, 90)
+        self.orch._last_motion_at -= 0.2
+        second = self.orch.handle_event(self.observation(3, persons=[person]))
+        runtime = self.orch.runtime_state()
+        self.assertIsNone(second)
+        self.assertEqual(runtime["command_suppressed_reason"], "pending_motion")
 
     def test_demo_stop_shake_missing_face_holds_before_search(self) -> None:
         self.start("single_face_analysis")

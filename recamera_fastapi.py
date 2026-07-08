@@ -72,6 +72,8 @@ from vision.person_stabilizer import StablePersonCounter
 
 logger = get_logger(__name__)
 
+STALE_FRAME_MAX_AGE_MS = 1000
+
 
 # NOTE: FastAPI is UI + telemetry only. It emits Events to the localhost
 # EventBus and never imports or calls the hardware control layer.
@@ -381,8 +383,36 @@ def _release_face_tracker_if_idle(idle_mode: bool) -> None:
         gc.collect()
     except Exception:
         pass
+    _latest_pose_persons.clear()
+    _attn_result.update({"has_face": False})
+    _mp_face_result.update({"success": False})
     if "_perception_stats" in globals():
         _perception_stats["stage_ms"]["face"] = 0.0
+
+
+def _video_frame_age_ms() -> Optional[int]:
+    return video_client.last_frame_age_ms if video_client else None
+
+
+def _video_frame_stale(max_age_ms: int = STALE_FRAME_MAX_AGE_MS) -> bool:
+    age = _video_frame_age_ms()
+    return age is None or age > max_age_ms
+
+
+def _clear_stale_perception_cache(reason: str = "stale_frame") -> None:
+    _latest_pose_persons.clear()
+    _attn_result.update({"has_face": False})
+    _mp_face_result.update({"success": False})
+    _update_perception_diagnostics(
+        latest_pose_count=0,
+        latest_face_count=0,
+        latest_sources=[],
+        observation_faces=0,
+        observation_persons=0,
+        last_publish_ok=False,
+        last_publish_accepted=False,
+        last_publish_error=reason,
+    )
 
 
 _gimbal_tlm = {
@@ -568,6 +598,11 @@ _TRACKING_TELEMETRY_DEFAULTS = {
     "demo_hold_active": False,
     "demo_hold_reason": "",
     "body_align_suppressed": False,
+    "person_visible": False,
+    "locked_person_bbox": None,
+    "face_search_roi": None,
+    "person_align_reason": "",
+    "reacquire_reason": "",
     "motion_blocked_reason": "",
     "command_delta_yaw_deg": None,
     "command_delta_pitch_deg": None,
@@ -785,7 +820,10 @@ def _perception_diagnostics(**overrides) -> dict:
         "loop_sleep_ms": _perception_stats.get("loop_sleep_ms") if "_perception_stats" in globals() else None,
         "stage_ms": dict(_perception_stats.get("stage_ms", {})) if "_perception_stats" in globals() else {},
     })
-    pose_persons = [p for p in list(_latest_pose_persons) if int(getattr(p, "_lost_frames", 0) or 0) == 0]
+    if _video_frame_stale():
+        pose_persons = []
+    else:
+        pose_persons = [p for p in list(_latest_pose_persons) if int(getattr(p, "_lost_frames", 0) or 0) == 0]
     face_count = sum(1 for p in pose_persons if getattr(p, "face_center", None) is not None)
     sources = sorted({
         str(getattr(p, "_source", "") or "unknown")
@@ -2364,6 +2402,44 @@ def _get_yunet(w: int, h: int):
     return _yunet_detector
 
 
+def _person_head_roi(box, frame_w: int, frame_h: int, *, expand: float = 0.12, height_ratio: float = 0.45):
+    if box is None or len(box) < 4:
+        return None
+    x1, y1, x2, y2 = [float(v) for v in box[:4]]
+    bw, bh = max(1.0, x2 - x1), max(1.0, y2 - y1)
+    left = max(0, int(round(x1 - bw * expand)))
+    top = max(0, int(round(y1)))
+    right = min(int(frame_w), int(round(x2 + bw * expand)))
+    bottom = min(int(frame_h), int(round(y1 + bh * height_ratio)))
+    if right - left < 24 or bottom - top < 24:
+        return None
+    return left, top, right, bottom
+
+
+def _detect_yunet_faces_in_roi(img, roi):
+    if img is None or roi is None:
+        return []
+    left, top, right, bottom = roi
+    crop = img[top:bottom, left:right]
+    if crop.size == 0:
+        return []
+    h, w = crop.shape[:2]
+    try:
+        yunet = _get_yunet(w, h)
+        _, faces = yunet.detect(crop)
+    except Exception as e:
+        logger.debug("YuNet ROI detect error: %s", str(e)[:80])
+        return []
+    if faces is None:
+        return []
+    results = []
+    for face in faces:
+        fx, fy, fw, fh = float(face[0]), float(face[1]), float(face[2]), float(face[3])
+        conf = float(face[14]) if len(face) > 14 else 0.8
+        results.append((conf, [fx + left, fy + top, fx + fw + left, fy + fh + top], face))
+    return results
+
+
 def _refine_faces(img, persons: list) -> list:
     """
     Use YuNet ONNX face detector for accurate facial keypoints.
@@ -2418,10 +2494,11 @@ def _refine_faces(img, persons: list) -> list:
                 p._source = "pose_face"
                 result.append(p)
 
-    # If no face exists, use device person boxes for shoulders only; do not fake faces.
+    # If no global face exists, search each detected person's head ROI. This is
+    # the explicit "find person, then find face in that person" fallback.
     if not result:
         device_boxes = video_client.boxes if video_client else []
-        for box in device_boxes[:5]:
+        for idx, box in enumerate(device_boxes[:5]):
             if len(box) < 6: continue
             cls = int(box[5]) if len(box) > 5 else -1
             if cls != 0: continue  # person only
@@ -2431,6 +2508,28 @@ def _refine_faces(img, persons: list) -> list:
             if bh < 50 or bw*bh/(w*h) < 0.02: continue  # skip tiny boxes
             x1, y1 = cx_b-bw/2, cy_b-bh/2
             x2, y2 = cx_b+bw/2, cy_b+bh/2
+            roi = _person_head_roi((x1, y1, x2, y2), w, h)
+            roi_faces = _detect_yunet_faces_in_roi(img, roi)
+            if roi_faces:
+                face_conf, face_box, face = max(roi_faces, key=lambda item: item[0])
+                fx1, fy1, fx2, fy2 = face_box
+                fcx, fcy = (fx1 + fx2) / 2.0, (fy1 + fy2) / 2.0
+                kps = []
+                if len(face) >= 14 and roi is not None:
+                    left, top, _, _ = roi
+                    kps.append(Keypoint(x=float(face[8]) + left,  y=float(face[9]) + top,  conf=0.95, name="nose"))
+                    kps.append(Keypoint(x=float(face[4]) + left,  y=float(face[5]) + top,  conf=0.95, name="right_eye"))
+                    kps.append(Keypoint(x=float(face[6]) + left,  y=float(face[7]) + top,  conf=0.95, name="left_eye"))
+                    kps.append(Keypoint(x=float(face[10]) + left, y=float(face[11]) + top, conf=0.90, name="right_mouth"))
+                    kps.append(Keypoint(x=float(face[12]) + left, y=float(face[13]) + top, conf=0.90, name="left_mouth"))
+                pp = PersonPose(
+                    bbox=(x1, y1, x2, y2), conf=max(conf, face_conf),
+                    keypoints=kps, face_center=(fcx, fcy), face_conf=face_conf)
+                pp._source = "yunet_person_roi"
+                pp._track_id = 10_000 + idx
+                pp._lost_frames = 0
+                result.append(pp)
+                continue
             kps = [
                 Keypoint(x=x1+bw*0.2, y=cy_b+bh*0.05, conf=0.65, name="left_shoulder"),
                 Keypoint(x=x2-bw*0.2, y=cy_b+bh*0.05, conf=0.65, name="right_shoulder"),
@@ -2438,6 +2537,8 @@ def _refine_faces(img, persons: list) -> list:
             pp = PersonPose(bbox=(x1,y1,x2,y2), conf=conf, keypoints=kps,
                             face_center=None, face_conf=0)
             pp._source = "person_bbox"
+            pp._track_id = 10_000 + idx
+            pp._lost_frames = 0
             result.append(pp)
 
     return result
@@ -2445,6 +2546,10 @@ def _refine_faces(img, persons: list) -> list:
 
 def _build_pose_data() -> dict:
     """Convert latest pose persons to JSON-serializable dict (all native Python types)."""
+    if _video_frame_stale():
+        _latest_pose_persons.clear()
+        stable = _person_count_stabilizer.update(0)
+        return {"persons": [], "count": 0, **stable}
     persons = []
     for p in _latest_pose_persons:
         if int(getattr(p, "_lost_frames", 0) or 0) != 0:
@@ -2472,7 +2577,10 @@ def _build_pose_data() -> dict:
 def _build_vision_observation() -> dict:
     """Build normalized, current-frame candidates for the control runtime."""
     global _observation_id
+    if _video_frame_stale():
+        raise RuntimeError(f"stale_frame:{_video_frame_age_ms()}")
     _observation_id += 1
+    frame_age_ms = float(_video_frame_age_ms() or 0.0)
     width, height = (video_client.resolution if video_client else [1920, 1080])
     width, height = max(1, int(width)), max(1, int(height))
     stage_ms = dict(_perception_stats.get("stage_ms", {})) if "_perception_stats" in globals() else {}
@@ -2489,6 +2597,7 @@ def _build_vision_observation() -> dict:
             "bbox": person.get("bbox"),
             "confidence": float(person.get("face_conf", 0.0)),
             "lost_frames": 0,
+            "source": person.get("source", ""),
             "keypoints": person.get("keypoints", []),
         })
     people = []
@@ -2506,7 +2615,7 @@ def _build_vision_observation() -> dict:
     payload = {
         "session_id": str(_runtime_cache.get("session_id", "")),
         "observation_id": _observation_id,
-        "captured_at": time.time() * 1000.0,
+        "captured_at": time.time() * 1000.0 - frame_age_ms,
         "frame_size": {"width": width, "height": height},
         "face_detection_ms": stage_ms.get("face"),
         "embedding_ms": None,
@@ -2531,6 +2640,9 @@ def _build_vision_observation() -> dict:
 async def _publish_vision_observation() -> None:
     feature = str(_runtime_cache.get("active_feature", "inactive"))
     if feature not in {"single_face_analysis", "multi_sound_yaw", "meeting_sound_yaw", "meeting_recording"}:
+        return
+    if _video_frame_stale():
+        _clear_stale_perception_cache(f"stale_frame:{_video_frame_age_ms()}")
         return
     payload = _build_vision_observation()
     if not payload["session_id"]:
@@ -2618,7 +2730,7 @@ def _json_clean(value):
 def _extract_detections() -> list:
     """Convert SSCMA boxes [cx, cy, w, h, conf, cls] to UI/observer detection dicts."""
     detections = []
-    if video_client:
+    if video_client and not _video_frame_stale():
         for box in video_client.boxes:
             if len(box) >= 6:
                 cx_b, cy_b, bw, bh = float(box[0]), float(box[1]), float(box[2]), float(box[3])

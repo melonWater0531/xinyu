@@ -41,6 +41,11 @@ _TELEMETRY_FIELDS = {
     "demo_hold_active": False,
     "demo_hold_reason": "",
     "body_align_suppressed": False,
+    "person_visible": False,
+    "locked_person_bbox": None,
+    "face_search_roi": None,
+    "person_align_reason": "",
+    "reacquire_reason": "",
     "motion_blocked_reason": "",
     "command_delta_yaw_deg": None,
     "command_delta_pitch_deg": None,
@@ -119,7 +124,7 @@ class Orchestrator:
         self.default_speed = int(default_speed)
         self.framing_mode = "upper_body"
         self.target_x, self.target_y = 0.5, 0.32
-        self.face_confidence_threshold = 0.65
+        self.face_confidence_threshold = 0.55
         self.lock_confirm_required = 3
         # Speaker-seek fast confirm: right after an audio_coarse turn we accept
         # a face in 1 frame at high confidence (2 frames otherwise) instead of 3.
@@ -164,6 +169,9 @@ class Orchestrator:
         self._lock_candidate_frames = 0
         self._lock_candidate_seen_at = 0.0
         self._face_lock_established = False
+        self._locked_person_bbox = None
+        self._last_person_seen_at = 0.0
+        self._person_align_frames = 0
         self._outside_frames = 0
         self._last_motion_at = 0.0
         self._last_yaw_direction = self._last_pitch_direction = 0
@@ -301,7 +309,8 @@ class Orchestrator:
         size = event.payload.get("frame_size") or {}
         self.frame_width = max(1, int(size.get("width", self.frame_width)))
         self.frame_height = max(1, int(size.get("height", self.frame_height)))
-        faces = [x for x in event.payload.get("faces", []) if int(x.get("lost_frames", 0) or 0) == 0]
+        faces = [x for x in event.payload.get("faces", [])
+                 if int(x.get("lost_frames", 0) or 0) == 0 and self._face_in_frame(x)]
         persons = event.payload.get("persons", [])
         self._clear_current_target_telemetry()
         command = self._single(faces, persons) if self.session.mode is ControlMode.SINGLE_FACE_ANALYSIS else self._multi(faces)
@@ -313,6 +322,9 @@ class Orchestrator:
 
     def _single(self, faces, persons):
         now = time.monotonic()
+        person = self._best_person(persons)
+        if person:
+            self._remember_person(person)
         face = self._locked(faces)
         if face is None and self.locked_track_id is not None and now - self._last_lock_seen <= self.occlusion_hold_s:
             self.lock_state = "occlusion_hold"
@@ -335,28 +347,62 @@ class Orchestrator:
             self.tracking_phase = "reacquiring" if self._face_lock_established else "acquiring"
             self._command_suppressed_reason = "lock_confirmation"
             return None
+        if self._soft_face_candidate(faces):
+            self.tracking_phase = "face_candidate_hold"
+            self.lock_state = "reacquiring" if self._face_lock_established else "acquiring"
+            self._command_suppressed_reason = "face_candidate_hold"
+            self._telemetry.update({
+                "motion_blocked_reason": "face_candidate_hold",
+                "command_sent": False,
+            })
+            return None
         if not self._face_lock_established and now - self._lock_candidate_seen_at <= .6:
             self.tracking_phase = "acquiring"
             self._command_suppressed_reason = "candidate_gap_hold"
             return None
         if self._face_lock_established:
+            if person or self._recent_person(now):
+                self._unlock(preserve_established=True)
+                self.lock_state = "reacquiring"
+                self.tracking_phase = "face_reacquire_in_person"
+                self._command_suppressed_reason = ""
+                self.fsm.transition(Event.make("vision", "target_detected", "orchestrator"))
+                return self._track(self._person_control_item(person), "face_reacquire_in_person")
             self.lock_state = "reacquiring"
             self._command_suppressed_reason = "waiting_locked_face"
             self.fsm.transition(Event.make("vision", "target_lost", "orchestrator"))
             return self._search(now)
-        person = self._best_person(persons)
         if person:
             self._vision_lost_frames = 0
-            if self._no_target_since is None:
-                self._no_target_since = now
-            search_after_ms = self._param("demo_search_after_ms") if self._demo_mode() else self._param("search_after_ms")
-            if now - self._no_target_since >= search_after_ms / 1000.0:
-                self.fsm.transition(Event.make("vision", "target_lost", "orchestrator"))
-                return self._search(now)
-            self.tracking_phase = "body_align"
+            self._reset_search()
+            if self._person_align_frames < int(round(self._param("person_confirm_frames"))):
+                self.tracking_phase = "person_acquire"
+                self.lock_state = "acquiring"
+                self._command_suppressed_reason = "person_confirmation"
+                self._telemetry.update({
+                    "person_visible": True,
+                    "locked_person_bbox": self._normalize_bbox(person.get("bbox")),
+                    "face_search_roi": self._person_face_roi(person),
+                    "person_align_reason": "person_confirmation",
+                })
+                return None
+            self.tracking_phase = "person_align"
             self.lock_state = "acquiring"
             self.fsm.transition(Event.make("vision", "target_detected", "orchestrator"))
-            return self._track(person, "body_align")
+            return self._track(self._person_control_item(person), "person_align")
+        if self._recent_person(now):
+            self._vision_lost_frames = 0
+            self.tracking_phase = "face_search_in_person"
+            self.lock_state = "reacquiring" if self._face_lock_established else "acquiring"
+            self._command_suppressed_reason = "person_hold"
+            self._telemetry.update({
+                "person_visible": False,
+                "locked_person_bbox": self._locked_person_bbox,
+                "face_search_roi": self._person_face_roi({"bbox": self._locked_person_bbox}),
+                "person_align_reason": "recent_person_hold",
+                "motion_blocked_reason": "person_hold",
+            })
+            return None
         self._vision_lost_frames += 1
         self.fsm.transition(Event.make("vision", "target_lost", "orchestrator"))
         return self._search(now)
@@ -507,6 +553,11 @@ class Orchestrator:
             "demo_hold_active": False,
             "demo_hold_reason": "",
             "body_align_suppressed": False,
+            "person_visible": reason in {"body_align", "person_align", "face_reacquire_in_person"},
+            "locked_person_bbox": self._locked_person_bbox,
+            "face_search_roi": item.get("face_search_roi") or self._person_face_roi(item),
+            "person_align_reason": "",
+            "reacquire_reason": "person_anchor" if reason == "face_reacquire_in_person" else "",
             "motion_blocked_reason": "",
             "command_delta_yaw_deg": None,
             "command_delta_pitch_deg": None,
@@ -520,7 +571,11 @@ class Orchestrator:
         if not self._demo_mode():
             ex, ey = self._edge_adjusted_error(ex, ey, track_box)
         self._tracking_error = {"x": round(ex, 4), "y": round(ey, 4)}
-        enter, remain, centered_reason, centered_block_reason = self._centered_conditions(cx, cy, track_box)
+        person_reason = reason in {"body_align", "person_align", "face_reacquire_in_person"}
+        if person_reason:
+            enter, remain, centered_reason, centered_block_reason = self._person_centered_conditions(cx, cy)
+        else:
+            enter, remain, centered_reason, centered_block_reason = self._centered_conditions(cx, cy, track_box)
         self._update_target_telemetry(item, box, track_box, cx, cy, ex, ey, centered_reason, centered_block_reason)
         if self._demo_hold_condition(cx, cy, reason):
             self._centered = True
@@ -539,7 +594,11 @@ class Orchestrator:
         if enter or (self._centered and remain):
             self._centered = True
             self.lock_state = "centered" if self.locked_track_id is not None else self.lock_state
-            self.tracking_phase = "speaker_centered" if "speaker" in reason else "locked_centered"
+            if person_reason:
+                self.tracking_phase = "face_search_in_person"
+                self._telemetry["person_align_reason"] = "person_anchor_centered"
+            else:
+                self.tracking_phase = "speaker_centered" if "speaker" in reason else "locked_centered"
             self._outside_frames = 0
             self._command_suppressed_reason = "inside_deadzone"
             self._telemetry["centered_reason"] = centered_reason
@@ -559,14 +618,20 @@ class Orchestrator:
         elapsed_since_motion = max(min_interval_s, now - self._last_motion_at) if self._last_motion_at else min_interval_s
         yaw_limit = min(self._param("max_yaw_delta_deg_per_tick"), self._param("max_yaw_deg_per_sec") * elapsed_since_motion)
         pitch_limit = min(self._param("max_pitch_delta_deg_per_tick"), self._param("max_pitch_deg_per_sec") * elapsed_since_motion)
-        if reason == "body_align":
-            yaw_limit = min(yaw_limit, 0.3 if self._demo_mode() else 0.45)
-            pitch_limit = min(pitch_limit, 0.2 if self._demo_mode() else 0.25)
+        if person_reason:
+            yaw_limit = min(yaw_limit, 0.3 if self._demo_mode() else self._param("person_align_max_yaw_delta_deg"))
+            pitch_limit = min(pitch_limit, 0.2 if self._demo_mode() else self._param("person_align_max_pitch_delta_deg"))
             self._telemetry["body_align_suppressed"] = True
+            self._telemetry["person_align_reason"] = reason
         yaw_step = self._clamp(-ex*45.0, -yaw_limit, yaw_limit)
         pitch_step = self._clamp(ey*30.0, -pitch_limit, pitch_limit)
-        yaw_pending = self._gimbal_yaw is not None and abs(self._gimbal_yaw-self._yaw_target) > 1.5
-        pitch_pending = self._gimbal_pitch is not None and abs(self._gimbal_pitch-self._pitch_target) > 1.5
+        pending_threshold = 0.5 if person_reason else 1.5
+        yaw_pending = self._gimbal_yaw is not None and abs(self._gimbal_yaw-self._yaw_target) > pending_threshold
+        pitch_pending = self._gimbal_pitch is not None and abs(self._gimbal_pitch-self._pitch_target) > pending_threshold
+        if person_reason and (yaw_pending or pitch_pending):
+            self._command_suppressed_reason = "pending_motion"
+            self._telemetry["motion_blocked_reason"] = "pending_motion"
+            return None
         yaw_step = self._damped_axis(yaw_step, "yaw", yaw_pending)
         pitch_step = self._damped_axis(pitch_step, "pitch", pitch_pending)
         if abs(yaw_step) < .01 and abs(pitch_step) < .01:
@@ -587,8 +652,8 @@ class Orchestrator:
             return None
         mag = max(abs(ex), abs(ey))
         speed = 360 if mag > .25 else 240 if mag > .10 else 120
-        if reason == "body_align":
-            speed = min(speed, 80)
+        if person_reason:
+            speed = min(speed, 80 if self._demo_mode() else int(self._param("person_align_command_speed")))
         self._yaw_target, self._pitch_target = yaw, pitch
         self._last_motion_at = now
         self._command_suppressed_reason = ""
@@ -686,7 +751,8 @@ class Orchestrator:
     def _confirm_face(self, faces, *, reacquiring=False, weight=.6, seek=False):
         valid = [face for face in faces
                  if face.get("track_id") is not None
-                 and float(face.get("confidence", face.get("conf", 0.0))) >= self.face_confidence_threshold]
+                 and float(face.get("confidence", face.get("conf", 0.0))) >= self.face_confidence_threshold
+                 and self._face_geometry_valid(face)]
         face = self._best_face(valid, weight)
         if face is None:
             self._lock_candidate_id, self._lock_candidate_frames = None, 0
@@ -710,6 +776,44 @@ class Orchestrator:
         self._lock(face)
         return face
 
+    def _soft_face_candidate(self, faces):
+        return any(
+            face.get("track_id") is not None
+            and float(face.get("confidence", face.get("conf", 0.0))) >= 0.45
+            and self._face_geometry_valid(face, min_visible_ratio=0.35)
+            for face in faces
+        )
+
+    def _face_in_frame(self, face):
+        return self._face_geometry_valid(face, min_visible_ratio=0.35)
+
+    def _face_geometry_valid(self, face, *, min_visible_ratio=0.55):
+        cx = self._norm(face.get("cx"), self.frame_width)
+        cy = self._norm(face.get("cy"), self.frame_height)
+        if cx is not None and cy is not None and not (0.0 <= float(cx) <= 1.0 and 0.0 <= float(cy) <= 1.0):
+            return False
+        keypoints = face.get("keypoints") or []
+        if keypoints:
+            valid_points = 0
+            for kp in keypoints:
+                try:
+                    x = float(kp.get("x"))
+                    y = float(kp.get("y"))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if 0 <= x <= self.frame_width and 0 <= y <= self.frame_height:
+                    valid_points += 1
+            if valid_points < min(3, len(keypoints)):
+                return False
+        box = self._normalize_bbox(face.get("bbox"))
+        if box is None:
+            return cx is not None and cy is not None
+        x1, y1, x2, y2 = box
+        area = max(1.0, (x2 - x1) * (y2 - y1))
+        visible_w = max(0.0, min(x2, self.frame_width) - max(x1, 0.0))
+        visible_h = max(0.0, min(y2, self.frame_height) - max(y1, 0.0))
+        return (visible_w * visible_h) / area >= min_visible_ratio
+
     def _best_face(self, faces, weight=.6):
         if not faces:
             return None
@@ -728,6 +832,49 @@ class Orchestrator:
             area=max(0,float(b[2])-float(b[0]))*max(0,float(b[3])-float(b[1])) if len(b)>=4 else 0
             return float(x.get("confidence",x.get("conf",0)))+area/10_000_000
         return max(persons,key=score)
+
+    def _remember_person(self, person):
+        box = self._normalize_bbox(person.get("bbox"))
+        if box is None:
+            return
+        self._locked_person_bbox = box
+        self._last_person_seen_at = time.monotonic()
+        self._person_align_frames += 1
+
+    def _recent_person(self, now):
+        return (
+            self._locked_person_bbox is not None
+            and self._last_person_seen_at > 0
+            and now - self._last_person_seen_at <= self._param("person_hold_ms") / 1000.0
+        )
+
+    def _person_control_item(self, person):
+        item = dict(person or {})
+        box = self._normalize_bbox(item.get("bbox")) or self._locked_person_bbox
+        if box is None:
+            return item
+        x1, y1, x2, y2 = box
+        h = max(1.0, y2 - y1)
+        item["bbox"] = box
+        item["cx"] = (x1 + x2) / 2.0 / self.frame_width
+        item["cy"] = (y1 + h * self._param("person_head_target_y_ratio")) / self.frame_height
+        item["face_search_roi"] = self._person_face_roi(item)
+        return item
+
+    def _person_face_roi(self, person):
+        box = self._normalize_bbox((person or {}).get("bbox"))
+        if box is None:
+            return None
+        x1, y1, x2, y2 = box
+        w, h = max(1.0, x2 - x1), max(1.0, y2 - y1)
+        expand = self._param("person_face_roi_expand_ratio")
+        top = max(0.0, y1)
+        bottom = min(float(self.frame_height), y1 + h * self._param("person_face_roi_height_ratio"))
+        left = max(0.0, x1 - w * expand)
+        right = min(float(self.frame_width), x2 + w * expand)
+        if right <= left or bottom <= top:
+            return None
+        return [round(left, 1), round(top, 1), round(right, 1), round(bottom, 1)]
 
     def _lock(self, face):
         self.locked_track_id = int(face["track_id"]) if face.get("track_id") is not None else None
@@ -775,6 +922,9 @@ class Orchestrator:
         self.fsm.transition(Event.make("system", "control_reset", "orchestrator"))
         self._last_observation_id, self._vision_lost_frames = -1, 0
         self._unlock()
+        self._locked_person_bbox = None
+        self._last_person_seen_at = 0.0
+        self._person_align_frames = 0
         self._reset_search()
         self._doa_candidate = self._active_doa = None
         self._doa_led_ema = None
@@ -890,6 +1040,16 @@ class Orchestrator:
             "search_pitch_sweep_deg": 8.0,
             "search_timeout_ms": 12000.0,
             "search_command_speed": 300.0,
+            "person_confirm_frames": 1.0,
+            "person_hold_ms": 2500.0,
+            "person_head_target_y_ratio": 0.28,
+            "person_align_deadband_x_ratio": 0.06,
+            "person_align_deadband_y_ratio": 0.08,
+            "person_align_max_yaw_delta_deg": 1.5,
+            "person_align_max_pitch_delta_deg": 1.0,
+            "person_align_command_speed": 140.0,
+            "person_face_roi_expand_ratio": 0.12,
+            "person_face_roi_height_ratio": 0.45,
         }
         configured = self._tracking_control_config.get("control") if isinstance(self._tracking_control_config, dict) else {}
         if not isinstance(configured, dict):
@@ -932,6 +1092,16 @@ class Orchestrator:
         params["search_pitch_sweep_deg"] = self._clamp(params["search_pitch_sweep_deg"], 0.0, 35.0)
         params["search_timeout_ms"] = self._clamp(params["search_timeout_ms"], 3000.0, 30000.0)
         params["search_command_speed"] = self._clamp(params["search_command_speed"], 60.0, 720.0)
+        params["person_confirm_frames"] = self._clamp(params["person_confirm_frames"], 1.0, 5.0)
+        params["person_hold_ms"] = self._clamp(params["person_hold_ms"], 250.0, 10000.0)
+        params["person_head_target_y_ratio"] = self._clamp(params["person_head_target_y_ratio"], 0.1, 0.5)
+        params["person_align_deadband_x_ratio"] = self._clamp(params["person_align_deadband_x_ratio"], 0.01, 0.3)
+        params["person_align_deadband_y_ratio"] = self._clamp(params["person_align_deadband_y_ratio"], 0.01, 0.3)
+        params["person_align_max_yaw_delta_deg"] = self._clamp(params["person_align_max_yaw_delta_deg"], 0.1, 10.0)
+        params["person_align_max_pitch_delta_deg"] = self._clamp(params["person_align_max_pitch_delta_deg"], 0.1, 10.0)
+        params["person_align_command_speed"] = self._clamp(params["person_align_command_speed"], 60.0, 360.0)
+        params["person_face_roi_expand_ratio"] = self._clamp(params["person_face_roi_expand_ratio"], 0.0, 0.5)
+        params["person_face_roi_height_ratio"] = self._clamp(params["person_face_roi_height_ratio"], 0.2, 0.8)
         return params
 
     def _param(self, name):
@@ -943,7 +1113,7 @@ class Orchestrator:
     def _demo_zone(self, cx, cy, reason):
         if not self._demo_mode():
             return ""
-        if reason == "body_align":
+        if reason in {"body_align", "person_align", "face_reacquire_in_person"}:
             return "BODY_ALIGN_ONLY"
         if cx is None or cy is None:
             return "NO_FACE"
@@ -985,6 +1155,26 @@ class Orchestrator:
         if not edge_clear:
             reasons.append("bbox_too_close_to_edge")
         return False, remain_deadband and safe and edge_clear, "", ",".join(reasons) or "not_centered"
+
+    def _person_centered_conditions(self, cx, cy):
+        center_x = abs(float(cx) - self.target_x)
+        center_y = abs(float(cy) - self.target_y)
+        in_deadband = (
+            center_x <= self._param("person_align_deadband_x_ratio")
+            and center_y <= self._param("person_align_deadband_y_ratio")
+        )
+        remain = (
+            center_x <= self._param("person_align_deadband_x_ratio") * 1.5
+            and center_y <= self._param("person_align_deadband_y_ratio") * 1.5
+        )
+        if in_deadband:
+            return True, remain, "person_anchor_inside_deadband", ""
+        reasons = []
+        if center_x > self._param("person_align_deadband_x_ratio"):
+            reasons.append("person_x_outside_deadband")
+        if center_y > self._param("person_align_deadband_y_ratio"):
+            reasons.append("person_y_outside_deadband")
+        return False, remain, "", ",".join(reasons) or "person_not_centered"
 
     def _bbox_inside_safe_roi(self, box):
         if box is None:
@@ -1153,6 +1343,11 @@ class Orchestrator:
             "demo_hold_active": False,
             "demo_hold_reason": "",
             "body_align_suppressed": False,
+            "person_visible": False,
+            "locked_person_bbox": self._locked_person_bbox,
+            "face_search_roi": self._person_face_roi({"bbox": self._locked_person_bbox}),
+            "person_align_reason": "",
+            "reacquire_reason": "",
             "motion_blocked_reason": "",
             "command_delta_yaw_deg": None,
             "command_delta_pitch_deg": None,
