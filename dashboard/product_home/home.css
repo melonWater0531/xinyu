@@ -95,6 +95,8 @@
 .xy-bubble-assistant { display: flex; gap: 12px; }
 .xy-bubble strong { display: block; margin-bottom: 4px; color: var(--xy-text); font-weight: 600; }
 .xy-bubble-user { justify-self: end; border-radius: 24px 24px 7px 24px; background: var(--xy-surface-sage); }
+.xy-chat-memory-actions { display: flex; margin-top: 10px; }
+.xy-chat-memory-actions .xy-soft { min-height: 34px; padding: 0 12px; border-radius: 14px; font-size: 12px; }
 .xy-prompt-chips { display: grid; gap: 8px; margin: 28px 0; }
 .xy-prompt-chips button { min-height: 48px; padding: 0 16px; text-align: left; border: 1px solid var(--xy-border); border-radius: 18px; color: var(--xy-text-secondary); background: rgba(255,253,248,.64); }
 .xy-chat-compose { margin-top: 28px; }

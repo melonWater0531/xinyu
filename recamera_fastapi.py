@@ -4694,7 +4694,7 @@ def _build_chat_messages(payload: dict) -> tuple[list, str, str, str]:
     Returns (messages, msg, emo_key, user_name). Server-side chat memory
     provides history; client context strings remain a supplementary hint."""
     from services.chat_memory import chat_memory
-    from services.emotion_prompt import build_chat_system_prompt
+    from services.emotion_prompt import build_chat_system_prompt, describe_companion_context
 
     msg        = str(payload.get("message", "")).strip()
     emotion_zh = str(payload.get("emotion", ""))
@@ -4708,6 +4708,9 @@ def _build_chat_messages(payload: dict) -> tuple[list, str, str, str]:
     user_ctx = f"用户当前选择/输入的情绪标签：{emotion_zh or emo_key}。"
     if diary_text:
         user_ctx += f"\n【今日日记】{diary_text[:200]}"
+    structured_ctx = describe_companion_context(payload)
+    if structured_ctx:
+        user_ctx += f"\n【可参考的记忆与今日状态】{structured_ctx[:900]}"
     if context_s:
         user_ctx += f"\n【背景】{context_s[:300]}"
     user_ctx += f"\n\n{msg or '请结合我今天的状态，给我一句有温度的话。'}"
@@ -4733,8 +4736,12 @@ async def api_chat(payload: dict = Body(default={})):
     reply = str(result.get("text") or "")
 
     if not reply or _reply_looks_incomplete(reply):
+        from services.emotion_prompt import describe_companion_context
+        fallback_context = "\n".join(
+            item for item in (describe_companion_context(payload), str(payload.get("context", ""))) if item
+        )
         reply  = _llm_engine.respond_to_user(msg, emo_key, user_name=user_name,
-                                             context=str(payload.get("context", "")))
+                                             context=fallback_context)
         source = "template"
     else:
         source = result.get("provider") if result.get("provider") != "none" else "template"
@@ -4772,8 +4779,12 @@ async def api_chat_stream(payload: dict = Body(default={})):
             yield f"event: error\ndata: {_j.dumps({'error': str(exc)[:80]}, ensure_ascii=False)}\n\n"
         reply = "".join(full)
         if not reply or _reply_looks_incomplete(reply):
+            from services.emotion_prompt import describe_companion_context
+            fallback_context = "\n".join(
+                item for item in (describe_companion_context(payload), str(payload.get("context", ""))) if item
+            )
             reply = _llm_engine.respond_to_user(msg, emo_key, user_name=user_name,
-                                                context=str(payload.get("context", "")))
+                                                context=fallback_context)
             provider = "template"
             yield f"data: {_j.dumps({'delta': reply}, ensure_ascii=False)}\n\n"
         if msg:

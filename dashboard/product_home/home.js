@@ -23,6 +23,7 @@
   let mediaRecorder = null;
   let voiceChunks = [];
   let diaryTypeTimer = 0;
+  let chatHistoryLoading = false;
   const todayKey = dateKey(new Date());
   const seedCurrentDate = seedData.currentDate || "2026-07-04";
   const daySummaryCache = {};
@@ -493,6 +494,7 @@
     });
     state.activePage = page;
     persist();
+    if (page === "companion") resetInitialChat();
     window.scrollTo({top: 0, behavior: "smooth"});
   }
 
@@ -620,21 +622,56 @@
     return `小屿会先按你说的来理解。今天的状态里有${memoryContext.trendText || "一些起伏"}，也处理了${memoryContext.meetingTitle || "几件需要整理的事"}。如果愿意，可以从最想放下的一件事慢慢说。`;
   }
 
+  function buildWorkContext(memoryContext = buildAssistantMemoryContext()) {
+    const day = memoryContext.currentDay || todayMemoryDay();
+    const meeting = memoryContext.currentMeeting || {};
+    const notes = meetingNotes.slice(-5).map((note) => ({
+      title: note.title || "",
+      summary: truncate(note.summary || note.diary || "", 120),
+      date: note.date || note.created_at || "",
+    }));
+    return {
+      current_meeting_title: day.meetingTitle || meeting.title || "",
+      current_meeting_summary: truncate(meeting.summary || day.meetingSummary || "", 180),
+      recent_meeting_notes: notes,
+    };
+  }
+
+  function buildChatDaySummary(memoryContext = buildAssistantMemoryContext()) {
+    const day = memoryContext.currentDay || todayMemoryDay();
+    return {
+      date: todayKey,
+      main_state: day.mainState || "",
+      trend_text: memoryContext.trendText || "",
+      care_text: memoryContext.careText || "",
+      selfcare: selfcareFor(todayKey),
+      observed: daySummaryFor(todayKey),
+    };
+  }
+
   function buildLLMPayload(message, memoryContext = buildAssistantMemoryContext()) {
+    const memoryPayload = buildReflectMemoryContext(memoryContext);
+    const dayPayload = buildChatDaySummary(memoryContext);
+    const workPayload = buildWorkContext(memoryContext);
     return {
       message,
       emotion: memoryContext.currentDay?.mainState || "有点疲惫",
       diary_text: memoryContext.diaryText || "",
       user_name: "蛋挞",
+      day_summary: dayPayload,
+      memory_context: memoryPayload,
+      selfcare: dayPayload.selfcare,
+      work_context: workPayload,
       context: [
         "用户本轮自述优先；今日状态、会议、日记和周报只是辅助上下文。",
         `今日情绪趋势：${memoryContext.trendText}`,
         `今日自我照顾：${memoryContext.careText}`,
         `今日会议：${memoryContext.meetingTitle}`,
         `近日日记：${(memoryContext.recentDiary || []).map((item) => item.diary).join(" / ")}`,
+        `用户确认记忆：${memoryPayload.confirmed_notes.map((item) => item.content).join(" / ")}`,
         `本周周报：${memoryContext.currentWeeklyReport?.summary || ""}`,
         "回复保持40至90个中文字符，温和克制，不诊断，不提模型、概率或识别过程。",
-      ].filter(Boolean).join("；").slice(0, 900),
+      ].filter(Boolean).join("；").slice(0, 1100),
     };
   }
 
@@ -698,13 +735,92 @@
     return textTarget;
   }
 
-  function resetInitialChat() {
+  function renderChatHistory(messages = []) {
     const thread = $("#xy-chat");
-    if (!thread || thread.dataset.ready) return;
-    const memory = buildAssistantMemoryContext();
+    if (!thread) return false;
+    const safeMessages = messages
+      .filter((item) => ["user", "assistant"].includes(item?.role) && String(item.content || "").trim())
+      .slice(-30);
+    if (!safeMessages.length) return false;
     thread.innerHTML = "";
-    appendChat(`我看到你今天下午有一段压力比较高，晚上状态平和了一些。今天还整理了${memory.meetingTitle}，信息量不小。现在想聊聊刚才发生了什么吗？`, "assistant");
+    safeMessages.forEach((item) => appendChat(item.content, item.role));
     thread.dataset.ready = "true";
+    thread.dataset.historyLoaded = "true";
+    return true;
+  }
+
+  function buildInitialCompanionMessage() {
+    const memory = buildAssistantMemoryContext();
+    const day = memory.currentDay || todayMemoryDay();
+    const confirmed = memoryNotes.filter((note) => note?.source !== "preview_seed").slice(-2);
+    const pieces = [];
+    if (day.diary) pieces.push(`今天的日记里，你写到“${truncate(day.diary, 42)}”`);
+    if (memory.trendText) pieces.push(`今天状态有${memory.trendText}`);
+    if (memory.meetingTitle) pieces.push(`还处理了${memory.meetingTitle}`);
+    if (confirmed.length) pieces.push(`我也记得：${truncate(confirmed[confirmed.length - 1].content, 42)}`);
+    if (pieces.length) return `${pieces.slice(0, 2).join("，")}。现在不用急着整理完整，先从最占心里的那一点说起就好。`;
+    if (day.selfcare?.updatedAt) return `我看到今天已经留下了一些照顾自己的记录。这里可以慢一点，说感受、说工作，或者只是把乱糟糟的一句放下来。`;
+    return "我在这里。今天还没有太多记录也没关系，你可以从一句很短的话开始，累、烦、开心、空白，都可以。";
+  }
+
+  async function resetInitialChat() {
+    const thread = $("#xy-chat");
+    if (!thread || thread.dataset.ready || chatHistoryLoading) return;
+    chatHistoryLoading = true;
+    try {
+      const history = await apiJSON(`/api/chat/history?date=${encodeURIComponent(todayKey)}`, {timeoutMs: 5000});
+      if (renderChatHistory(history.messages || [])) return;
+    } catch (_error) {
+      // Local opening remains available when the service is offline.
+    } finally {
+      chatHistoryLoading = false;
+    }
+    thread.innerHTML = "";
+    appendChat(buildInitialCompanionMessage(), "assistant");
+    thread.dataset.ready = "true";
+  }
+
+  function memoryCandidateFromChat(message, reply = "") {
+    const text = String(message || "").trim();
+    if (text.length < 6) return "";
+    const memoryTokens = ["记住", "别忘", "以后", "最近", "这周", "工作", "项目", "会议", "预算", "压力", "喜欢", "不喜欢", "希望"];
+    if (!memoryTokens.some((token) => text.includes(token))) return "";
+    const cleaned = text.replace(/^(请|帮我|可以)?(记住|别忘了?)[:：，,\s]*/g, "");
+    return `用户希望小屿记得：${truncate(cleaned || reply || text, 70)}`;
+  }
+
+  function addChatMemoryAction(target, candidate) {
+    if (!target || !candidate) return;
+    const bubble = target.closest(".xy-bubble-assistant");
+    const body = target.closest("div");
+    if (!bubble || !body || body.querySelector("[data-chat-memory-save]")) return;
+    const row = document.createElement("div");
+    row.className = "xy-chat-memory-actions";
+    row.innerHTML = `<button class="xy-soft" type="button" data-chat-memory-save>让小屿记住</button>`;
+    const button = $("button", row);
+    button.dataset.candidate = candidate;
+    body.append(row);
+  }
+
+  function saveChatMemory(button) {
+    const candidate = button?.dataset.candidate || "";
+    const text = window.prompt("编辑要让小屿记住的内容", candidate);
+    if (text == null) return;
+    const value = text.trim();
+    if (!value) {
+      showToast("先写一句想让小屿记住的内容");
+      return;
+    }
+    memoryNotes.push({
+      id: `memory_${Date.now()}`,
+      date: todayKey,
+      content: value,
+      source: "companion",
+      created_at: new Date().toISOString(),
+    });
+    persistMemoryNotes();
+    button.closest(".xy-chat-memory-actions")?.remove();
+    showToast("小屿已经记住这件事");
   }
 
   async function sendChat(message) {
@@ -718,6 +834,7 @@
     } catch (_error) {
       pending.textContent = fallback;
     }
+    addChatMemoryAction(pending, memoryCandidateFromChat(value, pending.textContent));
   }
 
   function markdownToHtml(markdown) {
@@ -1393,6 +1510,10 @@
     $$("[data-go]").forEach((button) => button.addEventListener("click", () => goTo(button.dataset.go)));
     $$("[data-toast]").forEach((button) => button.addEventListener("click", () => showToast(button.dataset.toast)));
     $$(".xy-prompt-chips button").forEach((button) => button.addEventListener("click", () => sendChat(button.textContent)));
+    $("#xy-chat")?.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-chat-memory-save]");
+      if (button) saveChatMemory(button);
+    });
     $("#xy-chat-form")?.addEventListener("submit", (event) => {
       event.preventDefault();
       const input = $("#xy-chat-input");
@@ -1443,7 +1564,7 @@
     seedMemoryNotesFromPreview();
     await loadDaySummaryRange(state.calendarMonth);
     renderHome();
-    resetInitialChat();
+    await resetInitialChat();
     renderMeeting();
     renderRecords();
     renderDevice();

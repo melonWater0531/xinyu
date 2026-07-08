@@ -121,12 +121,15 @@ def build_chat_system_prompt(state: dict | None, user_name: str = "") -> str:
 
 对话原则：
 - 信息优先级严格为：用户本轮自述 > 用户日记和近期聊天 > 摄像头视觉线索。
+- 用户主动确认保存的记忆可以帮助你理解长期偏好、近期工作和反复出现的心情，但不能覆盖用户本轮自述。
 - 用户文字和视觉线索冲突时，只跟随用户文字；不要提及冲突，也不要按视觉标签追问。
 - 不直接复述视觉情绪标签、置信度、概率或任何模型字段，不说“我看出你很……”或“根据传感器……”。
 - 像关心朋友一样回应，不做心理咨询师或医生式诊断。
-- 先回应用户明确说出的感受，再给一个轻而具体的陪伴选择或开放问题。
+- 第一反应先镜像用户明确说出的具体感受、工作压力或事件，不要只说“我理解你”“辛苦了”。
+- 区分倾诉和求助：用户只是在表达情绪时，不急着给方案；用户明确问怎么办时，只给一个很小、具体、不说教的下一步。
 - 只有用户没有表达感受时，才可以谨慎参考视觉线索，并使用“也许”“似乎”等不确定措辞。
 - 不编造没有被用户或状态提到的事件。
+- 不使用空洞鸡汤，不说“明天会更好”“一切都会过去”“你已经很棒了”这类模板句。
 - 回复 40-90 个中文字符，自然、克制，不使用列表或标题。"""
 
 
@@ -203,6 +206,53 @@ def describe_reflect_memory(memory_context: dict | None) -> str:
     care = _clip_text(memory_context.get("care_suggestion"), 140)
     if care:
         lines.append(f"照顾建议参考：{care}")
+    return "\n".join(lines)
+
+
+def describe_companion_context(payload: dict | None) -> str:
+    """Compact structured context for companion chat.
+
+    This mirrors diary reflection context, but keeps it conversational: confirmed
+    memory and today's work/state can be referenced softly without overriding the
+    user's current words.
+    """
+    if not isinstance(payload, dict):
+        return ""
+    lines = []
+    memory_lines = describe_reflect_memory(payload.get("memory_context"))
+    if memory_lines:
+        lines.append(memory_lines)
+    day = payload.get("day_summary") or {}
+    if isinstance(day, dict):
+        day_parts = []
+        for key in ("main_state", "trend_text", "care_text"):
+            value = _clip_text(day.get(key), 160)
+            if value:
+                day_parts.append(value)
+        observed = day.get("observed")
+        observed_line = describe_day_summary(observed if isinstance(observed, dict) else None)
+        if observed_line:
+            day_parts.append(observed_line)
+        if day_parts:
+            lines.append("今日状态参考：" + "；".join(day_parts[:4]))
+    work = payload.get("work_context") or {}
+    if isinstance(work, dict):
+        title = _clip_text(work.get("current_meeting_title"), 120)
+        summary = _clip_text(work.get("current_meeting_summary"), 180)
+        recent = work.get("recent_meeting_notes") or []
+        work_parts = []
+        if title:
+            work_parts.append(f"当前/最近会议：{title}")
+        if summary:
+            work_parts.append(f"会议摘要：{summary}")
+        for item in recent[:3]:
+            if isinstance(item, dict):
+                note_title = _clip_text(item.get("title"), 80)
+                note_summary = _clip_text(item.get("summary"), 100)
+                if note_title or note_summary:
+                    work_parts.append(f"{note_title or '会议'}：{note_summary}")
+        if work_parts:
+            lines.append("工作与会议参考：" + "；".join(work_parts[:5]))
     return "\n".join(lines)
 
 

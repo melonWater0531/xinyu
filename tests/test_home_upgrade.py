@@ -6,7 +6,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from services.emotion_prompt import build_chat_system_prompt, build_weekly_report_prompt
+from services.emotion_prompt import build_chat_system_prompt, build_weekly_report_prompt, describe_companion_context
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,6 +115,17 @@ const report=XinyuWeeklyReport.buildFallback(Array.from({length:4},(_,i)=>({date
         chat = build_chat_system_prompt({"emotieff": {"emotion": "Happiness", "confidence": 0.99}}, "用户")
         self.assertIn("用户本轮自述 > 用户日记和近期聊天 > 摄像头视觉线索", chat)
         self.assertIn("只跟随用户文字", chat)
+        self.assertIn("用户主动确认保存的记忆", chat)
+        self.assertIn("区分倾诉和求助", chat)
+        companion_context = describe_companion_context({
+            "memory_context": {"confirmed_notes": [{"date": "2026-07-08", "content": "用户这周在赶预算表。"}]},
+            "day_summary": {"main_state": "疲惫为主", "trend_text": "09:00平静，18:00疲惫", "care_text": "喝水3杯"},
+            "work_context": {"current_meeting_title": "预算评审", "current_meeting_summary": "需要整理申报表。"},
+        })
+        self.assertIn("用户主动保存的记忆", companion_context)
+        self.assertIn("预算表", companion_context)
+        self.assertIn("今日状态参考", companion_context)
+        self.assertIn("工作与会议参考", companion_context)
         entries = [{
             "date": "2026-07-01", "emotion": "Sadness", "content": "我今天有点难受",
             "observed_emotion": "Happiness", "selfcare_week": [{

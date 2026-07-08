@@ -52,6 +52,7 @@ class XinyuProductHomeTests(unittest.TestCase):
     def test_product_interfaces_are_wired_with_fallbacks(self) -> None:
         for phrase in (
             'fetch("/api/chat"',
+            'apiJSON(`/api/chat/history?date=',
             'apiJSON("/api/reflect"',
             'apiJSON("/api/report/weekly"',
             'apiJSON("/api/conversation/start"',
@@ -69,6 +70,8 @@ class XinyuProductHomeTests(unittest.TestCase):
             self.assertIn(phrase, self.js)
         for fallback in ("buildXiaoyuReply", "buildDiaryAssistantReply", "fallback", "showToast"):
             self.assertIn(fallback, self.js)
+        for phrase in ("memory_context", "work_context", "day_summary", "data-chat-memory-save"):
+            self.assertIn(phrase, self.js)
 
     def test_interactive_controls_exist(self) -> None:
         ids = set(re.findall(r'\bid="([^"]+)"', self.html))
