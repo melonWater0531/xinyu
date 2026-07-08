@@ -529,6 +529,25 @@ class ControlClosureTests(unittest.TestCase):
         self.assertIsNone(missing["error_x_ratio"])
         self.assertIsNone(missing["error_y_ratio"])
 
+    def test_stale_observation_clears_target_and_blocks_motion(self) -> None:
+        self.start("single_face_analysis")
+        face = {"track_id": 23, "cx": .62, "cy": .37, "bbox": [700, 220, 860, 420], "confidence": .95, "lost_frames": 0}
+        for oid in range(1, 4):
+            self.orch.handle_event(self.observation(oid, faces=[face]))
+        visible = self.orch.runtime_state()
+        self.assertTrue(visible["target_visible"])
+        stale = self.observation(4, faces=[face])
+        stale.payload["captured_at"] = (time.time() - 2.0) * 1000
+        self.assertIsNone(self.orch.handle_event(stale))
+        runtime = self.orch.runtime_state()
+        self.assertFalse(runtime["target_visible"])
+        self.assertIsNone(runtime["control_target"])
+        self.assertEqual(runtime["last_control_target"], visible["control_target"])
+        self.assertEqual(runtime["centered_block_reason"], "stale_observation")
+        self.assertEqual(runtime["motion_blocked_reason"], "stale_observation")
+        self.assertEqual(runtime["command_suppressed_reason"], "stale_observation")
+        self.assertFalse(runtime["command_sent"])
+
     def test_phase1a_bbox_normalization_accepts_json_safe_shapes(self) -> None:
         self.assertEqual(self.orch._normalize_bbox([1, 2, 3, 4]), [1.0, 2.0, 3.0, 4.0])
         self.assertEqual(self.orch._normalize_bbox((1, 2, 3, 4)), [1.0, 2.0, 3.0, 4.0])

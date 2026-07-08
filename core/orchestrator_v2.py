@@ -287,8 +287,15 @@ class Orchestrator:
             "telemetry_hz": event.payload.get("telemetry_hz"),
             "ui_push_hz": event.payload.get("ui_push_hz"),
         })
-        if oid <= self._last_observation_id or time.time() * 1000 - captured > 600:
-            self._telemetry["centered_block_reason"] = "stale_observation"
+        stale_age_ms = time.time() * 1000 - captured
+        if oid <= self._last_observation_id or stale_age_ms > 600:
+            self._clear_current_target_telemetry()
+            self._telemetry.update({
+                "centered_block_reason": "stale_observation",
+                "motion_blocked_reason": "stale_observation",
+                "command_sent": False,
+            })
+            self._command_suppressed_reason = "stale_observation"
             return None
         self._last_observation_id, self._frame_count = oid, self._frame_count + 1
         size = event.payload.get("frame_size") or {}

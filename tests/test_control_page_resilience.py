@@ -9,6 +9,7 @@ import main_phase3
 import recamera_fastapi
 from core.event import BBox, Event
 from core.event_bus import EventBusClient
+from core.safety_layer import SafetyLayer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,7 @@ class ControlPageResilienceTests(unittest.TestCase):
             "feature": "multi_sound_yaw", "session_id": "multi-test", "lease_ms": 5000,
         }))
         self.assertTrue(start["accepted"])
+        runner._enable_control = True
         runner._device_session_degraded = True
         heartbeat = runner.process_event(Event.make("ui", "feature_heartbeat", "test", payload={
             "session_id": "multi-test", "lease_ms": 5000,
@@ -54,6 +56,55 @@ class ControlPageResilienceTests(unittest.TestCase):
             self.assertEqual(result["command"]["reason"], "audio_coarse")
             self.assertEqual(result["command"]["session_id"], "multi-audio")
             self.assertAlmostEqual(result["command"]["yaw"], 270.0)
+        finally:
+            runner._hardware_worker.close()
+
+    def test_degraded_hardware_blocks_motion_submit(self) -> None:
+        runner = main_phase3.Phase3Runner(enable_control=False, max_cycles=0)
+        try:
+            start = runner.process_event(Event.make("ui", "feature_start", "test", payload={
+                "feature": "multi_sound_yaw", "session_id": "multi-degraded", "lease_ms": 5000,
+            }))
+            self.assertTrue(start["accepted"])
+            runner._enable_control = True
+            runner._safety = SafetyLayer(safe_mode=False, enable_real_control=True, rate_limit_hz=1000)
+            runner._device_session_degraded = True
+            event = Event.make("audio", "speech_detected", "test", payload={
+                "doa_deg": 90.0,
+                "speech": True,
+                "session_id": "multi-degraded",
+                "vad_confidence": 0.8,
+                "lip_motion": False,
+            })
+            self.assertFalse(runner.process_event(event)["applied"])
+            runner._orchestrator._doa_candidate_since -= 0.6
+            result = runner.process_event(event)
+            self.assertIsNotNone(result["command"])
+            self.assertEqual(result["command"]["reason"], "audio_coarse")
+            self.assertFalse(result["applied"])
+            self.assertEqual(result["reason"], "hardware_not_ready")
+            self.assertFalse(result["runtime"]["command_sent"])
+            self.assertEqual(result["runtime"]["motion_blocked_reason"], "hardware_not_ready")
+        finally:
+            runner._hardware_worker.close()
+
+    def test_degraded_hardware_still_allows_feature_stop(self) -> None:
+        runner = main_phase3.Phase3Runner(enable_control=False, max_cycles=0)
+        try:
+            start = runner.process_event(Event.make("ui", "feature_start", "test", payload={
+                "feature": "single_face_analysis", "session_id": "single-stop", "lease_ms": 5000,
+            }))
+            self.assertTrue(start["accepted"])
+            runner._enable_control = True
+            runner._safety = SafetyLayer(safe_mode=False, enable_real_control=True, rate_limit_hz=1000)
+            runner._device_session_degraded = True
+            result = runner.process_event(Event.make("ui", "feature_stop", "test", payload={
+                "session_id": "single-stop",
+            }))
+            self.assertTrue(result["accepted"])
+            self.assertTrue(result["command"]["stop"])
+            self.assertTrue(result["applied"])
+            self.assertEqual(result["reason"], "ok")
         finally:
             runner._hardware_worker.close()
 

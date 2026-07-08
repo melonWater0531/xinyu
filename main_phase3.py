@@ -100,6 +100,7 @@ class Phase3Runner:
         self._max_cycles = int(max_cycles)
         self._face_conf_thresh = float(face_conf_thresh)
         self._person_conf_thresh = float(person_conf_thresh)
+        self._enable_control = bool(enable_control)
         self._event_queue: deque[Event] = deque(maxlen=256)
         self._event_lock = threading.Lock()
         self._runtime_lock = threading.RLock()
@@ -280,11 +281,37 @@ class Phase3Runner:
             ok = True
             self._stop_state = "stopping"
         else:
+            io_state = self._hardware_worker.snapshot()
+            if not self._hardware_ready_for_motion(io_state):
+                self._last_apply_ok = False
+                self._last_block_reason = "hardware_not_ready"
+                self._orchestrator.update_telemetry(
+                    motion_blocked_reason="hardware_not_ready",
+                    command_sent=False,
+                )
+                return {
+                    "command": self._command_dict(allowed),
+                    "applied": False,
+                    "reason": "hardware_not_ready",
+                }
             self._hardware_worker.submit(allowed)
             ok = True
             self._stop_state = "running"
         self._last_apply_ok = ok
         return {"command": self._command_dict(allowed), "applied": ok, "reason": "ok" if ok else "hardware_error"}
+
+    def _hardware_ready_for_motion(self, io_state: dict) -> bool:
+        if not self._enable_control:
+            return True
+        if self._device_session_degraded:
+            return False
+        if int(io_state.get("consecutive_failures", 0) or 0) >= 3:
+            return False
+        if bool(io_state.get("gimbal_bridge_circuit_open")):
+            return False
+        if str(io_state.get("gimbal_bridge_status") or "") in {"timeout", "unavailable"}:
+            return False
+        return True
 
     def _handle_bus_event(self, event: Event) -> dict:
         if event.type == "system" and event.name == "runtime_snapshot_request":
@@ -335,7 +362,7 @@ class Phase3Runner:
             self._orchestrator.update_telemetry(control_loop_ms=round((time.monotonic() - control_t0) * 1000.0, 1))
             after = self._orchestrator.runtime_state()
             io_state = self._hardware_worker.snapshot()
-            hardware_ready = not self._device_session_degraded and int(io_state.get("consecutive_failures", 0)) < 3
+            hardware_ready = self._hardware_ready_for_motion(io_state)
             accepted = not session_bound or valid_before
             if event.name == "feature_start":
                 accepted = device_session_ok and after.get("session_id") == str(event.payload.get("session_id", ""))
@@ -409,7 +436,7 @@ class Phase3Runner:
     def runtime_snapshot(self) -> dict:
         with self._runtime_lock:
             io_state = self._hardware_worker.snapshot()
-            hardware_ready = not self._device_session_degraded and int(io_state.get("consecutive_failures", 0)) < 3
+            hardware_ready = self._hardware_ready_for_motion(io_state)
             return {
                 **self._orchestrator.runtime_state(),
                 "authority": "main_phase3",
