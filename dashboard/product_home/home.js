@@ -4,8 +4,10 @@
   const STORAGE_KEY = "xinyu.preview.v1";
   const DIARY_KEY = "xinyu.actual.diary.v1";
   const MEETING_SESSION_KEY = "xinyu.product.meeting_session.v1";
+  const MEETING_NOTES_KEY = "xinyu.meeting.notes.v1";
   const MEMORY_NOTES_KEY = "xinyu.memory.notes.v1";
   const CLOUD_REFLECT_KEY = "xinyu.cloud_reflect_enabled.v1";
+  const SELFCARE_KEY = "xinyu.selfcare.v1";
   const seedData = window.XINYU_PREVIEW_DATA || {};
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -21,6 +23,9 @@
   let mediaRecorder = null;
   let voiceChunks = [];
   let diaryTypeTimer = 0;
+  const todayKey = dateKey(new Date());
+  const seedCurrentDate = seedData.currentDate || "2026-07-04";
+  const daySummaryCache = {};
 
   function loadJSON(key, fallback) {
     try {
@@ -40,8 +45,10 @@
     }
   }
 
-  const state = loadJSON(STORAGE_KEY, {activePage: "home", selectedDate: seedData.currentDate || "2026-07-04", calendarMonth: "2026-07"});
+  const state = loadJSON(STORAGE_KEY, {activePage: "home", selectedDate: todayKey, calendarMonth: todayKey.slice(0, 7)});
   const diaryOverrides = loadJSON(DIARY_KEY, {});
+  const selfcareRecords = loadJSON(SELFCARE_KEY, {});
+  const meetingNotes = loadArray(MEETING_NOTES_KEY);
   const memoryNotes = loadArray(MEMORY_NOTES_KEY);
   let cloudReflectEnabled = localStorage.getItem(CLOUD_REFLECT_KEY) !== "false";
   state.meetingSessionId = state.meetingSessionId || localStorage.getItem(MEETING_SESSION_KEY) || "";
@@ -57,6 +64,14 @@
 
   function persistDiary() {
     localStorage.setItem(DIARY_KEY, JSON.stringify(diaryOverrides));
+  }
+
+  function persistSelfcare() {
+    localStorage.setItem(SELFCARE_KEY, JSON.stringify(selfcareRecords));
+  }
+
+  function persistMeetingNotes() {
+    localStorage.setItem(MEETING_NOTES_KEY, JSON.stringify(meetingNotes.slice(-30)));
   }
 
   function persistMemoryNotes() {
@@ -157,12 +172,158 @@
     return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
   }
 
+  function emptyDay(date = state.selectedDate) {
+    return {
+      date,
+      emotionTrend: [],
+      focusScore: null,
+      focusDisplay: "今日还没有观察记录",
+      mainState: date === todayKey ? "等待今日状态" : "暂无记录",
+      steps: null,
+      waterCups: null,
+      waterGoal: 8,
+      meditation: false,
+      hadMeeting: false,
+      meetingId: "",
+      meetingTitle: "",
+      diary: "",
+      assistantReply: "",
+      weekKey: weekKeyFromDate(date),
+      tags: [],
+      moodId: "calm",
+      source: "empty",
+    };
+  }
+
+  function weekKeyFromDate(dateText) {
+    const date = parseDate(dateText);
+    const first = new Date(Date.UTC(date.getFullYear(), 0, 1));
+    const day = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const dayNumber = Math.floor((day - first) / 86400000) + 1;
+    return `${date.getFullYear()}-W${String(Math.ceil(dayNumber / 7)).padStart(2, "0")}`;
+  }
+
+  function weekBounds(dateText = state.selectedDate) {
+    const date = parseDate(dateText);
+    const day = date.getDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    const start = new Date(date);
+    start.setDate(date.getDate() + mondayOffset);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    return {start: dateKey(start), end: dateKey(end)};
+  }
+
+  function datesBetween(startKey, endKey) {
+    const out = [];
+    const cur = parseDate(startKey);
+    const end = parseDate(endKey);
+    while (cur <= end && out.length < 14) {
+      out.push(dateKey(cur));
+      cur.setDate(cur.getDate() + 1);
+    }
+    return out;
+  }
+
+  function daySummaryFor(date) {
+    return daySummaryCache[date] || null;
+  }
+
+  function selfcareFor(date = todayKey) {
+    const raw = selfcareRecords[date] || {};
+    return {
+      waterCups: Number.isFinite(Number(raw.waterCups)) ? Math.max(0, Number(raw.waterCups)) : null,
+      steps: Number.isFinite(Number(raw.steps)) ? Math.max(0, Math.round(Number(raw.steps))) : null,
+      meditation: Boolean(raw.meditation),
+      updatedAt: raw.updatedAt || "",
+    };
+  }
+
+  function saveSelfcare(date, patch) {
+    const prev = selfcareRecords[date] || {};
+    selfcareRecords[date] = {...prev, ...patch, updatedAt: new Date().toISOString()};
+    persistSelfcare();
+  }
+
+  function monthBounds(monthKey = state.calendarMonth) {
+    const [year, month] = monthKey.split("-").map(Number);
+    const start = `${year}-${String(month).padStart(2, "0")}-01`;
+    const endDate = new Date(year, month, 0);
+    return {start, end: dateKey(endDate)};
+  }
+
+  async function loadDaySummaryRange(monthKey = state.calendarMonth) {
+    const {start, end} = monthBounds(monthKey);
+    try {
+      const data = await apiJSON(`/api/day_summary/range?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, {timeoutMs: 6000});
+      (data.days || []).forEach((day) => {
+        if (day?.date) daySummaryCache[day.date] = day;
+      });
+    } catch (_error) {}
+  }
+
+  function emotionZh(emotion) {
+    return {
+      Happiness: "快乐", Happy: "快乐", Neutral: "平静", Sadness: "低落",
+      Sad: "低落", Anger: "烦躁", Angry: "烦躁", Fear: "不安",
+      Surprise: "惊讶", Disgust: "不适", Contempt: "疏离",
+    }[emotion] || emotion || "";
+  }
+
+  function summaryTrend(summary) {
+    const hours = Array.isArray(summary?.hours) ? summary.hours : [];
+    return hours
+      .filter((hour) => hour.presence_sec || hour.dominant_emotion || hour.attention_avg != null)
+      .slice(-5)
+      .map((hour) => ({
+        time: `${String(hour.hour).padStart(2, "0")}:00`,
+        mood: hour.dominant_emotion === "Happiness" ? "bright" : hour.attention_avg >= 70 ? "focused" : hour.dominant_emotion ? "calm" : "clear",
+        display: emotionZh(hour.dominant_emotion) || (hour.attention_avg >= 70 ? "专注" : "观察"),
+      }));
+  }
+
+  function mergeDayData(date) {
+    const seed = seedData.dailyRecords?.[date] || null;
+    const summary = daySummaryFor(date);
+    const override = diaryOverrides[date] || {};
+    const selfcare = selfcareFor(date);
+    const base = {...emptyDay(date), ...(seed || {})};
+    if (summary?.available) {
+      const dom = emotionZh(summary.dominant_emotion);
+      base.mainState = dom ? `${dom}为主` : "今日有观察记录";
+      base.focusDisplay = summary.attention_avg != null ? `专注均值 ${Math.round(Number(summary.attention_avg))}` : base.focusDisplay;
+      base.emotionTrend = summaryTrend(summary);
+      base.presenceMin = summary.presence_min;
+      base.observedSummary = summary;
+      base.source = seed ? "seed+summary" : "summary";
+    }
+    if (override.diary != null) base.diary = override.diary;
+    if (override.assistantReply != null) base.assistantReply = override.assistantReply;
+    if (override.assistantMeta) base.assistantMeta = override.assistantMeta;
+    if (selfcare.waterCups != null) base.waterCups = selfcare.waterCups;
+    if (selfcare.steps != null) base.steps = selfcare.steps;
+    if (selfcare.updatedAt || selfcare.meditation) base.meditation = selfcare.meditation;
+    base.selfcare = selfcare;
+    return base;
+  }
+
   function currentDay() {
-    return seedData.dailyRecords?.[state.selectedDate] || seedData.dailyRecords?.[seedData.currentDate] || {};
+    return mergeDayData(state.selectedDate || todayKey);
   }
 
   function todayMemoryDay() {
-    return seedData.assistantMemory?.currentDay || seedData.dailyRecords?.[seedData.currentDate] || {};
+    return mergeDayData(todayKey);
+  }
+
+  function homeFallbackAdvice(day, {faceVisible = false, emotionText = ""} = {}) {
+    if (faceVisible && emotionText) return `我先按你现在的状态陪着，不急着下判断。可以先写一句最真实的感受，哪怕很短也算数。`;
+    if (day.selfcare?.waterCups == null && day.selfcare?.steps == null && !day.selfcare?.updatedAt) {
+      return "今天还没留下身体和状态记录。可以先点一下喝水、输入步数，或者只写一句日记，小屿会从这一点开始陪你整理。";
+    }
+    if ((day.waterCups || 0) < 4) return `今天已经记了${day.waterCups || 0}杯水。不是任务打卡，只是给身体一个小信号：现在可以再补一杯。`;
+    if (day.steps == null) return "今天的活动还没有记录。如果愿意，点一下活动卡片填个大概步数就好，不需要特别精确。";
+    if (!day.meditation) return "今天已经有一点记录了。冥想不一定要很正式，哪怕只是安静坐两分钟，也可以算是给自己留了空隙。";
+    return "今天已经留下了几件真实的小照顾。小屿会把这些记在今天，而不是用历史记录替你定义现在。";
   }
 
   function showToast(message) {
@@ -383,35 +544,67 @@
       onlineBadge.innerHTML = `<i></i>${online ? "心屿在线" : "离线陪伴"}`;
     }
     if (title && emotionText) title.textContent = faceVisible ? "我在这里，慢慢来" : "今天先慢一点也可以";
-    if (heroEmotion) heroEmotion.textContent = faceVisible && emotionText ? emotionText : (day.mainState || "有点疲惫");
+    if (heroEmotion) heroEmotion.textContent = faceVisible && emotionText ? emotionText : (day.mainState || "等待今日状态");
     if (heroCopy) {
       heroCopy.textContent = faceVisible
         ? `小屿看到你现在${emotionText || "有一些状态变化"}，${focusText ? `专注状态是${focusText}。` : "先按自己的节奏来。"}`
-        : "小屿会先用本地记录陪你回看状态，等设备同步后再更新。";
+        : (day.observedSummary?.available ? "今天已经有一些观察记录，小屿会把它们轻轻放在日记旁边作参考。" : "今天还没有实时观察记录；历史记录会作为参考，但不会替你定义今天。");
     }
     if (assistantNote) {
-      assistantNote.innerHTML = `<small>小屿回应</small>${control.active_feature === "meeting_recording" ? "会议记录中，情绪判断先放轻。" : (seedData.assistantMemory?.careSuggestion || "不急着完成，先让自己舒服一点。")}`;
+      assistantNote.innerHTML = `<small>小屿回应</small>${control.active_feature === "meeting_recording" ? "会议记录中，情绪判断先放轻。" : homeFallbackAdvice(day, {faceVisible, emotionText})}`;
     }
-    const water = $(".xy-mini-states article:nth-child(1) strong");
-    const steps = $(".xy-mini-states article:nth-child(2) strong");
-    const meditation = $(".xy-mini-states article:nth-child(3) strong");
-    if (water) water.textContent = `${day.waterCups || 5} / ${day.waterGoal || 8} 杯`;
-    if (steps) steps.textContent = `${day.steps || 3200} 步`;
+    const water = $("#xy-water-add strong");
+    const steps = $("#xy-steps-edit strong");
+    const meditation = $("#xy-meditation-toggle strong");
+    if (water) water.textContent = day.waterCups == null ? "未记录" : `${day.waterCups} / ${day.waterGoal || 8} 杯`;
+    if (steps) steps.textContent = day.steps == null ? "未记录" : `${day.steps} 步`;
     if (meditation) meditation.textContent = day.meditation ? "已完成" : "未完成";
     const advice = $(".xy-advice > div p:last-child");
-    if (advice) advice.textContent = seedData.assistantMemory?.careSuggestion || "先补一杯水，再给自己留一点安静时间。";
+    if (advice) advice.textContent = homeFallbackAdvice(day, {faceVisible, emotionText});
     $("[data-trend='home']") && renderTrend($("[data-trend='home']"), day.emotionTrend || []);
+  }
+
+  function addWaterCup() {
+    const care = selfcareFor(todayKey);
+    const next = Math.min(20, (care.waterCups || 0) + 1);
+    saveSelfcare(todayKey, {waterCups: next});
+    renderHome();
+    renderRecords();
+    showToast(`已记录喝水 ${next} 杯`);
+  }
+
+  function editSteps() {
+    const care = selfcareFor(todayKey);
+    const value = window.prompt("今天大概走了多少步？", care.steps == null ? "" : String(care.steps));
+    if (value == null) return;
+    const steps = Math.round(Number(value));
+    if (!Number.isFinite(steps) || steps < 0) {
+      showToast("步数需要填一个非负数字");
+      return;
+    }
+    saveSelfcare(todayKey, {steps});
+    renderHome();
+    renderRecords();
+    showToast("今日步数已记录");
+  }
+
+  function toggleMeditation() {
+    const care = selfcareFor(todayKey);
+    saveSelfcare(todayKey, {meditation: !care.meditation});
+    renderHome();
+    renderRecords();
+    showToast(!care.meditation ? "已记录今天的安静时间" : "已取消冥想完成标记");
   }
 
   function buildAssistantMemoryContext() {
     const memory = seedData.assistantMemory || {};
-    const day = memory.currentDay || todayMemoryDay();
+    const day = todayMemoryDay();
     return {
       ...memory,
       currentDay: day,
       trendText: (day.emotionTrend || []).map((point) => `${point.time}${point.display}`).join("，"),
-      careText: `喝水${day.waterCups || "-"} / ${day.waterGoal || 8}杯，步数${day.steps || "-"}，冥想${day.meditation ? "已完成" : "未完成"}`,
-      meetingTitle: memory.currentMeeting?.title || day.meetingTitle || "",
+      careText: `喝水${day.waterCups ?? "未记录"} / ${day.waterGoal || 8}杯，步数${day.steps ?? "未记录"}，冥想${day.meditation ? "已完成" : "未完成"}`,
+      meetingTitle: day.meetingTitle || memory.currentMeeting?.title || "",
       diaryText: day.diary || "",
     };
   }
@@ -561,6 +754,48 @@
       .replace(/([^>])周会/g, '$1<span class="xy-nowrap">周会</span>');
   }
 
+  function normalizeMeetingFromReport(report = {}, fallback = {}) {
+    const now = new Date();
+    const structured = report.structured || {};
+    const title = report.title || structured.title || fallback.title || "真实会议记录";
+    const minutes = report.minutes || report.diary || report.summary || "";
+    return {
+      id: report.id || report.session_id || `meeting_${Date.now()}`,
+      title,
+      date: report.date || todayKey,
+      time: report.time || `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`,
+      duration: report.duration_min ? `${report.duration_min} 分钟` : fallback.duration || "",
+      status: report.status || fallback.status || "已整理",
+      summary: report.summary || (minutes ? truncate(minutes, 96) : fallback.summary || ""),
+      minutesMarkdown: minutes,
+      tags: report.tags || fallback.tags || ["真实记录"],
+      source: "real",
+      report,
+    };
+  }
+
+  function currentRealMeeting() {
+    const conversation = stateData().conversation || {};
+    const report = conversation.report || conversation.meeting_report || {};
+    if (state.meetingSessionId || report.summary || report.minutes || report.status) {
+      return normalizeMeetingFromReport(report, {
+        title: state.meetingSessionId ? "正在记录的会议" : "最近会议记录",
+        status: conversation.recording_status || report.status || "已准备",
+        summary: conversation.recording_status ? `当前状态：${statusLabel(conversation.recording_status)}` : "",
+      });
+    }
+    return meetingNotes.length ? meetingNotes[meetingNotes.length - 1] : null;
+  }
+
+  function demoMeeting() {
+    const meeting = seedData.meetings?.currentMeeting || {};
+    return {...meeting, source: "preview_seed", tags: meeting.tags || ["历史示例"]};
+  }
+
+  function meetingForDisplay() {
+    return currentRealMeeting() || demoMeeting();
+  }
+
   async function loadMeetingMarkdown() {
     const path = seedData.meetings?.currentMeeting?.minutesMarkdownPath;
     if (!path || location.protocol === "file:") return;
@@ -571,14 +806,15 @@
   }
 
   function renderMeeting() {
-    const meeting = seedData.meetings?.currentMeeting || {};
     const conversation = stateData().conversation || {};
     const report = conversation.report || conversation.meeting_report || {};
-    const status = report.status || conversation.recording_status || meeting.status || "已整理";
-    const summary = report.summary || meeting.summary || "";
+    const meeting = meetingForDisplay();
+    const isReal = meeting.source === "real";
+    const status = report.status || conversation.recording_status || meeting.status || (isReal ? "已准备" : "历史示例");
+    const summary = report.summary || meeting.summary || (isReal ? "真实会议整理完成后会显示在这里。" : "暂无真实会议记录，下面显示一条历史示例。");
     const duration = report.duration_min ? `${report.duration_min} 分钟` : (conversation.stats?.duration ? `${Math.round(conversation.stats.duration / 60)} 分钟` : meeting.duration || "");
     $("#xy-current-meeting-title").innerHTML = formatMeetingTitle(meeting.title);
-    $("#xy-meeting-status").textContent = state.meetingSessionId ? statusLabel(status) : (meeting.status || "已整理");
+    $("#xy-meeting-status").textContent = state.meetingSessionId || isReal ? statusLabel(status) : "历史示例";
     $("#xy-meeting-summary").textContent = summary;
     $("#xy-meeting-date").textContent = `${meeting.date || ""} ${meeting.time || ""}`.trim();
     $("#xy-meeting-time").textContent = duration;
@@ -587,6 +823,24 @@
     const complete = $("#xy-meeting-complete");
     if (start) start.disabled = Boolean(state.meetingSessionId);
     if (complete) complete.disabled = !state.meetingSessionId;
+    renderMeetingHistory();
+  }
+
+  function renderMeetingHistory() {
+    const container = $("#xy-meeting-history");
+    if (!container) return;
+    const demo = demoMeeting();
+    const items = [
+      ...meetingNotes.slice().reverse(),
+      ...(meetingNotes.length ? [] : [demo]),
+    ].slice(0, 5);
+    container.innerHTML = items.map((meeting, index) => `<button type="button" data-meeting-index="${index}"><span class="xy-icon-badge ${meeting.source === "preview_seed" ? "xy-amber" : "xy-sage"}">${iconUse("xy-users")}</span><span><strong>${escapeHTML(meeting.title || "会议纪要")}</strong><small>${escapeHTML(meeting.source === "preview_seed" ? "历史示例" : "真实记录")} · ${escapeHTML(meeting.date || "")} ${escapeHTML(meeting.time || "")}${meeting.duration ? ` · ${escapeHTML(meeting.duration)}` : ""}</small></span>${iconUse("xy-chevron")}</button>`).join("");
+    $$("[data-meeting-index]", container).forEach((button) => {
+      button.addEventListener("click", () => {
+        const meeting = items[Number(button.dataset.meetingIndex)] || demo;
+        openMeetingDetail(meeting);
+      });
+    });
   }
 
   function statusLabel(status) {
@@ -637,7 +891,11 @@
     if (button) button.disabled = true;
     setText("xy-meeting-live-status", "正在结束并整理会议…");
     try {
-      await apiJSON("/api/meeting/complete", {method: "POST", body: {session_id: state.meetingSessionId}, timeoutMs: 15000});
+      const data = await apiJSON("/api/meeting/complete", {method: "POST", body: {session_id: state.meetingSessionId}, timeoutMs: 15000});
+      if (data.report || data.minutes || data.summary) {
+        meetingNotes.push(normalizeMeetingFromReport(data.report || data, {status: "已整理"}));
+        persistMeetingNotes();
+      }
       persistMeetingSession("");
       showToast("会议整理已提交");
       await refreshConversationState();
@@ -649,11 +907,12 @@
     }
   }
 
-  function openMeetingDetail() {
-    const meeting = seedData.meetings?.currentMeeting || {};
+  function openMeetingDetail(meetingArg = null) {
+    const meeting = meetingArg || meetingForDisplay();
     const body = $("#xy-meeting-dialog-body");
     const tags = (meeting.tags || []).map((tag) => `<span>${escapeHTML(tag)}</span>`).join("");
-    body.innerHTML = `<p class="xy-label">会议纪要</p><h2 id="xy-meeting-dialog-title">${escapeHTML(meeting.title || "会议纪要")}</h2><div class="xy-sheet-meta"><span>${escapeHTML(meeting.date || "")} ${escapeHTML(meeting.time || "")}</span><span>${escapeHTML(meeting.duration || "")}</span>${tags}</div>${markdownToHtml(meetingMarkdownText || meeting.minutesMarkdown || "")}`;
+    const label = meeting.source === "preview_seed" ? "历史示例会议纪要" : "会议纪要";
+    body.innerHTML = `<p class="xy-label">${label}</p><h2 id="xy-meeting-dialog-title">${escapeHTML(meeting.title || "会议纪要")}</h2><div class="xy-sheet-meta"><span>${escapeHTML(meeting.date || "")} ${escapeHTML(meeting.time || "")}</span><span>${escapeHTML(meeting.duration || "")}</span>${tags}</div>${markdownToHtml(meeting.source === "preview_seed" ? (meetingMarkdownText || meeting.minutesMarkdown || "") : (meeting.minutesMarkdown || meeting.summary || "真实会议整理完成后会显示详细纪要。"))}`;
     $("#xy-meeting-dialog").showModal();
   }
 
@@ -672,11 +931,13 @@
       button.type = "button";
       button.textContent = String(day);
       button.setAttribute("aria-label", `${month}月${day}日`);
-      button.classList.toggle("has-record", Boolean(seedData.dailyRecords?.[key]));
+      const selfcare = selfcareFor(key);
+      button.classList.toggle("has-record", Boolean(seedData.dailyRecords?.[key] || diaryOverrides[key]?.diary || daySummaryFor(key)?.available || selfcare.updatedAt));
       button.classList.toggle("is-selected", key === state.selectedDate);
+      button.classList.toggle("is-today", key === todayKey);
       button.addEventListener("click", () => {
-        if (!seedData.dailyRecords?.[key]) return;
         state.selectedDate = key;
+        state.calendarMonth = key.slice(0, 7);
         persist();
         renderRecords();
       });
@@ -688,7 +949,13 @@
     const day = currentDay();
     const detail = $("#xy-day-detail");
     if (!detail) return;
-    detail.innerHTML = `<p class="xy-label">${escapeHTML(formatDate(day.date || state.selectedDate))}</p><h2>今日主导状态：${escapeHTML(day.mainState || "状态平稳")}</h2><div class="xy-detail-grid"><span>专注状态 <strong>${escapeHTML(day.focusDisplay || "整体比较专注")}</strong></span><span>喝水 <strong>${escapeHTML(`${day.waterCups || "-"} / ${day.waterGoal || 8} 杯`)}</strong></span><span>步数 <strong>${escapeHTML(`${day.steps || "-"} 步`)}</strong></span><span>冥想 <strong>${day.meditation ? "已完成" : "未完成"}</strong></span><span class="wide">会议 <strong>${escapeHTML(day.hadMeeting ? day.meetingTitle : "今天没有会议记录")}</strong></span></div><p>${escapeHTML(day.diary || "")}</p><div class="xy-assistant-reply">${escapeHTML(diaryOverrides[day.date]?.assistantReply || day.assistantReply || "")}</div>`;
+    const date = day.date || state.selectedDate;
+    const waterText = day.waterCups == null ? "未记录" : `${day.waterCups} / ${day.waterGoal || 8} 杯`;
+    const stepsText = day.steps == null ? "未记录" : `${day.steps} 步`;
+    const diaryText = day.diary || (date === todayKey ? "今天还没有写日记，可以先留下一句话。" : "这一天还没有日记记录。");
+    const replyText = diaryOverrides[date]?.assistantReply || day.assistantReply || "";
+    const summaryText = day.observedSummary?.available ? `观察约 ${day.observedSummary.presence_min || 0} 分钟` : (seedData.dailyRecords?.[date] ? "历史参考数据" : "暂无实时观察");
+    detail.innerHTML = `<p class="xy-label">${escapeHTML(formatDate(date))}</p><h2>${date === todayKey ? "今日" : "这一天"}主导状态：${escapeHTML(day.mainState || "暂无记录")}</h2><div class="xy-detail-grid"><span>专注状态 <strong>${escapeHTML(day.focusDisplay || "今日还没有观察记录")}</strong></span><span>喝水 <strong>${escapeHTML(waterText)}</strong></span><span>步数 <strong>${escapeHTML(stepsText)}</strong></span><span>冥想 <strong>${day.meditation ? "已完成" : "未完成"}</strong></span><span class="wide">观察 <strong>${escapeHTML(summaryText)}</strong></span><span class="wide">会议 <strong>${escapeHTML(day.hadMeeting ? day.meetingTitle : "今天没有会议记录")}</strong></span></div><p>${escapeHTML(diaryText)}</p><div class="xy-assistant-reply">${escapeHTML(replyText)}</div>`;
     if (day.hadMeeting && day.meetingId) {
       const button = document.createElement("button");
       button.type = "button";
@@ -714,13 +981,13 @@
   }
 
   function openDiaryModal(date = state.selectedDate) {
-    const day = seedData.dailyRecords?.[date] || currentDay();
+    const day = mergeDayData(date || state.selectedDate);
     const override = diaryOverrides[date] || {};
     state.selectedDate = date || state.selectedDate;
     persist();
     $("#xy-diary-dialog-title").textContent = `${formatDate(date)} 日记`;
     $("#xy-diary-date").textContent = formatDate(date);
-    $("#xy-diary-editor").value = override.diary || day.diary || "";
+    $("#xy-diary-editor").value = override.diary || (seedData.dailyRecords?.[date] ? day.diary : "");
     const existingReply = override.assistantReply || day.assistantReply || "";
     setDiaryLetterState({
       reply: existingReply,
@@ -735,7 +1002,7 @@
     event.preventDefault();
     const day = currentDay();
     const saveButton = $("#xy-diary-save");
-    const text = $("#xy-diary-editor").value.trim() || day.diary || "";
+    const text = $("#xy-diary-editor").value.trim() || "";
     const memoryContext = buildAssistantMemoryContext();
     let assistantReply = buildDiaryAssistantReply(day, text);
     let responseMeta = {};
@@ -757,7 +1024,7 @@
           user_text: text,
           emotion: day.mainState || currentEmotionText() || "Neutral",
           user_name: "蛋挞",
-          day_summary: {date: state.selectedDate, diary: text, care: memoryContext.careText},
+          day_summary: {date: state.selectedDate, diary: text, care: memoryContext.careText, selfcare: selfcareFor(state.selectedDate), observed: daySummaryFor(state.selectedDate)},
           memory_context: buildReflectMemoryContext(memoryContext),
           cloud_enhanced: cloudReflectEnabled,
           display_mode: "letter_note",
@@ -837,7 +1104,7 @@
   }
 
   function weekKeyForDate(date) {
-    return seedData.dailyRecords?.[date]?.weekKey || "";
+    return seedData.dailyRecords?.[date]?.weekKey || weekKeyFromDate(date);
   }
 
   function openWeeklyReportModal(weekKey = weekKeyForDate(state.selectedDate)) {
@@ -848,16 +1115,43 @@
   }
 
   async function generateWeeklyReport() {
+    const {start, end} = weekBounds(state.selectedDate);
     const weekKey = weekKeyForDate(state.selectedDate);
+    await loadDaySummaryRange(start.slice(0, 7));
+    const dates = datesBetween(start, end);
+    const realEntries = dates
+      .map((date) => {
+        const day = mergeDayData(date);
+        const diary = diaryOverrides[date]?.diary || "";
+        const selfcare = selfcareFor(date);
+        return {
+          date,
+          emotion: day.mainState,
+          content: diary,
+          observed_emotion: day.observedSummary?.dominant_emotion || "",
+          selfcare: selfcare.updatedAt ? {waterCups: selfcare.waterCups, steps: selfcare.steps, meditation: selfcare.meditation} : null,
+        };
+      })
+      .filter((entry) => entry.content || entry.observed_emotion || entry.selfcare);
     const report = seedData.weeklyReports?.[weekKey];
-    const entries = Object.values(seedData.dailyRecords || {})
-      .filter((day) => !weekKey || day.weekKey === weekKey)
-      .map((day) => ({date: day.date, emotion: day.mainState, content: diaryOverrides[day.date]?.diary || day.diary || ""}));
-    const fallback = report?.summary || "这一周你有认真留下自己的状态。下周也可以慢一点，先照顾好睡眠、喝水和走动。";
+    const entries = realEntries.length ? realEntries : dates
+      .map((date) => mergeDayData(date))
+      .filter((day) => seedData.dailyRecords?.[day.date])
+      .map((day) => ({date: day.date, emotion: day.mainState, content: day.diary || "", source: "preview_seed"}));
+    const fallback = realEntries.length
+      ? `这一周已经有 ${realEntries.length} 天留下了真实记录。小屿会先按这些记录来整理，不用历史示例替你定义这一周。`
+      : (report?.summary || "这一周真实记录还不多。可以先写一篇日记，周报会从今天开始慢慢积累。");
     try {
       const data = await apiJSON("/api/report/weekly", {
         method: "POST",
-        body: {entries, user_name: "蛋挞", week_start: entries.at(-1)?.date || "", week_end: entries[0]?.date || ""},
+        body: {
+          entries,
+          user_name: "蛋挞",
+          week_start: start,
+          week_end: end,
+          day_summaries: dates.map((date) => daySummaryFor(date)).filter(Boolean),
+          options: {data_sufficiency: realEntries.length < 3 ? "low" : realEntries.length <= 5 ? "medium" : "high", demo_mode: !realEntries.length},
+        },
         timeoutMs: 30000,
       });
       $("#xy-weekly-dialog-body").innerHTML = `<p class="xy-label">本周周报</p><h2 id="xy-weekly-dialog-title">写给这一周的你</h2><p>${escapeHTML(data.content || fallback)}</p>`;
@@ -870,7 +1164,8 @@
   function renderDiaryHistory() {
     const container = $("#xy-diary-history");
     if (!container) return;
-    const items = Object.values(seedData.dailyRecords || {}).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
+    const dates = new Set([...Object.keys(seedData.dailyRecords || {}), ...Object.keys(diaryOverrides || {})]);
+    const items = [...dates].sort((a, b) => b.localeCompare(a)).slice(0, 5).map((date) => mergeDayData(date));
     container.innerHTML = items.map((day) => `<button type="button" data-date="${escapeHTML(day.date)}" aria-label="打开 ${escapeHTML(formatDate(day.date))} 日记"><span class="xy-icon-badge xy-amber">${iconUse("xy-book")}</span><span><strong>${escapeHTML(formatDate(day.date))}</strong><small>${escapeHTML(day.mainState)} · ${escapeHTML(truncate(diaryOverrides[day.date]?.diary || day.diary, 34))}</small></span>${iconUse("xy-chevron")}</button>`).join("");
     $$("[data-date]", container).forEach((button) => button.addEventListener("click", () => {
       state.selectedDate = button.dataset.date;
@@ -941,12 +1236,14 @@
     const [year, month] = state.calendarMonth.split("-").map(Number);
     const next = new Date(year, month - 1 + delta, 1);
     const key = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`;
-    if (!["2026-06", "2026-07"].includes(key)) return;
     state.calendarMonth = key;
-    const firstRecord = Object.keys(seedData.dailyRecords || {}).find((date) => date.startsWith(key));
-    if (firstRecord) state.selectedDate = key === "2026-07" ? "2026-07-04" : firstRecord;
+    const sameDay = String(parseDate(state.selectedDate).getDate()).padStart(2, "0");
+    const candidate = `${key}-${sameDay}`;
+    const total = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+    state.selectedDate = Number(sameDay) <= total ? candidate : `${key}-${String(total).padStart(2, "0")}`;
     persist();
     renderRecords();
+    loadDaySummaryRange(key).then(renderRecords);
   }
 
   async function refreshDeviceState() {
@@ -1107,6 +1404,9 @@
     $("#xy-meeting-complete")?.addEventListener("click", completeMeeting);
     $("#xy-voice-record")?.addEventListener("click", toggleVoiceRecording);
     $("#xy-voice-stop")?.addEventListener("click", () => stopVoice("home_button"));
+    $("#xy-water-add")?.addEventListener("click", addWaterCup);
+    $("#xy-steps-edit")?.addEventListener("click", editSteps);
+    $("#xy-meditation-toggle")?.addEventListener("click", toggleMeditation);
     $("#xy-announce-enabled")?.addEventListener("change", saveAnnounceSettings);
     $("#xy-sedentary-minutes")?.addEventListener("change", saveAnnounceSettings);
     $("#xy-snooze-minutes")?.addEventListener("change", saveAnnounceSettings);
@@ -1136,9 +1436,12 @@
 
   async function init() {
     if (!seedData.currentDate) return;
-    state.selectedDate = state.selectedDate || seedData.currentDate;
-    state.calendarMonth = state.calendarMonth || "2026-07";
+    if (!state.selectedDate || (state.selectedDate === seedCurrentDate && !diaryOverrides[seedCurrentDate]?.diary)) {
+      state.selectedDate = todayKey;
+    }
+    state.calendarMonth = state.calendarMonth || state.selectedDate.slice(0, 7) || todayKey.slice(0, 7);
     seedMemoryNotesFromPreview();
+    await loadDaySummaryRange(state.calendarMonth);
     renderHome();
     resetInitialChat();
     renderMeeting();

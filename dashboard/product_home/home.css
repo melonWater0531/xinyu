@@ -76,7 +76,9 @@
 .xy-trend-card .xy-trend-time { fill: #9a8e82; font-size: 10px; }
 
 .xy-mini-states { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-top: 28px; }
-.xy-mini-states article { min-width: 0; padding: 13px 9px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--xy-border); border-radius: 20px; background: rgba(255,253,248,.76); }
+.xy-mini-states button { min-width: 0; padding: 13px 9px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--xy-border); border-radius: 20px; text-align: left; background: rgba(255,253,248,.76); box-shadow: 0 5px 14px rgba(95,69,42,.04); transition: transform .16s ease, border-color .16s ease, background .16s ease; }
+.xy-mini-states button:hover { transform: translateY(-1px); border-color: #D9C7B3; background: rgba(255,253,248,.94); }
+.xy-mini-states button:active { transform: translateY(0); }
 .xy-mini-states .xy-icon-badge { width: 34px; height: 34px; border-radius: 12px; }
 .xy-mini-states .xy-icon-badge svg { width: 18px; height: 18px; }
 .xy-mini-states small { display: block; color: var(--xy-text-muted); font-size: 10px; }
@@ -142,6 +144,7 @@
 .xy-week, .xy-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; text-align: center; }
 .xy-week { margin-bottom: 7px; color: var(--xy-text-muted); font-size: 10px; }
 .xy-days button, .xy-days span { aspect-ratio: 1; display: grid; place-items: center; border: 0; border-radius: 50%; color: var(--xy-text-secondary); background: transparent; font-size: 11px; }
+.xy-days button.is-today { box-shadow: inset 0 0 0 1.5px var(--xy-clay); color: var(--xy-caramel); font-weight: 650; }
 .xy-days button.is-selected { color: var(--xy-surface); background: var(--xy-caramel); box-shadow: 0 6px 12px rgba(138,106,69,.18); }
 .xy-record-links { margin-top: 28px; }
 .xy-day-detail { margin-top: 24px; padding: 18px; border: 1px solid var(--xy-border); border-radius: 26px; background: rgba(255,253,248,.82); box-shadow: 0 8px 24px var(--xy-shadow); }

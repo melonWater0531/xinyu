@@ -4807,8 +4807,14 @@ async def api_report_weekly(payload: dict = Body(default={})):
     if day_summaries is None and week_start and week_end:
         day_summaries = day_aggregator.range_summaries(week_start, week_end)
 
-    messages = build_weekly_report_prompt(entries, day_summaries or [], user_name,
-                                          week_start=week_start, week_end=week_end)
+    options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+    messages = build_weekly_report_prompt(
+        entries,
+        {"entries": entries, "day_summaries": day_summaries or [], **options},
+        user_name,
+        week_start=week_start,
+        week_end=week_end,
+    )
     result = await _cloud_llm_complete(messages, max_tokens=600, temperature=0.7)
     text = str(result.get("text") or "")
     if text:

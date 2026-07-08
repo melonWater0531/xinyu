@@ -49,9 +49,9 @@
         </section>
 
         <section class="xy-mini-states" aria-label="今日状态">
-          <article><span class="xy-icon-badge xy-blue"><svg><use href="#xy-drop"/></svg></span><div><small>喝水</small><strong>5 / 8 杯</strong></div></article>
-          <article><span class="xy-icon-badge xy-sage"><svg><use href="#xy-route"/></svg></span><div><small>活动</small><strong>3200 步</strong></div></article>
-          <article><span class="xy-icon-badge xy-lavender"><svg><use href="#xy-moon"/></svg></span><div><small>冥想</small><strong>0 / 1 次</strong></div></article>
+          <button type="button" id="xy-water-add" aria-label="记录喝水一杯"><span class="xy-icon-badge xy-blue"><svg><use href="#xy-drop"/></svg></span><div><small>喝水 · 点按+1</small><strong>未记录</strong></div></button>
+          <button type="button" id="xy-steps-edit" aria-label="记录今日步数"><span class="xy-icon-badge xy-sage"><svg><use href="#xy-route"/></svg></span><div><small>活动 · 点按输入</small><strong>未记录</strong></div></button>
+          <button type="button" id="xy-meditation-toggle" aria-label="切换冥想完成状态"><span class="xy-icon-badge xy-lavender"><svg><use href="#xy-moon"/></svg></span><div><small>冥想 · 点按切换</small><strong>未完成</strong></div></button>
         </section>
 
         <article class="xy-advice"><span class="xy-icon-badge xy-amber"><svg><use href="#xy-leaf"/></svg></span><div><p class="xy-label">小屿建议</p><p>今天水喝得有点少，先补一杯吧。出门走一走也能帮你缓解压力。</p></div></article>
@@ -83,7 +83,7 @@
       <section class="xy-page" data-page="meeting" aria-labelledby="xy-meeting-title" hidden>
         <header class="xy-page-header"><div><p class="xy-kicker">会议记录</p><h1 id="xy-meeting-title">整理你的会议内容</h1><p>小屿会把会议主题、核心内容和待办事项放在一起。</p></div><span class="xy-icon-badge xy-clay"><svg><use href="#xy-users"/></svg></span></header>
         <article class="xy-meeting-current"><div class="xy-section-head"><div><p class="xy-label">当前会议</p><h2 id="xy-current-meeting-title">下半年活动规划与<span class="xy-meeting-title-break">预算申报<span class="xy-nowrap">周会</span></span></h2></div><span class="xy-meeting-status" id="xy-meeting-status">已整理</span></div><div class="xy-meeting-summary" id="xy-meeting-summary"></div><div class="xy-meeting-meta"><span id="xy-meeting-date">2026-07-04 10:30</span><strong id="xy-meeting-time">42:18</strong></div><div class="xy-action-row"><button class="xy-soft" id="xy-meeting-start" type="button">开始记录</button><button class="xy-soft" id="xy-meeting-complete" type="button">结束并整理</button><button class="xy-primary" id="xy-meeting-toggle" type="button">查看会议纪要</button></div><p class="xy-inline-status" id="xy-meeting-live-status">可直接查看已整理内容，也可以连接设备后实时记录。</p></article>
-        <section class="xy-section"><div class="xy-section-head"><div><h2>历史记录</h2><p>最近整理的会议</p></div></div><div class="xy-history">
+        <section class="xy-section"><div class="xy-section-head"><div><h2>历史记录</h2><p>最近整理的会议</p></div></div><div class="xy-history" id="xy-meeting-history">
           <button type="button" data-meeting-detail><span class="xy-icon-badge xy-amber"><svg><use href="#xy-users"/></svg></span><span><strong>下半年活动规划与预算申报周会</strong><small>2026-07-04 10:30 · 42:18</small></span><svg><use href="#xy-chevron"/></svg></button>
         </div></section>
       </section>
