@@ -175,7 +175,7 @@ FastAPI 语音播放的闭环标准是：TTS 生成成功 → 音频传到 reCam
 | `RECAMERA_DEVICE_IP` | `192.168.x.x` | **始终必填**，两个终端都要设置 |
 | `RECAMERA_DOA_SOURCE` | `usb` | ReSpeaker USB 直连时（生产环境） |
 | `RECAMERA_AUDIO_DEVICE` | `2` | 会议录音时；值来自 1.2 第 5 步 |
-| `DEEPSEEK_API_KEY` | `sk-xxx` | 启用首选 LLM provider（对话、日记自动回复、会议摘要） |
+| `DEEPSEEK_API_KEY` | `sk-xxx` | 启用首选 LLM provider（对话、日记自动回复；会议整理接口仍属实验链路） |
 | `ZHIPU_API_KEY` | `sk-xxx` | 启用智谱 GLM-4-Flash 兜底和 GLM-ASR 云端转写 |
 | `ENABLE_WAKE_WORD` | `true` | 可选启用 wake word；默认关闭，缺少 openWakeWord 时不影响 FastAPI |
 | `ENABLE_TTS_VOICE` | `false` | 可选关闭浏览器 TTS voice event；默认开启，不需要云端 TTS key |
@@ -240,7 +240,6 @@ python3 main_phase3.py \
 
 ```text
 http://localhost:8001/home      # 产品页（/home 重定向）
-http://localhost:8001/home-old  # 上一版 Home 备用页
 http://localhost:8001/control   # 控制调试台
 ```
 
@@ -400,7 +399,7 @@ ASR 默认优先使用智谱 GLM-ASR（需要 `ZHIPU_API_KEY`）；云端不可�
 |---|---|---|
 | `RECAMERA_DEVICE_IP` | 空 | reCamera 地址，推荐配置 |
 | `RECAMERA_BASE_URL` | 空 | 兼容性的 HTTP base URL fallback |
-| `DEEPSEEK_API_KEY` | 空 | 首选 LLM provider：对话、日记和会议摘要 |
+| `DEEPSEEK_API_KEY` | 空 | 首选 LLM provider：对话、日记；会议整理接口仍属实验链路 |
 | `DEEPSEEK_API_URL` | DeepSeek API | OpenAI-compatible API 地址 |
 | `DEEPSEEK_MODEL` | 项目默认模型 | 模型名称 |
 | `DEEPSEEK_MAX_TOKENS` | `600` | 单次输出上限 |
@@ -437,7 +436,6 @@ LLM 路由顺序为 DeepSeek → 智谱 GLM-4-Flash → 端点本地 fallback。
 |---|---|---|
 | `/control`、`/v2` | Control Dashboard | FastAPI 真实视频、感知、录音状态和 UI Event 请求 |
 | `/home` | 五页产品页 | `/ws` 实时状态，失败时降级 `/api/state` polling；聊天、日记、周报、会议和语音接后端接口 |
-| `/home-old` | 旧 Home 备用页 | 上一版 Home 页面和 self-care 本地逻辑 |
 | `/` | 重定向 | 跳转 `/home` |
 
 Dashboard 左侧导航：
@@ -688,7 +686,7 @@ curl -X POST http://localhost:8001/api/emotion/infer
 
 `/api/emotion/infer` 是低频语义接口，不进入 `/ws` 的 200ms 实时状态流；建议手动触发或 30 秒以上间隔调用。它保留 EmotiEffLib 8 类实时分类作为底层信号，额外输出开放中文情绪标签、`1-10` 强度和一句解释。无人脸时返回 `label="暂未观察到"`、`intensity=0`、`provider="local"`；云端 LLM 不可用或 JSON 解析失败时使用本地 EmotiEff 映射 fallback。
 
-### 7.5 录音和会议摘要
+### 7.5 会议录音和 ASR 实验链路
 
 ```bash
 curl -X POST http://localhost:8001/api/conversation/start \
@@ -705,7 +703,7 @@ curl -X POST http://localhost:8001/api/meeting/summarize \
   -H 'Content-Type: application/json' -d '{}'
 ```
 
-`/api/meeting/complete` 是 `/home` 使用的完整收口接口：先停止当前 control session 和录音，再在后台调用 summarize。调用方应把首次响应视为“任务已提交”，再轮询 `/api/conversation/state` 的 `report.status`。`ready` 才表示会议纪要可展示和入库；`error` 应展示 `report.error`，不要把首次 `accepted=true` 当成摘要完成。
+`/api/meeting/complete` 是 `/home` 使用的会议收口接口：先停止当前 control session 和录音，再在后台调用 summarize 实验链路。调用方应把首次响应视为“任务已提交”，再轮询 `/api/conversation/state` 的 `report.status`。`ready` 只表示当前实验链路返回了文本结果；由于 ReSpeaker 实时录音音质未稳定验收，会议纪要不能作为已完成功能交付。
 
 `/api/meeting/summarize` 失败时返回结构化错误码：
 
@@ -715,7 +713,7 @@ curl -X POST http://localhost:8001/api/meeting/summarize \
 | `no_segments` | 已启动但没有有效语音片段 | 先录到语音片段 |
 | `asr_empty` | 智谱 ASR 和本地 ASR 均未返回文本 | 检查语音时长、`ZHIPU_API_KEY`、`ASR_PROVIDER`、`faster-whisper` 和模型缓存 |
 
-成功摘要时 transcript 会带 `[说话人A]` 或 `[未知说话人]` 前缀；说话人识别失败不改变 `/api/meeting/summarize` 的请求/响应字段。
+成功返回时 transcript 会带 `[说话人A]` 或 `[未知说话人]` 前缀；说话人识别失败不改变 `/api/meeting/summarize` 的请求/响应字段。当前已验证腾讯会议等外部录音可进入转写链路，但 ReSpeaker 真实会议录音质量不稳定，会议纪要未实现为可交付能力。
 
 ### 7.6 Wake Word 与说话人状态
 
@@ -879,7 +877,7 @@ Session 和心跳：
 存储：
 
 19. 三种情况调用 `/api/meeting/summarize`：确认分别得到 `recording_not_started`、`no_segments`、`asr_empty`；有 `ZHIPU_API_KEY` 时优先云端转写，无 key 或 `ASR_PROVIDER=local` 时走本地 whisper fallback。
-20. 成功会议摘要的 transcript 带 `[说话人A]` 或 `[未知说话人]`；说话人识别失败时摘要仍可生成。
+20. 成功返回的 transcript 带 `[说话人A]` 或 `[未知说话人]`；说话人识别失败不影响接口字段，但会议纪要仍未作为可交付功能验收。
 21. 会议录音启动后，`audio_processing.vad_mode` 应为 `webrtcvad` 或 `rms`，`GET /api/meeting/speakers` 返回 `{ok,speakers,total}`。
 22. 默认无 `ENABLE_WAKE_WORD` 时，`GET /api/wake_word/state` 返回 `enabled=false`；启用但缺 openWakeWord 时服务仍能启动。
 23. `navigator.storage.estimate()` 报告 >85% → 出现存储配额警告 toast。

@@ -376,7 +376,7 @@ button,input,select{font:inherit}
           </div>
         </section>
         <section class="card">
-          <div class="card-head"><h2>LLM 会议纪要</h2><span class="pill" id="meetingReportState">尚未生成</span></div>
+          <div class="card-head"><h2>会议转写实验</h2><span class="pill" id="meetingReportState">尚未生成</span></div>
           <div class="minutes-panel" aria-live="polite">
             <div class="minutes-summary" id="meetingSummary">等待会议结束</div>
             <div class="minutes-body" id="meetingMinutes">/control 默认是声源定位与人脸关联演示，不启用真实录音。完整会议录音和纪要请使用 /home 的会议页。</div>
@@ -444,13 +444,13 @@ button,input,select{font:inherit}
           <div class="card-head"><h2>LLM 与情绪日记</h2><span class="pill" id="llmModeText">未激活</span></div>
           <div class="controls"><button class="btn primary" onclick="startLlmPage()">启动功能</button><button class="btn danger requires-feature" data-page-lock="llm_diary" onclick="stopLlmPage()">终止功能</button></div>
           <div class="controls device-actions"><button class="btn" onclick="gStandby()">Standby</button><button class="btn" onclick="gSleep()">Sleep</button><button class="btn" onclick="gStop()">Stop</button><button class="btn danger" onclick="gCalibrate()">Calibrate</button></div>
-          <div class="notice" style="margin-top:12px">汇总 DeepSeek 对话、/api/reflect、会议摘要和本地 fallback 状态。</div>
+          <div class="notice" style="margin-top:12px">汇总 DeepSeek 对话、/api/reflect、会议转写实验和本地 fallback 状态。</div>
         </section>
         <section class="card">
           <h2>LLM 状态</h2>
           <div class="kv"><span>DeepSeek</span><span id="llmConfigured">--</span></div>
           <div class="kv"><span>当前情绪</span><span id="llmEmotion">--</span></div>
-          <div class="kv"><span>会议摘要</span><span id="llmMeeting">--</span></div>
+          <div class="kv"><span>会议转写</span><span id="llmMeeting">--</span></div>
           <div class="log mono" id="llmLog" style="margin-top:12px"></div>
         </section>
         <section class="card voice-panel">
@@ -576,7 +576,7 @@ const pageMeta={
   multi_sound_yaw:{title:'多人声源演示',sub:'声源找人和人脸锁定在同一个控制会话中完成；真实录音与纪要闭环在 /home 会议页。'},
   gesture_interaction:{title:'手势识别',sub:'查看 MediaPipe 手势类别、置信度与稳定帧；手势不叠加交互语义。'},
   health_pwa:{title:'健康与 PWA 通知',sub:'汇总护眼、久坐、喝水、疲劳、低专注和情绪关心通知状态。'},
-  llm_diary:{title:'LLM 与情绪日记',sub:'汇总 DeepSeek 对话、日记反思、会议摘要和本地 fallback 状态。'},
+  llm_diary:{title:'LLM 与情绪日记',sub:'汇总 DeepSeek 对话、日记反思、会议转写实验和本地 fallback 状态。'},
   manual_gimbal_debug:{title:'手动云台调试',sub:'切到页面后不接管云台，点击“启动功能”才允许发送手动 UI Event。'}
 };
 function nowLine(msg){return `${new Date().toLocaleTimeString()} ${msg}`}
@@ -885,7 +885,7 @@ async function completeMeetingWorkflow(){
   meetingCompleting=true;updateFeatureLocks();
   $('meetingReportState').textContent='演示停止中';
   $('meetingStepReportText').textContent='本页未启用录音与纪要';
-  log('正在终止多人声源演示；本页未启用真实录音或会议纪要');
+  log('正在终止多人声源演示；本页未启用真实录音或会议整理');
   const sessionId=currentSessionId;
   try{
     const r=await apiPost('/api/multi_track/stop',{session_id:sessionId,finalize:false},{timeoutMs:10000});
@@ -1078,7 +1078,7 @@ function renderMeetingWorkflow(conv={},context={}){
 
   const ready=reportStatus==='ready';
   $('meetingReportState').textContent=ready?'已生成':reportStatus==='stopping'?'停止中':reportStatus==='summarizing'?`生成中 ${Number(report.progress||0)}%`:reportStatus==='recording_degraded'?'录音降级':reportStatus==='error'?'生成失败':'尚未生成';
-  $('meetingSummary').textContent=ready?(report.summary||'会议纪要已生成'):reportStatus==='stopping'?'正在封存录音并提交转写任务…':(reportStatus==='summarizing'?'正在整理逐句记录…':'等待会议结束');
+  $('meetingSummary').textContent=ready?(report.summary||'会议记录已返回'):reportStatus==='stopping'?'正在封存录音并提交转写任务…':(reportStatus==='summarizing'?'正在整理逐句记录…':'等待会议结束');
   $('meetingMinutes').textContent=ready?(report.minutes||report.diary||''):'本页默认只做声源定位与人脸关联演示；完整录音、转写和纪要请从 /home 会议页启动。';
   $('meetingAsrStatus').textContent=reportStatus;
   $('meetingReportTurns').textContent=report.turns||0;

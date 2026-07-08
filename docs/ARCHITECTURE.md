@@ -14,7 +14,7 @@
 | 会议录音 | ReSpeaker USB Audio + USB DOA | ReSpeaker LED；可选 reCamera yaw | 默认只录音；显式开启会议跟随后才驱动 yaw |
 | 手势识别 | reCamera SSCMA 摄像头 + MediaPipe Gesture Recognizer | Dashboard recognition state | 只展示手势类别、置信度和稳定帧；不叠加交互语义、不进入云台控制 |
 | 健康/PWA | Dashboard localStorage + 实时 emotion/attention/eye/gaze state | 本地 PWA Notification | 护眼、久坐、喝水、疲劳、低专注、情绪关心通知在前端本地治理 |
-| LLM/日记 | DeepSeek 优先；智谱 GLM-4-Flash 兜底；端点本地 fallback | Dashboard 日记、反思、会议摘要 | 无云端 API key 时返回本地温和建议，不丢失日记 |
+| LLM/日记 | DeepSeek 优先；智谱 GLM-4-Flash 兜底；端点本地 fallback | Dashboard 日记、反思、周报；会议整理接口仍属实验链路 | 无云端 API key 时返回本地温和建议，不丢失日记 |
 | TTS/语音输出 | 智谱/OpenAI-compatible TTS + FastAPI 音频缓存 + Node-RED audio bridge；浏览器 Web Speech 作回退 | reCamera Gimbal 2002w 扬声器或浏览器 | 设备播放只走 `/recamera-control/v1/audio/*`，不进入云台控制 Event |
 | 手动云台 | Dashboard UI Event | reCamera yaw/pitch CAN 电机 | 有效 manual session 才接受 D-Pad/home |
 
@@ -42,7 +42,7 @@ USB Audio Class 由 `sounddevice` 独立录音。TCP `9999` 仅是 DOA 备用输
 音频块做降噪，存在 `webrtcvad` 时优先使用 WebRTC VAD。任一依赖缺失或运行
 失败时自动回退原 RMS 分段，不阻塞录音。ASR 路由默认为智谱 GLM-ASR；
 无 `ZHIPU_API_KEY`、`ASR_PROVIDER=local` 或云端失败时回退本地
-`faster-whisper`，全部失败时会议摘要返回 `asr_empty`。
+`faster-whisper`，全部失败时会议整理实验接口返回 `asr_empty`。
 会议 turn finalize 时通过只读 DOA/face/pose/gimbal 状态做非阻塞说话人标注；
 无法匹配时写入 `未知说话人`，不影响 WAV 保存、ASR 或摘要。Wake word 是可选
 服务，默认关闭，缺少 openWakeWord 或模型时只在 state 中报告 unavailable。
@@ -84,7 +84,7 @@ FastAPI = UI Event emitter + perception/recording + runtime telemetry viewer
 | apply_command 调用点 | **仅 `main_phase3.py` control runtime** |
 | FastAPI 是否调用 apply_command | **NEVER**（注释确认，代码无调用） |
 | 是否有第二 FSM | **NO**（FastAPI 只查询 main runtime snapshot） |
-| 孤立 PD 模块 | 已归档到 `archive/legacy_20260704/core_orphans/control_filter.py`；未被任何生产代码 import |
+| 孤立 PD 模块 | 历史归档已清理；当前仓库无生产代码 import 旧控制滤波模块 |
 
 控制闭环、session 租约与设备看门狗的关键结论已合并在本节与 SOP 验收章节中。
 
@@ -146,7 +146,7 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 
 | 风险 ID | 位置 | 描述 | 级别 | 结论 |
 |---|---|---|---|---|
-| R01 | `archive/legacy_20260704/core_orphans/control_filter.py` | 含比例增益/EMA 控制数学，有 `ControlFilter` 类 | ARCHIVED | **孤立模块**：无任何生产代码 import，不在控制链路中 |
+| R01 | 旧 `control_filter.py` 孤立模块 | 含比例增益/EMA 控制数学，历史上未被生产代码 import | DELETED | 已随历史归档清理，不在控制链路中 |
 | R02 | `hardware/recamera_client.py` | 旧 Socket.IO `widget-change` shadow transport | DELETED | 已由版本化 Node-RED HTTP bridge 替代 |
 | R03 | `tools/run_orchestrator_mvp.py` | 含 `MockGimbal.apply_command()` 调用 | OK | 开发工具，不被任何生产入口 import |
 | R04 | `recamera_fastapi.py` runtime cache | FastAPI 展示控制状态 | OK | 状态来自 main runtime snapshot，无 Orchestrator 实例 |
@@ -165,7 +165,7 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | `core/orchestrator.py` | **ACTIVE** | 唯一决策引擎；持有 FSM 实例；输出 ControlCommand |
 | `core/event.py` | **ACTIVE** | 数据类：Event、BBox、ControlCommand（均为 frozen dataclass） |
 | `core/safety_layer.py` | **ACTIVE** | ControlCommand hard gate；rate/step/range/speed 仅 allow/block |
-| `archive/legacy_20260704/core_orphans/control_filter.py` | **ARCHIVED ORPHAN** | 遗留比例控制平滑模块；未被生产代码 import；仅作备用 |
+| 旧 `control_filter.py` 孤立模块 | **DELETED** | 遗留比例控制平滑模块；未被生产代码 import；已随历史归档清理 |
 
 ### 4.2 硬件（`hardware/`）
 
@@ -228,23 +228,18 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 |---|---|---|
 | `recamera_v2_live.html` | `/control` `/v2` | PAGE 1：实时控制台（只读遥测 + FSM 可观测） |
 | `home.html` | `/home` `/`（经 `/` 重定向） | PAGE 2：五页产品 Home；真实状态优先，WS 失败降级 polling |
-| `archive/dashboard_cleanup_20260705/home_legacy/home_legacy.html` | `/home-old` | 上一版 Home 备用入口 |
 | `manifest.webmanifest` | `/manifest.webmanifest` | PWA 清单 |
 | `sw.js` | `/sw.js` | Service Worker |
 
-历史五页录屏预览仍保留在 `archive/legacy_20260704/dashboard_preview/`；正式产品入口已提升到 `dashboard/home.html`，资源位于 `dashboard/product_home/`。
+历史五页录屏预览和上一版 Home 运行资产已清理；正式产品入口为 `dashboard/home.html`，资源位于 `dashboard/product_home/`。
 
 ### 4.8 文件分层索引
 
 | 类别 | 文件或目录 | 说明 |
 |---|---|---|
 | 活跃前端 | `dashboard/home.html`、`dashboard/product_home/` | `/home` 五页产品页、真实接口闭环与本地 fallback |
-| 备用 Home | `archive/dashboard_cleanup_20260705/home_legacy/` | `/home-old` 上一版 Home 备用入口，静态资源由 `/home-old-static/*` 提供 |
 | 活跃调试台 | `dashboard/recamera_v2_live.html`、`dashboard/tracking_overlay.js` | `/control`、`/v2` 工程控制与遥测 |
 | 活跃静态资产 | `dashboard/icons/`、`dashboard/product_home/` | PWA 图标与正式产品页资源 |
-| 已归档旧资产 | `archive/dashboard_cleanup_20260705/unused_dashboard_assets/` | 旧岛图、GLB 与 Three vendor 备用归档 |
-| Legacy 预览 | `archive/legacy_20260704/dashboard_preview/` | 历史五页录屏预览和 Page 2 数据 |
-| 控制孤立模块 | `archive/legacy_20260704/core_orphans/control_filter.py` | 旧比例/EMA 控制滤波器；不在单控制平面中 |
 | 开发工具 | `proxy.py`、`recamera_demo.py`、`tools/run_orchestrator_mvp.py` | 辅助调试或演示入口，不是生产主链路 |
 | 模型资产 | `models/` | MediaPipe、ONNX、EmotiEff 等模型；不参与前端清理 |
 | 部署资产 | `deploy/node_red/`、`vendor/recamera_*` | 设备桥和厂商参考代码；不参与前端清理 |
@@ -373,7 +368,7 @@ Debounce:
 - [x] 云台遥测：仅 `main_phase3.py` 调用 `RecameraClient.get_status()`，FastAPI 不创建硬件客户端
 - [x] LLM 对话：DeepSeek API 优先、智谱 GLM-4-Flash 兜底；端点保留本地轻量 fallback
 - [x] 情绪感知 prompt 注入：`/api/chat` 和 `/api/reflect` diary 使用 `services/emotion_prompt.py` 融入实时状态，响应字段保持兼容
-- [x] 会议摘要：智谱 GLM-ASR 优先、本地 whisper fallback；transcript 带 `[说话人A]` / `[未知说话人]` 标签；`/api/meeting/summarize` 返回结构化错误码 `recording_not_started`、`no_segments`、`asr_empty`
+- [~] 会议录音/ASR 实验链路：智谱 GLM-ASR 优先、本地 whisper fallback；transcript 带 `[说话人A]` / `[未知说话人]` 标签；`/api/meeting/summarize` 返回结构化错误码。腾讯会议等外部录音可进入转写链路，但 ReSpeaker 实时录音质量未稳定验收，会议纪要未实现为可交付功能。
 - [x] 对话会话管理：`/api/conversation/{start,stop,state,save,debug}`
 - [x] 会议说话人查询：`GET /api/meeting/speakers`
 - [x] Wake word 状态查询：`GET /api/wake_word/state`；检测事件通过 `/ws` 广播 `wake_word_detected`
@@ -430,7 +425,7 @@ DeepSeek 默认模型保留 `deepseek-v4-flash`。旧截图中“模型不存在
 
 | 模块 | 状态 | 说明 |
 |---|---|---|
-| `archive/legacy_20260704/core_orphans/control_filter.py` | **ARCHIVED ORPHAN** | 含 EMA + Kp 比例控制；未被任何生产文件 import；作为备用保留 |
+| 旧 `control_filter.py` 孤立模块 | **DELETED** | 含 EMA + Kp 比例控制；未被任何生产文件 import；已随历史归档清理 |
 | `tools/run_orchestrator_mvp.py` | **DEV TOOL** | 含 `MockGimbal.apply_command()`；仅用于开发测试，不在生产链路 |
 | `tools/build_function_arch_docx.py` | **DEV TOOL** | 文档生成工具；含已过时模块引用（`gimbal_mode_state.py`、`state_machine.py`），不影响运行 |
 

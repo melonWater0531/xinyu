@@ -182,7 +182,7 @@ class ControlPageResilienceTests(unittest.TestCase):
         self.assertIn("/api/multi_track/stop", page)
         self.assertIn("完整录音、转写和纪要请从 /home 会议页启动", page)
         self.assertIn("说话人逐句记录", page)
-        self.assertIn("LLM 会议纪要", page)
+        self.assertIn("会议转写实验", page)
 
     def test_conversation_recorder_reads_doa_provider(self) -> None:
         from audio.conversation_recorder import ConversationRecorder
@@ -273,14 +273,14 @@ class ControlPageResilienceTests(unittest.TestCase):
 
     def test_service_worker_refreshes_static_assets_before_cache_fallback(self) -> None:
         sw = (ROOT / "dashboard" / "sw.js").read_text(encoding="utf-8")
-        self.assertIn('CACHE_NAME = "xinyu-pwa-v12"', sw)
+        self.assertIn('CACHE_NAME = "xinyu-pwa-v13"', sw)
         for asset in (
             "/static/product_home/home.css",
             "/static/product_home/home.js",
             "/static/product_home/seed_data.js",
-            "/home-old",
         ):
             self.assertIn(asset, sw)
+        self.assertNotIn("/home-old", sw)
         static_branch = sw.split('url.pathname.startsWith("/static/")', 1)[1]
         self.assertLess(static_branch.index("fetch(request)"), static_branch.index("caches.match(request)"))
 

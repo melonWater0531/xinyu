@@ -1096,7 +1096,7 @@
   }
 
   function formatMeetingTitle(title) {
-    const safe = escapeHTML(title || "会议纪要");
+    const safe = escapeHTML(title || "会议记录");
     return safe
       .replace("下半年活动规划与预算申报周会", '下半年活动规划与<span class="xy-meeting-title-break">预算申报<span class="xy-nowrap">周会</span></span>')
       .replace(/([^>])周会/g, '$1<span class="xy-nowrap">周会</span>');
@@ -1215,7 +1215,7 @@
       ...meetingNotes.slice().reverse(),
       ...(meetingNotes.length ? [] : [demo]),
     ].slice(0, 5);
-    container.innerHTML = items.map((meeting, index) => `<button type="button" data-meeting-index="${index}"><span class="xy-icon-badge ${meeting.source === "preview_seed" ? "xy-amber" : "xy-sage"}">${iconUse("xy-users")}</span><span><strong>${escapeHTML(meeting.title || "会议纪要")}</strong><small>${escapeHTML(meeting.source === "preview_seed" ? "历史示例" : "真实记录")} · ${escapeHTML(meeting.date || "")} ${escapeHTML(meeting.time || "")}${meeting.duration ? ` · ${escapeHTML(meeting.duration)}` : ""}</small></span>${iconUse("xy-chevron")}</button>`).join("");
+    container.innerHTML = items.map((meeting, index) => `<button type="button" data-meeting-index="${index}"><span class="xy-icon-badge ${meeting.source === "preview_seed" ? "xy-amber" : "xy-sage"}">${iconUse("xy-users")}</span><span><strong>${escapeHTML(meeting.title || "会议记录")}</strong><small>${escapeHTML(meeting.source === "preview_seed" ? "本地示例" : "真实记录")} · ${escapeHTML(meeting.date || "")} ${escapeHTML(meeting.time || "")}${meeting.duration ? ` · ${escapeHTML(meeting.duration)}` : ""}</small></span>${iconUse("xy-chevron")}</button>`).join("");
     $$("[data-meeting-index]", container).forEach((button) => {
       button.addEventListener("click", () => {
         const meeting = items[Number(button.dataset.meetingIndex)] || demo;
@@ -1297,8 +1297,8 @@
     const meeting = meetingArg || meetingForDisplay();
     const body = $("#xy-meeting-dialog-body");
     const tags = (meeting.tags || []).map((tag) => `<span>${escapeHTML(tag)}</span>`).join("");
-    const label = meeting.source === "preview_seed" ? "历史示例会议纪要" : "会议纪要";
-    body.innerHTML = `<p class="xy-label">${label}</p><h2 id="xy-meeting-dialog-title">${escapeHTML(meeting.title || "会议纪要")}</h2><div class="xy-sheet-meta"><span>${escapeHTML(meeting.date || "")} ${escapeHTML(meeting.time || "")}</span><span>${escapeHTML(meeting.duration || "")}</span>${tags}</div>${markdownToHtml(meeting.source === "preview_seed" ? (meetingMarkdownText || meeting.minutesMarkdown || "") : (meeting.minutesMarkdown || meeting.summary || "真实会议整理完成后会显示详细纪要。"))}`;
+    const label = meeting.source === "preview_seed" ? "本地会议样例" : "会议记录";
+    body.innerHTML = `<p class="xy-label">${label}</p><h2 id="xy-meeting-dialog-title">${escapeHTML(meeting.title || "会议记录")}</h2><div class="xy-sheet-meta"><span>${escapeHTML(meeting.date || "")} ${escapeHTML(meeting.time || "")}</span><span>${escapeHTML(meeting.duration || "")}</span>${tags}</div>${markdownToHtml(meeting.source === "preview_seed" ? (meetingMarkdownText || meeting.minutesMarkdown || "") : (meeting.minutesMarkdown || meeting.summary || "真实会议整理完成后会显示详细记录。"))}`;
     $("#xy-meeting-dialog").showModal();
   }
 
@@ -1346,7 +1346,7 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "xy-inline-link";
-      button.textContent = "查看会议纪要";
+      button.textContent = "查看会议样例";
       button.addEventListener("click", openMeetingDetail);
       detail.append(button);
     }

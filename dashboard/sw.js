@@ -1,7 +1,6 @@
-const CACHE_NAME = "xinyu-pwa-v12";
+const CACHE_NAME = "xinyu-pwa-v13";
 const APP_SHELL = [
   "/home",
-  "/home-old",
   "/manifest.webmanifest",
   "/static/product_home/home.css",
   "/static/product_home/home.js",
@@ -44,7 +43,7 @@ self.addEventListener("fetch", event => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin || isRealtimePath(url.pathname)) return;
 
-  if (url.pathname === "/" || url.pathname === "/home" || url.pathname === "/home-old" || url.pathname === "/manifest.webmanifest") {
+  if (url.pathname === "/" || url.pathname === "/home" || url.pathname === "/manifest.webmanifest") {
     event.respondWith(
       fetch(request)
         .then(response => {

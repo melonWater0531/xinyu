@@ -117,23 +117,20 @@ class XinyuProductHomeTests(unittest.TestCase):
         self.assertIn("meeting_summary_2026-07-04.md", self.all_text)
         self.assertIn("/static/product_home/", self.js)
 
-    def test_routes_serve_product_and_legacy_home(self) -> None:
+    def test_routes_serve_product_home_only(self) -> None:
         import recamera_fastapi as api
 
         product = asyncio.run(api.serve_home())
-        legacy = asyncio.run(api.serve_home_old())
         product_body = product.body.decode("utf-8")
-        legacy_body = legacy.body.decode("utf-8")
         self.assertIn("/static/product_home/home.js", product_body)
         self.assertIn("xy-voice-record", product_body)
-        self.assertIn("/home-old-static/home_selfcare.js", legacy_body)
-        self.assertIn("xinyu-icon-slot", legacy_body)
+        self.assertFalse(hasattr(api, "serve_home_old"))
+        self.assertNotIn("home-old", product_body)
 
-    def test_sop_documents_product_home_and_backup(self) -> None:
+    def test_sop_documents_product_home(self) -> None:
         sop = (DOCS / "home_demo_sop.md").read_text(encoding="utf-8")
         for phrase in (
             "http://localhost:8001/home",
-            "http://localhost:8001/home-old",
             "POST /api/chat",
             "POST /api/reflect",
             "POST /api/report/weekly",
@@ -141,6 +138,8 @@ class XinyuProductHomeTests(unittest.TestCase):
             "POST /api/voice/chat",
         ):
             self.assertIn(phrase, sop)
+        self.assertIn("会议纪要未实现为可交付能力", sop)
+        self.assertNotIn("home-old", sop)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for product home syntax validation")
     def test_product_home_javascript_syntax(self) -> None:
