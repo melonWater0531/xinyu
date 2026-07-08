@@ -160,6 +160,52 @@ def describe_day_summary(day_summary: dict | None) -> str:
     return "，".join(parts)
 
 
+def _clip_text(value, limit: int = 120) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    return text[:limit]
+
+
+def describe_reflect_memory(memory_context: dict | None) -> str:
+    """Build a compact memory context for diary reflection.
+
+    Confirmed user notes are allowed as personal memory. Preview notes come from
+    the product demo seed and must stay clearly marked as demo reference.
+    """
+    if not isinstance(memory_context, dict):
+        return ""
+    lines = []
+    confirmed = memory_context.get("confirmed_notes") or []
+    if confirmed:
+        lines.append("用户主动保存的记忆：")
+        for item in confirmed[:8]:
+            if isinstance(item, dict) and item.get("content"):
+                lines.append(f"- {item.get('date','')}: {_clip_text(item.get('content'), 120)}")
+    preview = memory_context.get("preview_notes") or []
+    if preview:
+        lines.append("演示预览历史（只作参考，不能当成用户真实长期记忆来断言）：")
+        for item in preview[:6]:
+            if isinstance(item, dict) and item.get("content"):
+                lines.append(f"- {item.get('date','')}: {_clip_text(item.get('content'), 130)}")
+    recent = memory_context.get("recent_diary") or []
+    if recent:
+        lines.append("近日日记摘要：")
+        for item in recent[:5]:
+            if isinstance(item, dict):
+                excerpt = _clip_text(item.get("excerpt"), 90)
+                if excerpt:
+                    lines.append(f"- {item.get('date','')}: {item.get('main_state','')}；{excerpt}")
+    weekly = _clip_text(memory_context.get("weekly_summary"), 220)
+    if weekly:
+        lines.append(f"本周趋势参考：{weekly}")
+    meeting = _clip_text(memory_context.get("current_meeting"), 160)
+    if meeting:
+        lines.append(f"今日会议参考：{meeting}")
+    care = _clip_text(memory_context.get("care_suggestion"), 140)
+    if care:
+        lines.append(f"照顾建议参考：{care}")
+    return "\n".join(lines)
+
+
 def build_weekly_report_prompt(weekly_data, options=None, user_name: str = "",
                                week_start: str = "", week_end: str = "") -> list[dict[str, str]]:
     """Build a short weekly reflection while preserving the legacy call shape."""
@@ -239,13 +285,22 @@ def build_reflect_messages(diary_text: str, state: dict | None, user_name: str =
     day_line = describe_day_summary(payload.get("day_summary"))
     if day_line:
         observed += f"\n今日观察摘要：{day_line}"
+    memory_lines = describe_reflect_memory(payload.get("memory_context"))
     name = user_name.strip() or "用户"
-    system = """你是心屿，请以用户视角（“我”）生成今日日记条目，并给出一句温柔回应。
+    system = """你是心屿，请以用户视角（“我”）生成今日日记条目，并给出一段像深夜朋友聊天的温柔回信。
 
 要求：
-- 日记不超过 60 字，回应不超过 40 字。
-- 用户自写内容优先，传感器状态只作为辅助线索。
-- 不复述原文，不编造未提及的事件。
+- 日记不超过 80 字，回应 80-140 字。
+- 用户本次自写内容优先；用户主动保存的记忆其次；演示预览历史、传感器状态和会议摘要只作为辅助线索。
+- 如果使用演示预览历史，只能用“最近的记录里似乎也有类似的忙碌/疲惫节奏”这类谨慎措辞，不能说成用户真实长期记忆。
+- 回信第一句必须先“镜像”用户日记里最核心的情绪和困扰：用自己的话复述具体事件/压力/矛盾，让用户感到被真正听见；不能只说“我理解你”“辛苦了”。
+- 禁止空洞鸡汤和泛化安慰，不要使用“明天会更好”“照顾好自己”“休息很重要”“你已经很棒了”“一切都会过去”等模板句。
+- 回复必须紧扣日记中提到的具体事件或感受；不复述整段原文，但要抓住具体细节。
+- 区分倾诉和求助：如果用户主要是在表达情绪，而不是明确问“怎么办/建议/下一步”，不要急着给行动方案，也不要追问“你打算怎么做”；优先陪伴和承接。
+- 只有用户明确求助时，才给一个很小、具体、不说教的下一步。
+- 如果用户提到失眠、头痛、胃痛、胸闷等持续身体不适，温和提醒留意身体状况、必要时找现实中的人或专业帮助；不要诊断，不要吓人。
+- 语气像一个真正关心你的朋友在深夜聊天，可以口语化、带一点不完美的停顿感；不要像心理咨询师念话术模板。
+- 不编造未提及的事件。
 - 当文字和状态线索冲突时，用温和、不确定的语气处理。
 - 输出严格 JSON，只有两个字段：{"diary":"...","reply":"..."}"""
     user = f"""用户：{name}
@@ -253,7 +308,10 @@ def build_reflect_messages(diary_text: str, state: dict | None, user_name: str =
 {diary_text.strip() or "用户未填写文字。"}
 
 当前状态线索：
-{context}{observed}"""
+{context}{observed}
+
+可参考记忆与历史：
+{memory_lines or "暂无额外记忆。"}"""
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},

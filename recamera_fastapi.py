@@ -4498,10 +4498,13 @@ async def api_llm_reflect(payload: dict = Body(default={})):
                 payload = {**payload, "day_summary": day_aggregator.summary()}
             except Exception:
                 pass
-        result = await _cloud_llm_complete(
-            build_reflect_messages(user_text, current_state, str(payload.get("user_name", "")), payload),
-            max_tokens=320,
-        )
+        cloud_enabled = payload.get("cloud_enhanced", True) is not False
+        result = {"text": "", "provider": "none"}
+        if cloud_enabled:
+            result = await _cloud_llm_complete(
+                build_reflect_messages(user_text, current_state, str(payload.get("user_name", "")), payload),
+                max_tokens=420,
+            )
         ds_raw = str(result.get("text") or "")
 
         diary_entry = reply_text = ""
@@ -4519,7 +4522,12 @@ async def api_llm_reflect(payload: dict = Body(default={})):
         if not diary_entry:
             diary_entry = _llm_engine.diary(emo_en, attn, prev)
         if not reply_text:
-            reply_text = _llm_engine.quote(emo_en, "mid")
+            reply_text = _llm_engine.respond_to_user(
+                user_text or diary_entry,
+                emo_en,
+                str(payload.get("user_name", "")),
+                context=str(payload.get("memory_context") or ""),
+            )
 
         return {"diary": diary_entry, "reply": reply_text, "text": diary_entry, "source": source,
                 "time": round(_llm_engine._last_time, 2)}

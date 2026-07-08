@@ -4,6 +4,8 @@
   const STORAGE_KEY = "xinyu.preview.v1";
   const DIARY_KEY = "xinyu.actual.diary.v1";
   const MEETING_SESSION_KEY = "xinyu.product.meeting_session.v1";
+  const MEMORY_NOTES_KEY = "xinyu.memory.notes.v1";
+  const CLOUD_REFLECT_KEY = "xinyu.cloud_reflect_enabled.v1";
   const seedData = window.XINYU_PREVIEW_DATA || {};
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -18,6 +20,7 @@
   let pollTimer = 0;
   let mediaRecorder = null;
   let voiceChunks = [];
+  let diaryTypeTimer = 0;
 
   function loadJSON(key, fallback) {
     try {
@@ -28,8 +31,19 @@
     }
   }
 
+  function loadArray(key) {
+    try {
+      const value = JSON.parse(localStorage.getItem(key) || "[]");
+      return Array.isArray(value) ? value : [];
+    } catch (_error) {
+      return [];
+    }
+  }
+
   const state = loadJSON(STORAGE_KEY, {activePage: "home", selectedDate: seedData.currentDate || "2026-07-04", calendarMonth: "2026-07"});
   const diaryOverrides = loadJSON(DIARY_KEY, {});
+  const memoryNotes = loadArray(MEMORY_NOTES_KEY);
+  let cloudReflectEnabled = localStorage.getItem(CLOUD_REFLECT_KEY) !== "false";
   state.meetingSessionId = state.meetingSessionId || localStorage.getItem(MEETING_SESSION_KEY) || "";
 
   function persist() {
@@ -43,6 +57,14 @@
 
   function persistDiary() {
     localStorage.setItem(DIARY_KEY, JSON.stringify(diaryOverrides));
+  }
+
+  function persistMemoryNotes() {
+    localStorage.setItem(MEMORY_NOTES_KEY, JSON.stringify(memoryNotes.slice(-60)));
+  }
+
+  function persistCloudReflect() {
+    localStorage.setItem(CLOUD_REFLECT_KEY, cloudReflectEnabled ? "true" : "false");
   }
 
   function persistMeetingSession(sessionId) {
@@ -155,6 +177,132 @@
   function setText(id, value) {
     const el = document.getElementById(id);
     if (el) el.textContent = value == null ? "" : String(value);
+  }
+
+  function reducedMotion() {
+    return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+  }
+
+  function privacyLabel(value) {
+    if (value) return String(value);
+    return cloudReflectEnabled ? "云端增强已开启" : "仅使用本地回复";
+  }
+
+  function seedMemoryNotesFromPreview() {
+    const memory = seedData.assistantMemory || {};
+    const seeded = new Set(memoryNotes.filter((note) => note?.source === "preview_seed").map((note) => note.id));
+    const additions = [];
+    (memory.recentDiary || []).slice(0, 5).forEach((item) => {
+      if (!item?.date || seeded.has(`preview_diary_${item.date}`)) return;
+      additions.push({
+        id: `preview_diary_${item.date}`,
+        date: item.date,
+        content: `演示预览：${item.date} 的日记里，用户写到“${truncate(item.diary || "", 70)}”，当天状态是${item.mainState || "状态平稳"}。`,
+        source: "preview_seed",
+        created_at: new Date().toISOString(),
+      });
+    });
+    const report = memory.currentWeeklyReport;
+    if (report?.weekKey && !seeded.has(`preview_week_${report.weekKey}`)) {
+      additions.push({
+        id: `preview_week_${report.weekKey}`,
+        date: memory.currentDate || seedData.currentDate || "",
+        content: `演示预览：${report.rangeLabel || report.weekKey} 的周报提到，${truncate(report.summary || "", 90)}`,
+        source: "preview_seed",
+        created_at: new Date().toISOString(),
+      });
+    }
+    if (!additions.length) return;
+    memoryNotes.push(...additions);
+    persistMemoryNotes();
+  }
+
+  function buildReflectMemoryContext(memoryContext = buildAssistantMemoryContext()) {
+    const confirmed = memoryNotes.filter((note) => note?.source !== "preview_seed").slice(-8);
+    const preview = memoryNotes.filter((note) => note?.source === "preview_seed").slice(-6);
+    return {
+      confirmed_notes: confirmed.map((note) => ({
+        date: note.date || "",
+        content: truncate(note.content || "", 110),
+      })),
+      preview_notes: preview.map((note) => ({
+        date: note.date || "",
+        content: truncate(note.content || "", 120),
+      })),
+      recent_diary: (memoryContext.recentDiary || []).slice(0, 5).map((item) => ({
+        date: item.date || "",
+        main_state: item.mainState || "",
+        excerpt: truncate(item.diary || "", 90),
+        assistant_reply: truncate(item.assistantReply || "", 80),
+      })),
+      weekly_summary: truncate(memoryContext.currentWeeklyReport?.summary || "", 220),
+      current_meeting: truncate(memoryContext.currentMeeting?.summary || "", 160),
+      care_suggestion: truncate(memoryContext.careSuggestion || "", 140),
+    };
+  }
+
+  function normalizeMemoryCandidate(data, diaryText, replyText) {
+    const direct = data?.memory_candidate || data?.memoryCandidate || data?.memory_suggestion?.candidate || data?.memorySuggestion?.candidate;
+    if (direct) return truncate(direct, 120);
+    const text = String(diaryText || "").trim();
+    if (text) return `用户希望小屿记得：${truncate(text, 54)}`;
+    return replyText ? `用户保存了一篇日记，小屿的回应是：${truncate(replyText, 48)}` : "";
+  }
+
+  function clearDiaryTyping() {
+    if (diaryTypeTimer) window.clearTimeout(diaryTypeTimer);
+    diaryTypeTimer = 0;
+  }
+
+  function typeDiaryReply(text) {
+    const el = $("#xy-diary-reply");
+    if (!el) return;
+    clearDiaryTyping();
+    const full = String(text || "");
+    if (!full || reducedMotion()) {
+      el.textContent = full;
+      return;
+    }
+    el.textContent = "";
+    let index = 0;
+    const step = () => {
+      index += 1;
+      el.textContent = full.slice(0, index);
+      if (index < full.length) diaryTypeTimer = window.setTimeout(step, 34);
+      else diaryTypeTimer = 0;
+    };
+    step();
+  }
+
+  function setDiaryLetterState({reply = "", status = "小屿的回信", privacy = "", loading = false, visible = true, animate = false, candidate = ""} = {}) {
+    const letter = $("#xy-diary-letter");
+    const actions = $("#xy-memory-actions");
+    const editor = $("#xy-memory-editor");
+    if (letter) {
+      const shouldShow = Boolean(visible || reply || loading);
+      letter.hidden = !shouldShow;
+      letter.classList.toggle("is-visible", shouldShow);
+      letter.classList.toggle("is-loading", Boolean(loading));
+    }
+    setText("xy-diary-reply-status", status);
+    setText("xy-diary-privacy", privacyLabel(privacy));
+    if (animate) typeDiaryReply(reply);
+    else {
+      clearDiaryTyping();
+      setText("xy-diary-reply", reply);
+    }
+    if (actions) actions.hidden = !candidate || loading;
+    if (editor) editor.hidden = true;
+    if (candidate) {
+      const start = $("#xy-memory-start");
+      if (start) start.dataset.candidate = candidate;
+    }
+  }
+
+  function renderCloudReflectSettings() {
+    const input = $("#xy-cloud-reflect-enabled");
+    if (input) input.checked = cloudReflectEnabled;
+    setText("xy-cloud-reflect-status", cloudReflectEnabled ? "开启后，小屿会用更细腻的方式回应日记。" : "关闭后仍可保存日记，回复会更简单。");
   }
 
   function announceDefaults() {
@@ -568,18 +716,39 @@
   function openDiaryModal(date = state.selectedDate) {
     const day = seedData.dailyRecords?.[date] || currentDay();
     const override = diaryOverrides[date] || {};
+    state.selectedDate = date || state.selectedDate;
+    persist();
     $("#xy-diary-dialog-title").textContent = `${formatDate(date)} 日记`;
     $("#xy-diary-date").textContent = formatDate(date);
     $("#xy-diary-editor").value = override.diary || day.diary || "";
-    $("#xy-diary-reply").textContent = override.assistantReply || day.assistantReply || "";
+    const existingReply = override.assistantReply || day.assistantReply || "";
+    setDiaryLetterState({
+      reply: existingReply,
+      status: existingReply ? "小屿的回信" : "保存后，小屿会在这里写一封短回信",
+      privacy: override.assistantMeta?.privacyNote || "",
+      visible: Boolean(existingReply),
+    });
     $("#xy-diary-dialog").showModal();
   }
 
   async function saveDiary(event) {
     event.preventDefault();
     const day = currentDay();
+    const saveButton = $("#xy-diary-save");
     const text = $("#xy-diary-editor").value.trim() || day.diary || "";
+    const memoryContext = buildAssistantMemoryContext();
     let assistantReply = buildDiaryAssistantReply(day, text);
+    let responseMeta = {};
+    if (saveButton) {
+      saveButton.disabled = true;
+      saveButton.textContent = "小屿正在读这一页…";
+    }
+    setDiaryLetterState({
+      reply: "小屿正在读这一页…",
+      status: "正在生成回信",
+      loading: true,
+      visible: true,
+    });
     try {
       const data = await apiJSON("/api/reflect", {
         method: "POST",
@@ -588,18 +757,83 @@
           user_text: text,
           emotion: day.mainState || currentEmotionText() || "Neutral",
           user_name: "蛋挞",
-          day_summary: {date: state.selectedDate, diary: text, care: buildAssistantMemoryContext().careText},
+          day_summary: {date: state.selectedDate, diary: text, care: memoryContext.careText},
+          memory_context: buildReflectMemoryContext(memoryContext),
+          cloud_enhanced: cloudReflectEnabled,
+          display_mode: "letter_note",
+          reply_style: "gentle",
         },
         timeoutMs: 15000,
       });
       assistantReply = data.reply || data.text || assistantReply;
+      responseMeta = {
+        source: data.source || "",
+        displayMode: data.display_mode || data.displayMode || "letter_note",
+        replyStyle: data.reply_style || data.replyStyle || "gentle",
+        privacyNote: data.privacy_note || data.privacyNote || "",
+        memoryCandidate: normalizeMemoryCandidate(data, text, assistantReply),
+      };
     } catch (_error) {}
-    diaryOverrides[state.selectedDate] = {diary: text, assistantReply};
+    if (!responseMeta.memoryCandidate) responseMeta.memoryCandidate = normalizeMemoryCandidate({}, text, assistantReply);
+    if (!responseMeta.privacyNote) responseMeta.privacyNote = privacyLabel();
+    diaryOverrides[state.selectedDate] = {diary: text, assistantReply, assistantMeta: responseMeta};
     persistDiary();
-    $("#xy-diary-reply").textContent = assistantReply;
-    $("#xy-diary-dialog").close();
+    setDiaryLetterState({
+      reply: assistantReply,
+      status: "小屿的回信",
+      privacy: responseMeta.privacyNote,
+      loading: false,
+      visible: true,
+      animate: true,
+      candidate: responseMeta.memoryCandidate,
+    });
+    if (saveButton) {
+      saveButton.disabled = false;
+      saveButton.textContent = "保存日记";
+    }
     renderRecords();
-    showToast("日记已保存，小屿也写下了回应");
+    showToast("日记已保存，小屿也写下了回信");
+  }
+
+  function openMemoryEditor() {
+    const editor = $("#xy-memory-editor");
+    const actions = $("#xy-memory-actions");
+    const textarea = $("#xy-memory-text");
+    const candidate = $("#xy-memory-start")?.dataset.candidate || "";
+    if (!editor || !textarea) return;
+    textarea.value = candidate;
+    editor.hidden = false;
+    if (actions) actions.hidden = true;
+    textarea.focus();
+  }
+
+  function closeMemoryEditor() {
+    const editor = $("#xy-memory-editor");
+    const actions = $("#xy-memory-actions");
+    if (editor) editor.hidden = true;
+    if (actions) actions.hidden = !($("#xy-memory-start")?.dataset.candidate);
+  }
+
+  function saveMemoryNote() {
+    const text = $("#xy-memory-text")?.value.trim() || "";
+    if (!text) {
+      showToast("先写一句想让小屿记住的内容");
+      return;
+    }
+    memoryNotes.push({
+      id: `memory_${Date.now()}`,
+      date: state.selectedDate,
+      content: text,
+      source: "diary",
+      created_at: new Date().toISOString(),
+    });
+    persistMemoryNotes();
+    closeMemoryEditor();
+    const actions = $("#xy-memory-actions");
+    if (actions) actions.hidden = true;
+    const start = $("#xy-memory-start");
+    if (start) start.dataset.candidate = "";
+    showToast("小屿已经记住这件事");
   }
 
   function weekKeyForDate(date) {
@@ -878,6 +1112,12 @@
     $("#xy-snooze-minutes")?.addEventListener("change", saveAnnounceSettings);
     $("#xy-eye-fatigue-enabled")?.addEventListener("change", saveAnnounceSettings);
     $("#xy-meeting-status-enabled")?.addEventListener("change", saveAnnounceSettings);
+    $("#xy-cloud-reflect-enabled")?.addEventListener("change", (event) => {
+      cloudReflectEnabled = Boolean(event.currentTarget.checked);
+      persistCloudReflect();
+      renderCloudReflectSettings();
+      showToast(cloudReflectEnabled ? "云端增强回复已开启" : "已切换为本地简洁回复");
+    });
     $$("[data-meeting-detail]").forEach((button) => button.addEventListener("click", openMeetingDetail));
     $("#xy-calendar-prev")?.addEventListener("click", () => shiftMonth(-1));
     $("#xy-calendar-next")?.addEventListener("click", () => shiftMonth(1));
@@ -885,6 +1125,9 @@
     $("#xy-diary-link")?.addEventListener("click", () => openDiaryModal());
     $("#xy-weekly-link")?.addEventListener("click", () => generateWeeklyReport());
     $("#xy-diary-form")?.addEventListener("submit", saveDiary);
+    $("#xy-memory-start")?.addEventListener("click", openMemoryEditor);
+    $("#xy-memory-cancel")?.addEventListener("click", closeMemoryEditor);
+    $("#xy-memory-save")?.addEventListener("click", saveMemoryNote);
     $$("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => button.closest("dialog")?.close()));
     $$("dialog.xy-sheet").forEach((dialog) => dialog.addEventListener("click", (event) => {
       if (event.target === dialog) dialog.close();
@@ -895,11 +1138,13 @@
     if (!seedData.currentDate) return;
     state.selectedDate = state.selectedDate || seedData.currentDate;
     state.calendarMonth = state.calendarMonth || "2026-07";
+    seedMemoryNotesFromPreview();
     renderHome();
     resetInitialChat();
     renderMeeting();
     renderRecords();
     renderDevice();
+    renderCloudReflectSettings();
     bind();
     await loadMeetingMarkdown();
     startRealtime();

@@ -11,6 +11,7 @@ the removed local 0.5B model files. It provides deterministic, low-latency templ
 """
 from __future__ import annotations
 
+import re
 import time
 from typing import Optional
 
@@ -30,9 +31,9 @@ class LLMReflect:
     def loaded(self) -> bool:
         return True
 
-    def _done(self, text: str, t0: float) -> str:
+    def _done(self, text: str, t0: float, limit: int = 180) -> str:
         self._last_time = max(0.0, time.time() - t0)
-        return text.strip()[:120]
+        return text.strip()[:limit]
 
     def diary(self, emotion: str, attn_score: int = 0,
               prev_emotion: str = "", user_name: str = "") -> str:
@@ -54,12 +55,12 @@ class LLMReflect:
     def quote(self, emotion: str, attn_level: str) -> str:
         t0 = time.time()
         quotes = {
-            "Happiness": "把快乐留一点光，照亮接下来的路。",
-            "Sadness": "难过会经过你，但不会定义你。",
-            "Anger": "先让呼吸回来，再让答案出现。",
-            "Fear": "害怕时，也可以慢慢往前一步。",
-            "Surprise": "意外抵达时，心也在扩展边界。",
-            "Neutral": "平静不是停下，是稳稳地在场。",
+            "Happiness": "这份开心不是小事，它说明今天至少有一部分真的抵达了你。可以把它先放在心里，不急着解释，也不急着消耗掉。",
+            "Sadness": "我读到这里时，会觉得这份低落不是矫情，而是你真的承受了一些东西。今晚可以先不急着振作，把最重的一点轻轻放下来。",
+            "Anger": "这份烦躁也许是在提醒你，有些边界或期待没有被好好照顾。先让呼吸回来，再决定要不要继续处理它。",
+            "Fear": "担心出现的时候，人会很容易把事情想得很远。我们先回到眼前，只抓住一个最小、最确定的下一步就好。",
+            "Surprise": "意外抵达时，心也需要一点时间重新站稳。你可以慢慢看清它带来的变化，不必马上给出答案。",
+            "Neutral": "平静也值得被记录。它不是空白，而是你在一天里慢慢站住了。今晚可以把这份稳定感留给自己一点。",
         }
         return self._done(quotes.get(emotion, "此刻被看见，就已经很好。"), t0)
 
@@ -74,21 +75,42 @@ class LLMReflect:
             text = "今天可能有些疲惫，先照顾好呼吸、饮水和休息，再继续也不迟。"
         return self._done(text, t0)
 
+    def _mirror(self, msg: str) -> str:
+        text = re.sub(r"\s+", " ", (msg or "").strip())
+        if not text:
+            return "你今天没有写很多，但这个空白本身也像是在说：现在可能不太想被打扰。"
+        text = text.strip("。！？!?；;，, ")
+        if len(text) <= 34:
+            return f"你写到“{text}”，我会先把这句话当成今天最需要被接住的地方。"
+        head = text[:42]
+        boundary = max(head.rfind("，"), head.rfind("。"), head.rfind("；"), head.rfind("、"))
+        if boundary >= 12:
+            head = head[:boundary]
+        return f"你写到{head}，我听见的不是一句简单的抱怨，而是这件事真的占了你不少心力。"
+
     def respond_to_user(self, user_msg: str, emotion: str,
                         user_name: str = "", history: list = None,
                         profile: dict = None, context: str = "") -> str:
         t0 = time.time()
         msg = (user_msg or "").strip()
-        if any(w in msg for w in ["累", "困", "疲惫", "没睡"]):
-            text = "听起来你真的有些累了。先把自己照顾好，我们可以慢慢来。"
+        mirror = self._mirror(msg)
+        asks_help = any(w in msg for w in ["怎么办", "建议", "怎么做", "下一步", "帮我", "如何"])
+        body_signal = any(w in msg for w in ["失眠", "睡不着", "头痛", "头疼", "头很痛", "身体不舒服", "胃痛", "胸闷", "心慌", "恶心"])
+        if body_signal:
+            tail = "如果这种不舒服已经持续一阵子，别只把它当成情绪问题硬扛着；可以先告诉身边可信的人，也留意要不要找医生看看。"
+        elif asks_help:
+            tail = "如果你是在问下一步，我会建议先别铺开全部问题，只挑一个最小的切口：把最卡住的那一句写下来，我们从那里开始。"
+        elif any(w in msg for w in ["累", "困", "疲惫", "没睡", "撑"]):
+            tail = "这种累不一定需要马上被解决。你可以先在这里停一下，不用继续证明自己还扛得住。"
         elif any(w in msg for w in ["开心", "高兴", "顺利", "喜欢"]):
-            text = "真好，这份开心值得被认真收藏。愿它多停留一会儿。"
+            tail = "这份开心听起来不是随便掠过的那种，它像是今天终于有一小块地方顺了起来。先让它多待一会儿也很好。"
         elif any(w in msg for w in ["难过", "伤心", "委屈"]):
-            text = "我听见这份难过了。你不用急着变好，先让它被安放。"
+            tail = "这份难过不需要马上被解释得很完整。你愿意把它写出来，就已经不是一个人在心里反复吞下去了。"
         elif any(w in msg for w in ["生气", "烦", "讨厌"]):
-            text = "这种烦躁一定有它的原因。先别责怪自己，慢慢说也可以。"
+            tail = "这种烦不是凭空来的，里面可能有被打断、被误解，或者一直忍着的部分。先别急着把它压成“我不该这样”。"
         else:
-            text = "谢谢你愿意说出来。我在这里听着，也陪你一起整理。"
+            tail = "我不会急着把它总结成道理。就先陪你把这一页放稳一点，哪怕它还没有答案，也可以先被好好看见。"
+        text = f"{mirror}{tail}"
         return self._done(text, t0)
 
 

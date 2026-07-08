@@ -116,6 +116,11 @@
           </div>
         </section>
         <div class="xy-settings">
+          <div class="xy-settings-toggle">
+            <span class="xy-icon-badge xy-blue"><svg><use href="#xy-smile"/></svg></span>
+            <span><strong>云端增强回复</strong><small id="xy-cloud-reflect-status">开启后，小屿会用更细腻的方式回应日记。</small></span>
+            <label class="xy-switch" aria-label="云端增强回复"><input id="xy-cloud-reflect-enabled" type="checkbox"><span></span></label>
+          </div>
           <button type="button" data-toast="提醒设置为温和模式"><span class="xy-icon-badge xy-amber"><svg><use href="#xy-bell"/></svg></span><span>提醒设置</span><svg><use href="#xy-chevron"/></svg></button>
           <button type="button" data-toast="小屿设置入口已准备好"><span class="xy-icon-badge xy-blue"><svg><use href="#xy-smile"/></svg></span><span>小屿设置</span><svg><use href="#xy-chevron"/></svg></button>
           <button type="button" data-toast="我的目标入口已准备好"><span class="xy-icon-badge xy-sage"><svg><use href="#xy-target"/></svg></span><span>我的目标</span><svg><use href="#xy-chevron"/></svg></button>
@@ -137,7 +142,7 @@
     <div class="xy-toast" id="xy-toast" role="status" aria-live="polite"></div>
   </div>
   <dialog class="xy-sheet" id="xy-meeting-dialog" aria-labelledby="xy-meeting-dialog-title"><section><button type="button" data-close-dialog aria-label="关闭">×</button><div id="xy-meeting-dialog-body"></div></section></dialog>
-  <dialog class="xy-sheet" id="xy-diary-dialog" aria-labelledby="xy-diary-dialog-title"><form method="dialog" id="xy-diary-form"><button type="button" data-close-dialog aria-label="关闭">×</button><h2 id="xy-diary-dialog-title">今日日记</h2><p id="xy-diary-date"></p><label for="xy-diary-editor">写下今天想留下的一句话</label><textarea id="xy-diary-editor" rows="6" maxlength="600"></textarea><div class="xy-assistant-reply" id="xy-diary-reply"></div><button class="xy-primary" type="submit">保存日记</button></form></dialog>
+  <dialog class="xy-sheet xy-diary-sheet" id="xy-diary-dialog" aria-labelledby="xy-diary-dialog-title"><form method="dialog" id="xy-diary-form"><button type="button" data-close-dialog aria-label="关闭">×</button><h2 id="xy-diary-dialog-title">今日日记</h2><p id="xy-diary-date"></p><label for="xy-diary-editor">写下今天想留下的一句话</label><textarea id="xy-diary-editor" rows="6" maxlength="600"></textarea><section class="xy-letter-reply" id="xy-diary-letter" aria-labelledby="xy-diary-letter-title"><div class="xy-letter-meta"><span id="xy-diary-privacy">云端增强已开启</span><span id="xy-diary-reply-status">小屿的回信</span></div><h3 id="xy-diary-letter-title">小屿的回信</h3><p id="xy-diary-reply" aria-live="polite"></p><div class="xy-memory-actions" id="xy-memory-actions" hidden><button class="xy-soft" type="button" id="xy-memory-start">让小屿记住</button></div><div class="xy-memory-editor" id="xy-memory-editor" hidden><label for="xy-memory-text">编辑要记住的内容</label><textarea id="xy-memory-text" rows="3" maxlength="180"></textarea><div><button class="xy-soft" type="button" id="xy-memory-cancel">取消</button><button class="xy-primary" type="button" id="xy-memory-save">确认记住</button></div></div></section><button class="xy-primary" id="xy-diary-save" type="submit">保存日记</button></form></dialog>
   <dialog class="xy-sheet" id="xy-weekly-dialog" aria-labelledby="xy-weekly-dialog-title"><section><button type="button" data-close-dialog aria-label="关闭">×</button><div id="xy-weekly-dialog-body"></div></section></dialog>
   <script src="/static/product_home/seed_data.js?v=20260705-1"></script>
   <script src="/static/product_home/home.js?v=20260705-1"></script>
