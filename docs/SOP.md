@@ -1,9 +1,22 @@
-# reCamera Multimodal SOP 6.0
+# reCamera Multimodal SOP 6.1
 
 > 架构、部署、操作、验收与排障手册
-> 版本：6.0
-> 更新日期：2026-07-02
+> 版本：6.1
+> 更新日期：2026-07-10
 > 本文档以当前仓库代码为准；架构原理见 `docs/ARCHITECTURE.md`。
+> 官方 reCamera Gimbal 快速入门参考：<https://wiki.seeedstudio.com/cn/recamera_gimbal_getting_started/>
+
+## 目录与接手指引
+
+首次接手项目时，建议按下面顺序阅读和操作：
+
+1. **硬件连接与官方入口**：先读 1.1，确认 reCamera IP、官方 dashboard、Node-RED workspace 和端口含义。
+2. **ReSpeaker 接入**：需要 DOA、会议录音或 LED 时读 1.2。
+3. **Node-RED bridge**：真实云台控制前必须读 1.3，确认 bridge 是本项目自写 flow，但调用官方 reCamera 节点。
+4. **启动系统**：按 2.1 同时启动 FastAPI 和 `main_phase3.py`。
+5. **控制边界**：读第 3 章，确认 FastAPI 只有事件和遥测职责，真实云台出口只有 `main_phase3.py -> RecameraClient -> Node-RED bridge`。
+6. **页面操作**：使用 `/home` 或 `/control` 前读第 5 章。
+7. **验收与排障**：功能交接先跑第 8 章，异常优先查第 9 章。
 
 ---
 
@@ -41,6 +54,22 @@ nc -zv "$RECAMERA_DEVICE_IP" 22     # SSH 维护入口
 ```
 
 8090 端口需在设备 Web 页面（`http://<RECAMERA_IP>:80`）启动模型部署后才可达。
+
+**官方 dashboard、Node-RED 与本项目页面的关系：**
+
+Seeed 官方快速入门中，reCamera Gimbal 的官方 dashboard 通过设备 IP 访问。它是设备自带的预览和手动控制页面，用于确认硬件、Wi-Fi、模型和官方节点是否正常；本项目的 `/home` 与 `/control` 是运行在 PC/WSL 主机上的产品页和工程调试台，不替代设备初始化页面。
+
+| 入口 | 地址 | 用途 | 本项目中的定位 |
+|---|---|---|---|
+| 官方预览 dashboard | `http://<RECAMERA_IP>/#/dashboard` 或 `http://<RECAMERA_IP>` | 查看 reCamera 画面、体验官方摇杆/滑块/自动跟踪/快捷按钮 | 硬件和官方 demo 验证入口，不作为本项目主 UI |
+| 官方主页 | `http://<RECAMERA_IP>/#/init` | 设备初始化入口 | 首次设置或恢复后使用 |
+| 官方网络配置 | `http://<RECAMERA_IP>/#/network` | 配置 Wi-Fi、查看设备 IP | 获取 `<RECAMERA_IP>` |
+| 官方 Node-RED workspace | `http://<RECAMERA_IP>/#/workspace` | 查看/编辑设备侧 Node-RED flow | 可进入官方 flow，也可导入本项目 bridge |
+| 原始 Node-RED | `http://<RECAMERA_IP>:1880` | Node-RED 编辑器和本项目 bridge HTTP 端口 | 导入 `deploy/node_red/*.json`，暴露控制 API |
+| 本项目产品页 | `http://localhost:8001/home` | 心屿产品形态、会议、聊天、健康提醒 | 最终演示/产品入口 |
+| 本项目控制台 | `http://localhost:8001/control` | 工程调试、状态遥测、功能启停 | 本项目调试和验收入口 |
+
+官方 dashboard 中的 Sleep、Standby、Calibrate 和 Emergency Stop 只用于说明设备原生语义。本项目不会把官方 dashboard 当作控制主链路，而是把这些语义收敛到自己的 EventBus、session/lease、SafetyLayer 和 Node-RED bridge 中。
 
 ---
 
@@ -109,11 +138,15 @@ usbipd.exe detach --busid <BUSID>
 
 云台控制必须通过 Node-RED bridge，`main_phase3.py` 启动前必须完成此步骤。
 
+本项目 bridge 是**自写 Node-RED flow**，不是直接使用官方 demo dashboard flow；但它会调用 Seeed 官方 `node-red-contrib-seeed-recamera` 节点和设备侧命令来完成电机读写、校准和停止。这样做的目的，是把官方 demo 的手动 UI/示例逻辑替换成稳定的 HTTP contract，让 `main_phase3.py` 成为唯一控制运行时。
+
 **安装步骤：**
 
-1. 打开 `http://<RECAMERA_IP>:1880`
-2. 在 Palette Manager 中确认或安装 `node-red-contrib-seeed-recamera`
-3. 将 `deploy/node_red/recamera_control_bridge.json` 导入新 Flow 并点击 **Deploy**
+1. 先打开官方 dashboard：`http://<RECAMERA_IP>/#/dashboard`，确认画面、电机和校准可用。
+2. 打开 Node-RED workspace：`http://<RECAMERA_IP>/#/workspace`，或直接打开原始 Node-RED：`http://<RECAMERA_IP>:1880`。
+3. 在 Palette Manager 中确认或安装 `node-red-contrib-seeed-recamera`。
+4. 将 `deploy/node_red/recamera_control_bridge.json` 导入新 Flow 并点击 **Deploy**。
+5. 如需 reCamera 扬声器闭环，再导入 `deploy/node_red/recamera_audio_bridge_supplement.json` 并点击 **Deploy**。
 
 **Bridge 暴露的端点：**
 
@@ -152,6 +185,13 @@ curl -q --noproxy "*" -sS -i --max-time 3 \
 ```
 
 Bridge 不可达时真实控制 fail closed，不会静默降级为 dry-run。
+
+**与官方 demo flow 的边界：**
+
+- 官方 dashboard flow 主要面向人在浏览器里操作：摇杆、角度滑块、速度滑块、自动跟踪、Sleep、Standby、Calibrate、Emergency Stop。
+- 本项目 bridge 面向程序控制：只暴露版本化 HTTP endpoint，不承载产品 UI，也不直接决定“追谁、何时转向、是否安全”。
+- 官方节点负责底层硬件能力；本项目负责上层 session、lease、SafetyLayer、EventBus 和业务场景。
+- `status` 返回 readback，不等价于“上一条命令一定完成”；判断硬件完成仍要结合 `verified`、`last_error`、`target`、`readback` 和 `/api/control/runtime`。
 
 **可选扬声器验证（语音闭环）：**
 
@@ -328,6 +368,20 @@ Dashboard UI
 ```
 
 HTTP 200 或 EventBus `accepted=true` 只表示事件已被控制运行时接收，不等同于硬件已完成动作。命令仍可能被 SafetyLayer 拦截或因硬件连接失败而未执行。判断真实云台动作应同时查看 `/api/control/runtime` 中的 `hardware_ready`、`last_apply_ok`、`last_hardware_command_error`、`gimbal_bridge_status`、`hardware_io.command_state` 和设备 readback。
+
+### 3.4 官方 demo 能力复用边界
+
+本项目复用的是官方 reCamera Gimbal 的设备能力，不复用官方 dashboard 作为最终控制面：
+
+| 官方能力 | 官方 demo 中的表现 | 本项目如何使用 |
+|---|---|---|
+| 设备 IP dashboard | `http://<RECAMERA_IP>/#/dashboard` 预览画面、手动控制、自动跟踪 | 只作为硬件验证和故障定位入口 |
+| Node-RED workspace | `http://<RECAMERA_IP>/#/workspace` 或 `:1880` 查看默认 dashboard flow | 导入本项目自写 bridge flow，保留官方节点能力 |
+| SSCMA 视频/检测 | 设备侧模型输出画面和检测框 | FastAPI 连接 `ws://<RECAMERA_IP>:8090/`，生成 `/video_feed`、`/ws` 和感知事件 |
+| 官方 reCamera 节点 | 电机角度、速度、目标跟踪、快捷按钮等节点/命令 | bridge 调用官方节点/命令完成 yaw/pitch、readback、stop、`gimbal cali` |
+| 快捷按钮语义 | Sleep、Standby、Calibrate、Emergency Stop | 本项目通过 UI Event -> `main_phase3.py` -> bridge 统一执行；Sleep 使用 `yaw=180, pitch=175`，比官方向下位置略保守 |
+
+因此，答辩或交接时可以这样说明：官方 demo 证明设备、模型和官方节点可用；本项目在它之上增加了唯一控制平面、租约、安全门、ReSpeaker DOA、语音闭环和产品页面。bridge 可以独立部署和用 curl 验证，但它不是完全脱离 reCamera 的独立硬件驱动，因为当前实现依赖设备侧 Node-RED 和官方 reCamera 节点。
 
 ---
 
