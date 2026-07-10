@@ -1,7 +1,7 @@
-# reCamera Multimodal SOP 6.1
+# reCamera Multimodal SOP 6.2
 
 > 架构、部署、操作、验收与排障手册
-> 版本：6.1
+> 版本：6.2
 > 更新日期：2026-07-10
 > 本文档以当前仓库代码为准；架构原理见 `docs/ARCHITECTURE.md`。
 > 官方 reCamera Gimbal 快速入门参考：<https://wiki.seeedstudio.com/cn/recamera_gimbal_getting_started/>
@@ -16,7 +16,8 @@
 4. **启动系统**：按 2.1 同时启动 FastAPI 和 `main_phase3.py`。
 5. **控制边界**：读第 3 章，确认 FastAPI 只有事件和遥测职责，真实云台出口只有 `main_phase3.py -> RecameraClient -> Node-RED bridge`。
 6. **页面操作**：使用 `/home` 或 `/control` 前读第 5 章。
-7. **验收与排障**：功能交接先跑第 8 章，异常优先查第 9 章。
+7. **当前主要问题**：视频延迟和 ReSpeaker 录音清晰度先读 8.7，再决定是否进入性能调参或硬件复测。
+8. **验收与排障**：功能交接先跑第 8 章，异常优先查第 9 章。
 
 ---
 
@@ -948,6 +949,60 @@ Session 和心跳：
 
 不要仅根据 Dashboard 状态标签判定硬件动作成功。
 
+### 8.7 当前主要未稳定问题复盘（2026-07-05 至 2026-07-10）
+
+本节只记录最近五天在 `recamera_multimodal` 中能由日志、代码和文档直接支撑的事实。未找到连续真实硬件视频延迟日志，因此视频侧数值分为“代码阈值/设计频率”和“测试桩样例”，不能等同于现场实测延迟；ReSpeaker 侧有 2026-07-08 的三次录音自检日志，可作为当前最明确的问题证据。
+
+#### 8.7.1 视频延迟与感知链路
+
+当前现象：用户侧反馈视频存在明显延迟；仓库中未发现最近五天保存的真实连续 `frame_age_ms` / 端到端视频延迟采样日志。现有可确认数值如下：
+
+| 指标 | 当前数值 | 来源与含义 |
+|---|---:|---|
+| 视频帧 stale 判定 | `last_frame_age_ms > 1000 ms` | FastAPI 超过 1 秒未拿到新帧即视为 stale，后续候选会被清空或阻断观察 |
+| MJPEG `/video_feed` 发送节流 | `0.5 s` | 每次 yield 后 sleep 0.5 秒，理论展示上限约 `2 FPS`；这会直接影响浏览器 MJPEG 页面观感 |
+| `/ws` 状态推送目标 | `200 ms` | WebSocket 状态约 `5 Hz`；观察字段中 `telemetry_hz/ui_push_hz` 目标为 `4.0 Hz` |
+| 感知循环 sleep：单人跟踪 | `125 ms` | 单人跟踪 profile 约 `8 Hz` 主循环 |
+| 感知循环 sleep：多人/陪伴 | `250 ms` | 多人和健康陪伴 profile 约 `4 Hz` 主循环 |
+| 感知循环 sleep：idle | `750 ms` | 空闲模式约 `1.3 Hz` |
+| 人脸阶段降级阈值 | `>350 ms` 降级，`<200 ms` 恢复 | 人脸检测耗时过高时提高检测间隔，保护主循环 |
+| 检测输入最大宽度 | `960 px` | 解码后下采样上限，影响检测耗时与精度 |
+| 控制循环默认 | `10 Hz` | `main_phase3.py --fps` 默认 10；性能预算目标为控制 `15-20 Hz`、人脸 `8-15 Hz`、telemetry `3-5 Hz` |
+| 回归测试正常样例 | `fps=12.5`，`last_frame_age_ms=42 ms` | 测试桩契约，不代表真实设备现场 |
+| 回归测试 stale 样例 | `fps=7.4`，`last_frame_age_ms=104000 ms` | 用于验证超时帧会清空候选和阻断观察 |
+
+可能原因按优先级排查：
+
+1. **浏览器 MJPEG 展示被主动限速**：`/video_feed` yield 后固定 sleep 0.5 秒，单看视频页面会接近 2 FPS，即使后端拿帧更快也会显得卡顿。
+2. **感知模型链路占用主循环**：SCRFD/ArcFace、YOLO pose、MediaPipe Face Landmarker、EmotiEff 和 Gesture Recognizer 按 profile 分频执行；如果 `stage_ms.face` 长期超过 350 ms，会进入人脸降级。
+3. **设备侧 SSCMA 或网络输出不稳定**：FastAPI 依赖 `ws://<RECAMERA_IP>:8090/` 的 base64 JPEG + 检测框；如果 8090 输出低帧率或断续，`last_frame_age_ms` 会持续增长。
+4. **状态推送和视频不是同一频率**：`/ws` 可约 4-5 Hz 刷状态，但 MJPEG 可能只有约 2 FPS；前端状态看似在动，视频仍会显得滞后。
+5. **控制闭环和视频闭环并不同步**：云台控制默认 10 Hz，硬件状态查询存在 1.2 秒超时边界；视频延迟不一定说明控制 Event 延迟，需要分开记录。
+
+下一次复测建议把以下字段同时保存 60 秒以上：`/api/debug/video` 的 `fps/last_frame_age_ms`、`/api/state.perception.stage_ms`、`face_period/pose_period/detail_period/face_degraded`、浏览器实际显示 FPS、设备 8090 WebSocket 收帧间隔、控制日志中的 `control_loop_ms`。只有这些数据齐全，才能把“视频显示慢”“模型推理慢”“设备吐帧慢”“控制慢”拆开定位。
+
+#### 8.7.2 ReSpeaker 录音模糊与 ASR 为空/误识别
+
+当前现象：ReSpeaker 实时录音内容模糊、不清晰，ASR 为空或明显误识别。2026-07-08 的 `logs/respeaker_test.log` 中三次 8 秒录音自检结果如下：
+
+| 录音文件 | 期望录音时长 | 实际耗时 | `clock_ratio` | 估算有效采样率 | 音量/语音指标 | ASR 结果 |
+|---|---:|---:|---:|---:|---|---|
+| `respeaker_check_20260708_145431.wav` | `8.0 s` | `16.12 s` | `2.015` | `7940 Hz` | RMS `0.000823`，peak `0.014588`，VAD `0.0338` | ASR 未运行，报 `No module named 'audio'` |
+| `respeaker_check_20260708_145501.wav` | `8.0 s` | `16.107 s` | `2.013` | `7947 Hz` | RMS `0.035209`，peak `0.707938`，VAD `0.3759` | 本地 ASR `4.438 s`，转写为空 |
+| `respeaker_check_20260708_145552.wav` | `8.0 s` | `16.109 s` | `2.014` | `7946 Hz` | RMS `0.035707`，peak `0.707938`，VAD `0.7218` | 原始与修正 WAV 均误识别为“字幕by索兰娅” |
+
+设备枚举显示 ReSpeaker 为 `reSpeaker XVF3800 4-Mic Array: USB Audio (hw:0,0)`，输入通道 `2`，默认采样率 `16000.0`。但三次测试都出现约 `2.01x` 的录音耗时膨胀，等效采样率只有约 `7.94-7.95 kHz`。脚本已把 `clock_ratio > 1.5` 标记为 `clock_slow_or_usb_audio_issue`，说明当前最可疑点不是单纯 ASR 模型，而是 USB Audio / WSL / 设备采样时钟链路异常。
+
+可能原因按优先级排查：
+
+1. **USB Audio 在 WSL 中时钟异常**：请求 16 kHz 录 8 秒，实际阻塞约 16.1 秒，等效只有约 7.95 kHz；这会让 WAV 头、真实语速和模型预期不一致，造成声音变慢、模糊或 ASR 误判。
+2. **设备索引或通道选择仍需复核**：枚举里同时存在 `hw:0,0`、`sysdefault`、`spdif`、`default` 等输入；`RECAMERA_AUDIO_DEVICE` 必须指向 ReSpeaker 的真实输入设备，且建议固定记录 device index、channels 和 sample rate。
+3. **录音音量/语音占比不稳定**：第一段 RMS 极低且 VAD 只有 `0.0338`，第二、三段音量较高但 ASR 仍空或误识别，说明同时存在采集链路和声学质量问题。
+4. **ASR 链路本身不是唯一故障点**：项目交接记录显示腾讯会议等外部录音可以进入转写链路，因此 ASR 工程链路并非完全不可用；ReSpeaker 实时采集质量才是当前主要未验收项。
+5. **本地依赖/运行路径也需修正**：第一段出现 `No module named 'audio'`，说明直接运行自检脚本时还需保证在仓库根目录或设置正确 `PYTHONPATH`，否则会把采集问题和脚本环境问题混在一起。
+
+下一次复测建议分别做三组对照：原生 Linux 或 reCamera 侧录音、WSL USBIP 录音、同一环境下普通 USB 麦克风录音；每组记录 `clock_ratio`、有效采样率、RMS、peak、VAD、ASR 耗时和 transcript。若原生 Linux 正常而 WSL 异常，优先定位 USBIP/WSL 音频；若所有环境都约 8 kHz，优先定位 ReSpeaker 固件/驱动/采样率协商；若外置麦克风正常而 ReSpeaker 异常，优先替换 ReSpeaker 配置或硬件。
+
 ---
 
 ## 9. 故障排查与安全停机
@@ -972,6 +1027,8 @@ curl http://localhost:8001/api/debug/video
 
 - `Connection refused`：设备在线，但 SSCMA 服务或模型未运行。在设备 Web 页面启动模型后再检查 8090。
 - `Timed out` / `No route to host`：地址错误、路由或网络问题。
+
+如果视频未断开但明显延迟，先按 8.7.1 采集 `last_frame_age_ms`、`fps`、`stage_ms` 和浏览器显示 FPS；不要只凭页面观感判断是网络、模型还是前端展示问题。
 
 ### 9.3 Dashboard 控制请求 unreachable
 
@@ -1039,6 +1096,8 @@ curl http://localhost:8001/api/conversation/debug
 `/api/state.audio_processing.fallback_reason` 显示 `noisereduce_unavailable` 或 `webrtcvad_unavailable` 时，录音仍使用 RMS 分段继续工作；需要增强链路时安装对应依赖后重启 FastAPI。
 
 如果 `/home` 点击结束后页面显示“整理已提交”但历史没有出现，先看 `/api/conversation/state` 的 `report.status`：`stopping/summarizing` 表示后台仍在跑，`ready` 才应入历史，`error` 则看 `report.error`、`asr_status` 和 `last_asr_error`。不要用 `/control` 的多人声源演示来验证会议录音；该页默认 `save_audio:false`。
+
+如果能录音但声音模糊、语速异常、ASR 为空或误识别，按 8.7.2 记录 `clock_ratio`、有效采样率、RMS、peak、VAD 和 transcript。当前 2026-07-08 自检已出现 `clock_ratio≈2.01`、有效采样率约 `7.95 kHz` 的异常，应优先排查 USB Audio/WSL 时钟链路。
 
 ### 9.7 安全原则
 
@@ -1194,11 +1253,18 @@ localStorage 完整键清单（`home.html` 实际实现）：
 | ReSpeaker DOA 到真实 yaw 控制闭环 | **YES** |
 | ReSpeaker 实体 LED DOA 灯效 | **YES，USB 模式** |
 | FastAPI 展示真实云台 readback | **YES，经 main_phase3 runtime snapshot** |
-| `/home` 完整会议录音/转写/纪要闭环 | **YES，`/api/meeting/complete` 异步提交，轮询 `report.status` 收口** |
+| `/home` 完整会议录音/转写/纪要闭环 | **PARTIAL，`/api/meeting/complete` 异步提交与外部录音 ASR 链路可用；ReSpeaker 实时录音质量未稳定验收，会议纪要暂不可按可交付闭环判定** |
 | `/control` 多人页默认录音/纪要 | **NO，默认是 `save_audio:false` 的声源定位演示** |
 | reCamera 扬声器播放确认 | **PARTIAL，bridge accepted 与设备端 `aplay` 状态分层暴露** |
 
-### A.3 6.0 变更记录
+### A.3 6.2 变更记录
+
+- 新增 8.7，汇总 2026-07-05 至 2026-07-10 的两项主要未稳定问题：视频延迟与 ReSpeaker 录音模糊。
+- 明确视频侧目前缺少连续真实硬件延迟日志，只能先记录 stale 阈值、推送频率、MJPEG 展示节流、感知 profile 和回归测试样例。
+- 明确 ReSpeaker 2026-07-08 三次 8 秒自检均出现 `clock_ratio≈2.01`、等效采样率约 `7.95 kHz`，ASR 为空或误识别。
+- 将 `/home` 会议录音/转写/纪要闭环状态从 YES 调整为 PARTIAL，避免交接时误判为可交付闭环。
+
+### A.4 6.0 变更记录
 
 - **结构重组**：新增第一章，将 reCamera 连接（原 3.1/3.3）、ReSpeaker USB 连接与音频索引查询（原 7.1/7.2）、Node-RED Bridge 部署与验证（原 3.5）、环境变量速查（原 4.4 精简）统一提至文档最前。
 - 启动命令（原第 1 章 + 第 5 章）合并为第二章，去除重复解释，保留可直接复制的命令块。
@@ -1208,7 +1274,7 @@ localStorage 完整键清单（`home.html` 实际实现）：
 - 所有章节重编号：原 2→3、3→5（部分）、4→4、6→5、8→7、9→8、10→9、12→10。
 - SOP 版本：5.3 → 6.0。
 
-### A.4 历史变更（5.x）
+### A.5 历史变更（5.x）
 
 - **5.3**：修正 `eye_metrics` 字段（`ear`→`ear_avg`）、`active_feature`（非 `feature`）、1.5s lease（非 2.5s）；更新会议 API（`/api/conversation/*`）；修正 localStorage 键清单，删除 5 个未实现幽灵键；扩展 9.5 回归验收清单（A-E 功能）。
 - **5.2**：对齐 FastAPI 和 `main_phase3.py` 当前 CLI 参数；新增 feature session、1.5 秒租约、旧会话隔离；接通 ReSpeaker USB DOA、会议录音和实体 WS2812 DOA 灯效；接通 DOA audio Event 到 yaw-only Orchestrator 命令；新增 Node-RED 双轴 control/status bridge 和真实 CAN motor readback。

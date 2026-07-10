@@ -54,6 +54,13 @@ FastAPI 的视频、分析、录音和 Dashboard 状态通过 `/ws` 与 `/api/st
 发布；权威 FSM、会话、命令、安全结果和云台 readback 均来自
 `main_phase3.py` 的 EventBus runtime snapshot，不存在 observe-only FSM 镜像。
 
+### 当前主要未稳定点（2026-07-10）
+
+| 问题 | 当前证据 | 架构影响 | 交接判断 |
+|---|---|---|---|
+| 视频延迟 | 代码中 stale 阈值为 `last_frame_age_ms > 1000 ms`；MJPEG `/video_feed` 每帧后 sleep `0.5 s`，理论展示上限约 `2 FPS`；单人感知循环约 `8 Hz`，多人/陪伴约 `4 Hz`；最近五天未找到真实连续视频延迟日志 | 视频显示、感知推理和控制闭环频率不同，不能用单一页面观感判断瓶颈 | 需补 60 秒以上真实硬件采样：`fps/last_frame_age_ms/stage_ms/face_degraded/浏览器 FPS/控制 loop` |
+| ReSpeaker 录音模糊 | 2026-07-08 三次 8 秒录音实际耗时约 `16.11 s`，`clock_ratio≈2.01`，等效采样率约 `7.94-7.95 kHz`；ASR 出现空结果或误识别“字幕by索兰娅” | 会议录音/ASR/纪要链路不能作为可交付闭环；DOA 与 LED 不受此问题直接影响 | 优先排查 USB Audio/WSL 时钟、设备索引、采样率协商，再复测原生 Linux/reCamera/普通 USB 麦克风对照 |
+
 ### 控制层（独立于 FastAPI）
 
 ```
@@ -69,8 +76,8 @@ FastAPI = UI Event emitter + perception/recording + runtime telemetry viewer
 
 ---
 
-> 版本：2.1
-> 日期：2026-07-02
+> 版本：2.2
+> 日期：2026-07-10
 > 基于：全功能硬件闭环审计 + A–E 功能迭代审计
 
 ---
@@ -244,6 +251,24 @@ FastAPI（recamera_fastapi.py）— Event emitter + telemetry viewer，零云台
 | 模型资产 | `models/` | MediaPipe、ONNX、EmotiEff 等模型；不参与前端清理 |
 | 部署资产 | `deploy/node_red/`、`vendor/recamera_*` | 设备桥和厂商参考代码；不参与前端清理 |
 
+### 4.9 当前算法与模型选型（2026-07-10）
+
+| 能力 | 当前选型 | 运行位置 | 说明 |
+|---|---|---|---|
+| 设备侧视频与基础检测 | reCamera SSCMA `yolo11n_cv181x_int8.cvimodel` | reCamera | 通过 `ws://<RECAMERA_IP>:8090/` 输出 JPEG 与检测框，是 FastAPI 视频和部分感知输入的源头 |
+| 人脸检测/追踪 | InsightFace SCRFD + Kalman/ByteTrack + ArcFace；必要时 YuNet 单脸 fallback | 主机 FastAPI | 主链路用于人脸候选、身份特征、稳定跟踪和 face lock；耗时过高时会按 `face_period` 降频 |
+| 人体姿态 | YOLO11 pose / `yolo11n_pose_cv181x_int8.cvimodel` | 主机或设备侧模型资产配合 | 输出人体框、17 关键点和肩部估计，用于多人状态和会议说话人辅助标注 |
+| 精细面部 | MediaPipe Face Landmarker | 主机 FastAPI | 只在需要精细眼部、gaze、健康陪伴分析时按 `detail_period` 低频运行 |
+| 情绪识别 | EmotiEffLib `enet_b0_8_va_mtl.onnx` | 主机 FastAPI | 输出 8 类情绪、置信度和 valence，用于 `/ws` 状态、日记和开放词汇情绪推理 |
+| 专注/眼部/gaze | AttentionEngine + EAR/PERCLOS + gaze estimate | 主机 FastAPI | 基于视觉状态做 EMA、眨眼、PERCLOS、注视方向估计；不直接驱动云台 |
+| 手势识别 | MediaPipe Gesture Recognizer `models/gesture_recognizer.task` | 主机 FastAPI | 仅展示类别、置信度和稳定帧；Closed Fist 可触发语音停止，但不进入云台控制 |
+| DOA 声源方向 | ReSpeaker XVF3800 USB control，TCP `9999` 备用 | 主机控制运行时 | 生产默认 10 Hz USB DOA；只产生 yaw 方向 Event 和 LED 指示，pitch 始终由视觉或手动链路决定 |
+| 会议录音 | ReSpeaker USB Audio + `sounddevice` + 可选 noisereduce/WebRTC VAD | 主机 FastAPI | `save_audio=true` 时启用；当前未稳定，2026-07-08 发现采样时钟约 2.01x 异常 |
+| ASR | 智谱 GLM-ASR 优先；本地 `faster-whisper` fallback，默认 `Systran/faster-whisper-tiny` | 云端/主机 | 外部录音可进入转写链路；ReSpeaker 实时录音因采集质量未通过验收 |
+| LLM/日记/摘要 | DeepSeek 优先；智谱 GLM-4-Flash 兜底；本地温和 fallback | 云端/主机 FastAPI | `/api/chat`、`/api/reflect`、`/api/emotion/infer`、`/api/meeting/summarize` 各自处理 provider 失败 |
+
+性能策略：视频解码与下采样只在新帧到达时执行，检测输入最大宽度默认为 `960 px`；SCRFD/pose/detail/gesture/emotion 分频运行，单人跟踪主循环约 `125 ms`，多人和陪伴约 `250 ms`，idle 约 `750 ms`。人脸阶段耗时超过 `350 ms` 会进入降级，低于 `200 ms` 再恢复。该策略优先保护 UI 和控制状态不被重模型完全阻塞，但也意味着视觉分析结果不是每帧更新。
+
 ---
 
 ## 5. FSM 状态转移图
@@ -368,7 +393,7 @@ Debounce:
 - [x] 云台遥测：仅 `main_phase3.py` 调用 `RecameraClient.get_status()`，FastAPI 不创建硬件客户端
 - [x] LLM 对话：DeepSeek API 优先、智谱 GLM-4-Flash 兜底；端点保留本地轻量 fallback
 - [x] 情绪感知 prompt 注入：`/api/chat` 和 `/api/reflect` diary 使用 `services/emotion_prompt.py` 融入实时状态，响应字段保持兼容
-- [~] 会议录音/ASR 实验链路：智谱 GLM-ASR 优先、本地 whisper fallback；transcript 带 `[说话人A]` / `[未知说话人]` 标签；`/api/meeting/summarize` 返回结构化错误码。腾讯会议等外部录音可进入转写链路，但 ReSpeaker 实时录音质量未稳定验收，会议纪要未实现为可交付功能。
+- [~] 会议录音/ASR 实验链路：智谱 GLM-ASR 优先、本地 whisper fallback；transcript 带 `[说话人A]` / `[未知说话人]` 标签；`/api/meeting/summarize` 返回结构化错误码。腾讯会议等外部录音可进入转写链路，但 ReSpeaker 实时录音质量未稳定验收。2026-07-08 三次 8 秒自检均实际耗时约 `16.11 s`，`clock_ratio≈2.01`、等效采样率约 `7.95 kHz`，ASR 为空或误识别；会议纪要未实现为可交付功能。
 - [x] 对话会话管理：`/api/conversation/{start,stop,state,save,debug}`
 - [x] 会议说话人查询：`GET /api/meeting/speakers`
 - [x] Wake word 状态查询：`GET /api/wake_word/state`；检测事件通过 `/ws` 广播 `wake_word_detected`
